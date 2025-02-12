@@ -7,13 +7,15 @@
     "@react-three/fiber": "^8.17.14",
     "@tailwindcss/ui": "^0.7.2",
     "axios": "^1.7.9",
+    "babel-plugin-glsl": "^1.0.0",
     "cra-template": "1.2.0",
     "dotenv": "^16.4.7",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
     "react-router-dom": "^7.1.5",
     "react-scripts": "5.0.1",
-    "three": "^0.173.0"
+    "three": "^0.173.0",
+    "three-stdlib": "^2.35.13"
   },
   "scripts": {
     "start": "react-scripts start",

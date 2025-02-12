@@ -1,330 +1,52 @@
+// index.js (or server.js)
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
-import { generateWorldMap } from "./mapUtils.js";
+
+import mapRoutes from "./mapRoutes.js";
+import gameRoutes from "./gameRoutes.js";
+import { tickGameRooms } from "./gameLogic.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Connect to MongoDB with enhanced error logging
+// -------------------------------------------------------------------
+// Connect to MongoDB
+// -------------------------------------------------------------------
 mongoose
   .connect("mongodb://localhost:27017/fantasy-maps", {
     useNewUrlParser: true,
     useUnifiedTopology: true,
   })
-  .then(() => {
-    console.log("Connected to MongoDB");
-  })
+  .then(() => console.log("Connected to MongoDB"))
   .catch((err) => {
     console.error("Error connecting to MongoDB:", err);
     process.exit(1);
   });
+mongoose.connection.on("error", (err) =>
+  console.error("MongoDB connection error:", err)
+);
+await mongoose.connection.collection("gamerooms").drop();
 
-// Listen for further connection errors
-mongoose.connection.on("error", (err) => {
-  console.error("MongoDB connection error:", err);
-});
+// -------------------------------------------------------------------
+// Mount the Route Handlers
+// -------------------------------------------------------------------
+app.use("/api/maps", mapRoutes);
+app.use("/api/gamerooms", gameRoutes);
 
-// ==============================
-// Map Metadata Schema (no mapData)
-// ==============================
-const mapSchema = new mongoose.Schema({
-  name: { type: String, default: "Untitled Map" },
-  width: { type: Number, required: true },
-  height: { type: Number, required: true },
-  createdAt: { type: Date, default: Date.now },
-});
-const Map = mongoose.model("Map", mapSchema);
+// -------------------------------------------------------------------
+// Global Tick Loop for Game Rooms with Strategy Game Logic
+// -------------------------------------------------------------------
+const TICK_INTERVAL_MS = 1000; // 1 second
+setInterval(tickGameRooms, TICK_INTERVAL_MS);
 
-// ==================================
-// MapChunk Schema for storing chunks
-// ==================================
-const mapChunkSchema = new mongoose.Schema({
-  map: { type: mongoose.Schema.Types.ObjectId, ref: "Map", required: true },
-  startRow: { type: Number, required: true },
-  endRow: { type: Number, required: true },
-  rows: { type: [[mongoose.Schema.Types.Mixed]], required: true },
-});
-const MapChunk = mongoose.model("MapChunk", mapChunkSchema);
-
-// ==============================
-// POST /api/maps - Create a new map
-// Generate the world map, split it into chunks, and store them.
-// ==============================
-app.post("/api/maps", async (req, res, next) => {
-  try {
-    let { name, width, height, erosion_passes, num_blobs, seed } = req.body;
-    // Validate dimensions
-    if (!width || !height) {
-      const error = new Error("Width and height must be provided");
-      error.status = 400;
-      throw error;
-    }
-    width = Number(width);
-    height = Number(height);
-    if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
-      const error = new Error("Width and height must be positive numbers");
-      error.status = 400;
-      throw error;
-    }
-
-    console.log("Generating map with dimensions:", width, height);
-    if (!erosion_passes) erosion_passes = 4;
-    if (!num_blobs) num_blobs = 3;
-    if (!seed) seed = Math.random();
-    const mapData = generateWorldMap(
-      width,
-      height,
-      erosion_passes,
-      num_blobs,
-      seed
-    );
-    console.log("Map generated successfully");
-
-    // Save map metadata (without the huge mapData)
-    const newMap = new Map({
-      name: name || "Untitled Map",
-      width,
-      height,
-    });
-    console.log("Saving new map metadata to database");
-    await newMap.save();
-    console.log("Map metadata saved successfully");
-
-    // Define the chunk size (number of rows per chunk)
-    const CHUNK_SIZE = 50;
-    const chunks = [];
-    for (let i = 0; i < mapData.length; i += CHUNK_SIZE) {
-      const chunkRows = mapData.slice(i, i + CHUNK_SIZE);
-      chunks.push({
-        map: newMap._id,
-        startRow: i,
-        endRow: i + chunkRows.length - 1,
-        rows: chunkRows,
-      });
-    }
-    console.log(`Saving ${chunks.length} chunks to the database`);
-    await MapChunk.insertMany(chunks);
-    console.log("All chunks saved successfully");
-
-    res.status(201).json(newMap);
-    console.log("Response sent successfully");
-  } catch (error) {
-    console.error("Error in POST /api/maps:", error);
-    next(error);
-  }
-});
-
-// ==============================
-// GET /api/maps - Retrieve a list of maps (only metadata)
-// ==============================
-app.get("/api/maps", async (req, res, next) => {
-  try {
-    const maps = await Map.find()
-      .select("name createdAt width height")
-      .sort("-createdAt");
-    res.json(maps);
-  } catch (error) {
-    console.error("Error in GET /api/maps:", error);
-    next(error);
-  }
-});
-
-// ==============================
-// GET /api/maps/:id/metadata - Retrieve map metadata
-// ==============================
-app.get("/api/maps/:id/metadata", async (req, res, next) => {
-  try {
-    const map = await Map.findById(req.params.id).select(
-      "name width height createdAt"
-    );
-    if (!map) {
-      const error = new Error("Map not found");
-      error.status = 404;
-      throw error;
-    }
-    res.json(map);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// ==============================
-// Enum Mappings to optimize payload size
-// ==============================
-const BIOMES = {
-  OCEAN: 0,
-  COASTAL: 1,
-  MOUNTAIN: 2,
-  DESERT: 3,
-  SAVANNA: 4,
-  TROPICAL_FOREST: 5,
-  RAINFOREST: 6,
-  TUNDRA: 7,
-  TAIGA: 8,
-  GRASSLAND: 9,
-  WOODLAND: 10,
-  FOREST: 11,
-  RIVER: 12,
-};
-
-const FEATURES = {
-  peaks: 0,
-  cliffs: 1,
-  hills: 2,
-  springs: 3,
-  lowlands: 4,
-  wetlands: 5,
-  marshes: 6,
-  "fertile valleys": 7,
-  river: 8,
-};
-
-const RESOURCES = {
-  "iron ore": 0,
-  "precious metals": 1,
-  gems: 2,
-  stone: 3,
-  "copper ore": 4,
-  "fresh water": 5,
-  fish: 6,
-  "medicinal plants": 7,
-  "wild fruits": 8,
-  "game animals": 9,
-  "arable land": 10,
-  pastures: 11,
-  "grazing animals": 12,
-  timber: 13,
-  salt: 14,
-  "date palm": 15,
-  "fur animals": 16,
-  "fertile soil": 17,
-  herbs: 18,
-};
-
-// ==============================
-// GET /api/maps/:id/data - Retrieve only the requested map data rows from the chunks
-// ==============================
-app.get("/api/maps/:id/data", async (req, res, next) => {
-  try {
-    const { startRow, endRow } = req.query;
-    const start = parseInt(startRow) || 0;
-    const end = parseInt(endRow) || start + 50;
-
-    // Verify map existence
-    const map = await Map.findById(req.params.id).lean();
-    if (!map) {
-      throw new Error("Map not found");
-    }
-
-    // Retrieve only the chunks that overlap the requested rows
-    const chunks = await MapChunk.find({
-      map: req.params.id,
-      startRow: { $lte: end },
-      endRow: { $gte: start },
-    })
-      .sort({ startRow: 1 })
-      .lean();
-
-    // Merge and filter rows from chunks to exactly match the requested range
-    let rows = [];
-    for (const chunk of chunks) {
-      const chunkStart = chunk.startRow;
-      for (let i = 0; i < chunk.rows.length; i++) {
-        const globalRowIndex = chunkStart + i;
-        if (globalRowIndex >= start && globalRowIndex < end) {
-          rows.push(chunk.rows[i]);
-        }
-      }
-    }
-
-    // Convert the retrieved rows to an optimized format
-    const optimizedChunk = rows.map((row) =>
-      row.map((cell) => [
-        cell.elevation, // 0: elevation (number)
-        cell.moisture, // 1: moisture (number)
-        cell.temperature, // 2: temperature (number)
-        BIOMES[cell.biome], // 3: biome (number)
-        cell.isRiver ? 1 : 0, // 4: isRiver (flag)
-        cell.features.map((f) => FEATURES[f]), // 5: features (array of numbers)
-        cell.resources.map((r) => RESOURCES[r]), // 6: resources (array of numbers)
-      ])
-    );
-
-    res.json({
-      totalRows: map.height, // height equals the number of rows
-      startRow: start,
-      endRow: Math.min(end, map.height),
-      chunk: optimizedChunk,
-      mappings:
-        start === 0
-          ? {
-              biomes: Object.fromEntries(
-                Object.entries(BIOMES).map(([k, v]) => [v, k])
-              ),
-              features: Object.fromEntries(
-                Object.entries(FEATURES).map(([k, v]) => [v, k])
-              ),
-              resources: Object.fromEntries(
-                Object.entries(RESOURCES).map(([k, v]) => [v, k])
-              ),
-            }
-          : undefined,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// ==============================
-// GET /api/maps/:id - Retrieve a single map's metadata (without mapData)
-// ==============================
-app.get("/api/maps/:id", async (req, res, next) => {
-  try {
-    const map = await Map.findById(req.params.id).lean();
-    if (!map) {
-      const error = new Error("Map not found");
-      error.status = 404;
-      throw error;
-    }
-    res.json(map);
-  } catch (error) {
-    console.error("Error in GET /api/maps/:id:", error);
-    next(error);
-  }
-});
-
-// ==============================
-// DELETE /api/maps/:id - Delete a map and its associated chunks
-// ==============================
-app.delete("/api/maps/:id", async (req, res, next) => {
-  try {
-    const map = await Map.findByIdAndDelete(req.params.id);
-    if (!map) {
-      const error = new Error("Map not found");
-      error.status = 404;
-      throw error;
-    }
-    // Remove all chunks associated with the map
-    await MapChunk.deleteMany({ map: req.params.id });
-    res.json({ message: "Map and its chunks deleted successfully" });
-  } catch (error) {
-    console.error("Error in DELETE /api/maps/:id:", error);
-    next(error);
-  }
-});
-
-// ==============================
-// 404 Handler for undefined routes
-// ==============================
+// -------------------------------------------------------------------
+// Global 404 & Error Handling Middleware
+// -------------------------------------------------------------------
 app.use((req, res, next) => {
   res.status(404).json({ error: "Not found" });
 });
-
-// ==============================
-// Global error handling middleware
-// ==============================
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err);
   res
@@ -332,6 +54,9 @@ app.use((err, req, res, next) => {
     .json({ error: err.message || "Internal Server Error" });
 });
 
+// -------------------------------------------------------------------
+// Start the Server
+// -------------------------------------------------------------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

@@ -81,37 +81,6 @@ export function createNoise2D(seed) {
   }
 }
 
-// export function getRingPoints(center, n, width, height) {
-//   try {
-//     const points = [];
-//     if (n === 0) {
-//       return [{ x: center.x, y: center.y }];
-//     }
-//     for (let i = -n; i <= n; i++) {
-//       // Top and bottom edges
-//       points.push({ x: center.x + i, y: center.y - n });
-//       points.push({ x: center.x + i, y: center.y + n });
-//       // Left and right edges (excluding corners already added)
-//       if (i > -n && i < n) {
-//         points.push({ x: center.x - n, y: center.y + i });
-//         points.push({ x: center.x + n, y: center.y + i });
-//       }
-//     }
-//     const filteredPoints = points.filter(
-//       (p) => p.x >= 0 && p.x < width && p.y >= 0 && p.y < height
-//     );
-//     return filteredPoints;
-//   } catch (error) {
-//     console.error("Error in getRingPoints:", error, {
-//       center,
-//       n,
-//       width,
-//       height,
-//     });
-//     throw error;
-//   }
-// }
-
 export function simulateErosion(heightMap, iterations = 10) {
   try {
     const newMap = heightMap.map((row) => row.map((cell) => ({ ...cell })));
@@ -515,7 +484,7 @@ export const determineBiome = (
       if (moistureFactor < 0.35) return "TUNDRA";
       return "TAIGA";
     } else {
-      if (moistureFactor < 0.35) return "GRASSLAND";
+      if (moistureFactor < 0.25) return "GRASSLAND";
       if (moistureFactor < 0.65) return "WOODLAND";
       return "FOREST";
     }
@@ -764,6 +733,52 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
   return moistureMap;
 }
 
+function smoothEligibleCells(mapData) {
+  const height = mapData.length;
+  const width = mapData[0].length;
+  // Make a deep copy of the mapData to store the new elevation values.
+  const newMapData = mapData.map((row) => row.map((cell) => ({ ...cell })));
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const cell = mapData[y][x];
+      // Only smooth cells that are non-coastal and whose elevation is between 0.4 and 0.7.
+      if (
+        cell.biome !== "COASTAL" &&
+        cell.elevation >= 0.35 &&
+        cell.elevation <= 0.7
+      ) {
+        let sum = 0;
+        let count = 0;
+        // Loop over the 3x3 neighborhood.
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const ny = y + dy;
+            const nx = x + dx;
+            if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
+              const neighbor = mapData[ny][nx];
+              // Only include neighbors that are also non-coastal and within our elevation bounds.
+              if (
+                neighbor.biome !== "COASTAL" &&
+                neighbor.elevation >= 0.4 &&
+                neighbor.elevation <= 0.7
+              ) {
+                sum += neighbor.elevation;
+                count++;
+              }
+            }
+          }
+        }
+        if (count > 0) {
+          // Update the elevation with the neighborhood average.
+          newMapData[y][x].elevation = sum / count;
+        }
+      }
+    }
+  }
+  return newMapData;
+}
+
 export function generateWorldMap(
   width,
   height,
@@ -992,8 +1007,12 @@ export function generateWorldMap(
       })
     );
     console.log("Map data generated successfully.");
+
+    const smoothedMapData = smoothEligibleCells(mapData);
+    console.log("Smoothing pass completed.");
+
     console.log("World map generation completed.");
-    return mapData;
+    return smoothedMapData;
   } catch (error) {
     console.error("Error in generateWorldMap:", error, { width, height });
     throw error;

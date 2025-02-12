@@ -18,6 +18,7 @@ const WorldMap = () => {
   // Pan/zoom state
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const canvasRef = useRef(null);
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
@@ -83,6 +84,7 @@ const WorldMap = () => {
       setLoading(true);
       try {
         const nextChunk = await fetchMapChunk(loadedRows);
+        console.log(nextChunk);
         if (nextChunk && nextChunk.chunk && nextChunk.chunk.length > 0) {
           setMapChunks((prev) => [...prev, nextChunk.chunk]);
           setLoadedRows(nextChunk.endRow);
@@ -105,7 +107,7 @@ const WorldMap = () => {
       COASTAL: "#ccc79d",
       MOUNTAIN: "#979e88",
       DESERT: "#e3bf9a",
-      SAVANNAH: "#a5ba84",
+      SAVANNA: "#a5ba84",
       TROPICAL_FOREST: "#30801f",
       RAINFOREST: "#1b570d",
       TUNDRA: "#616e2d",
@@ -170,6 +172,14 @@ const WorldMap = () => {
     return grid;
   }, [mapChunks]);
 
+  const updateMousePosition = useCallback((e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const y = (e.clientY - rect.top) / rect.height;
+    setMousePosition({ y });
+  }, []);
+
   // ── NEW: Calculate the minimum allowed scale ──────────────────────────────
   // The “natural” drawing size makes the map fill the canvas horizontally.
   // If the map is taller than it is wide, we allow zooming out further until
@@ -227,6 +237,29 @@ const WorldMap = () => {
     setOffset((current) => clampOffset(current, scale));
   }, [scale, mapMetadata, clampOffset]);
 
+
+  const adjustColorByElevation = (hexColor, elevation) => {
+    let hex = hexColor.replace("#", "");
+    if (hex.length === 3) {
+      hex = hex.split("").map((c) => c + c).join("");
+    }
+    let r = parseInt(hex.substring(0, 2), 16);
+    let g = parseInt(hex.substring(2, 4), 16);
+    let b = parseInt(hex.substring(4, 6), 16);
+  
+    // Define a brightness factor based on elevation.
+    // For instance, if elevation is 0, brightness is 0.9 (a bit darker),
+    // and if elevation is 1, brightness is 1.1 (a bit lighter).
+    const brightnessFactor = 0.6 + 0.3 * (elevation*2.5);
+  
+    // Adjust the color channels.
+    r = Math.min(255, Math.floor(r * brightnessFactor));
+    g = Math.min(255, Math.floor(g * brightnessFactor));
+    b = Math.min(255, Math.floor(b * brightnessFactor));
+  
+    return `rgb(${r}, ${g}, ${b})`;
+  };
+  
   // ── DRAWING THE MAP ─────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -268,7 +301,10 @@ const WorldMap = () => {
       ) {
         let color;
         if (renderMode === "biome") {
-          color = getBiomeColor(cell[3]);
+          // Get the base biome color.
+          const baseColor = getBiomeColor(cell[3]);
+          // Adjust the base color based on the cell's elevation.
+          color = adjustColorByElevation(baseColor, cell[0]);
         } else if (renderMode === "heightmap") {
           const h = cell[0];
           const clampedH = Math.min(Math.max(h, 0), 1);
@@ -401,9 +437,11 @@ const WorldMap = () => {
     offsetStart.current = { ...offset };
   };
 
+
   const handleMouseMove = (e) => {
     const canvas = canvasRef.current;
     if (!canvas || !mapMetadata) return;
+    updateMousePosition(e);
     if (isDragging.current) {
       const dx = e.clientX - dragStart.current.x;
       const dy = e.clientY - dragStart.current.y;
@@ -413,7 +451,14 @@ const WorldMap = () => {
       };
       newOffset = clampOffset(newOffset, scale);
       setOffset(newOffset);
-    } else {
+    }
+  };
+
+  const handleMouseUp = (e) => {
+    isDragging.current = false;
+    const canvas = canvasRef.current;
+    if (!canvas || !mapMetadata) return;
+    if( dragStart.current.x == e.clientX && dragStart.current.y == e.clientY) {
       // For hover: convert mouse coordinates into canvas cell coordinates.
       const { x: mouseX, y: mouseY } = getCanvasMousePos(e);
       const adjustedX = (mouseX - offset.x) / scale;
@@ -439,16 +484,11 @@ const WorldMap = () => {
           setSelectedRegion(null);
         }
       }
-    }
-  };
-
-  const handleMouseUp = () => {
-    isDragging.current = false;
-  };
+    } 
+  }
 
   const handleMouseLeave = () => {
     isDragging.current = false;
-    setSelectedRegion(null);
   };
 
   const loadingProgress = mapMetadata
@@ -489,7 +529,7 @@ const WorldMap = () => {
   </button>
   {/* New Button to Switch to the 3D View */}
   <button
-    onClick={() => navigate(`/maps/${id}/3d`)}
+    onClick={() => navigate(`/map/${id}/3d`)}
     className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg"
   >
     Switch to 3D View
@@ -550,15 +590,17 @@ const WorldMap = () => {
             <div
               style={{
                 position: "absolute",
-                bottom: "10px",
+                ...(mousePosition.y > 0.6 
+                  ? { top: "10px" } 
+                  : { bottom: "10px" }),
                 right: "10px",
-                width: "220px",
+                width: "180px",
                 padding: "10px",
                 background: "rgba(255,255,255,0.9)",
                 border: "1px solid #ccc",
                 borderRadius: "8px",
-                fontSize: "0.9rem",
-                lineHeight: "1.2rem",
+                fontSize: "0.7rem",
+                lineHeight: "1.1rem",
               }}
             >
               <h3

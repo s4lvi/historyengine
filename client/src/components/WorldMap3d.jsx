@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { OrbitControls, Sky, Environment } from '@react-three/drei';
 import * as THREE from 'three';
-
+import WaterPlane from './WaterPlane';
 const CHUNK_SIZE = 10;
 
 const WorldMap3D = () => {
@@ -103,6 +103,8 @@ const WorldMap3D = () => {
 
   // ── TerrainMesh: Creates a 3D mesh from the grid data ──────────────
   const TerrainMesh = ({ mapMetadata, gridData, mappings, renderMode = 'biome' }) => {
+
+    
     const geometry = useMemo(() => {
       // Ensure that the grid data is complete.
       if (!mapMetadata || !gridData || gridData.length < mapMetadata.height) {
@@ -200,19 +202,6 @@ const WorldMap3D = () => {
     );
   };
 
-  // ── WaterPlane: Renders a horizontal water plane at a specified elevation ──────────────
-  const WaterPlane = ({ size, waterElevation }) => {
-    return (
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, waterElevation, 0]}>
-        <planeGeometry args={[99, 99]} />
-        <meshStandardMaterial color="#1E90FF" transparent opacity={1} />
-      </mesh>
-    );
-  };
-
-  // Set the water level.
-  // For example, if you want the water level to correspond to a normalized elevation of 0.4,
-  // and your terrain multiplies elevation by 2, then:
   const waterNormalizedLevel = 0.37;
   const waterElevation = waterNormalizedLevel / 5; // This will be the Y-coordinate.
 
@@ -230,7 +219,7 @@ const WorldMap3D = () => {
             ← Back to Maps
           </button>
           <button
-            onClick={() => navigate(`/maps/${id}`)}
+            onClick={() => navigate(`/map/${id}`)}
             className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg"
           >
             Switch to 2D View
@@ -255,20 +244,33 @@ const WorldMap3D = () => {
         <div>Loading...</div>
       ) : (
         <div style={{ width: '100%', height: '600px' }}>
-          <Canvas shadows camera={{ position: [0, 5, 10], fov: 60 }}>
-            <ambientLight intensity={0.5} />
-            <directionalLight position={[10, 10, 5]} intensity={1} castShadow />
-            <OrbitControls />
-            {/* Terrain Mesh */}
-            <TerrainMesh
-              mapMetadata={mapMetadata}
-              gridData={gridData}
-              mappings={mappings}
-              renderMode="biome" // Change to 'heightmap' or 'temperature' as desired.
-            />
-            {/* Water Plane */}
-            <WaterPlane size={10} waterElevation={waterElevation} />
-          </Canvas>
+<Canvas shadows camera={{ position: [0, 5, 10], fov: 60 }}>
+{/* <color attach="background" args={['#87CEEB']} />
+<axesHelper args={[10]} /> */}
+   <Environment
+      files="/kloofendal_48d_partly_cloudy_puresky_1k.hdr"
+      background={false}
+      blur={0.0}
+      intensity={1} 
+      environmentIntensity={.4}
+        ground={{
+          height: 0,
+          radius: 1000,
+          scale: 100
+        }}
+    />
+
+  <OrbitControls />
+  
+  {/* Your scene objects */}
+  <TerrainMesh
+    mapMetadata={mapMetadata}
+    gridData={gridData}
+    mappings={mappings}
+    renderMode="biome"
+  />
+    <WaterPlane waterElevation={waterElevation} />
+</Canvas>
         </div>
       )}
     </div>

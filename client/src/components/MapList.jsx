@@ -268,7 +268,7 @@ const MapList = () => {
         <h1 className="text-3xl font-bold text-gray-900">World Browser</h1>
         <button
           onClick={() => setIsCreateDialogOpen(true)}
-          className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 
+          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300 
                    text-white px-6 py-2 rounded-lg transition-colors 
                    duration-200 font-medium shadow-sm"
         >
@@ -322,7 +322,7 @@ const MapList = () => {
               <div className="flex gap-3">
                 <button
                   onClick={() => navigate(`/map/${map._id}`)}
-                  className="bg-green-500 hover:bg-green-600 disabled:bg-green-300 
+                  className="bg-green-700 hover:bg-green-600 disabled:bg-green-300 
                            text-white px-4 py-2 rounded-md transition-colors duration-200
                            flex items-center gap-2"
                 >
@@ -331,7 +331,7 @@ const MapList = () => {
                 <button
                   onClick={() => handleDeleteMap(map._id)}
                   disabled={isDeleting}
-                  className="bg-red-500 hover:bg-red-600 disabled:bg-red-300 
+                  className="bg-red-700 hover:bg-red-600 disabled:bg-red-300 
                            text-white px-4 py-2 rounded-md transition-colors duration-200
                            flex items-center gap-2"
                 >
