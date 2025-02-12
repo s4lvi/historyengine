@@ -1,6 +1,6 @@
 // mapWorker.js
 import { parentPort, workerData } from "worker_threads";
-import { generateWorldMap } from "./mapUtils.js";
+import { generateWorldMap } from "../utils/mapUtils.js";
 
 // Extract parameters passed from the main thread
 const { width, height, erosion_passes, num_blobs, seed } = workerData;

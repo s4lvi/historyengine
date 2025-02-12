@@ -388,6 +388,11 @@ const GameRoomList = () => {
 
       const newGameRoom = await response.json();
       setIsCreateDialogOpen(false);
+
+      const roomKey = `gameRoom-${newGameRoom._id}-userId`;
+      localStorage.setItem(`${roomKey}-userId`, formData.creatorName);
+      localStorage.setItem(`${roomKey}-password`, formData.creatorPassword);
+      localStorage.setItem(`${roomKey}-joinCode`, formData.joinCode);
       navigate(`/rooms/${newGameRoom._id}`); // Assuming you'll create this route
     } catch (err) {
       setCreateError(err.message);

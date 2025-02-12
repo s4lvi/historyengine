@@ -30,9 +30,12 @@ const MapChunk = mongoose.model("MapChunk", mapChunkSchema);
 function runMapGenerationWorker(workerData) {
   return new Promise((resolve, reject) => {
     // Use a URL for ES Modules to locate the worker file correctly.
-    const worker = new Worker(new URL("./mapWorker.js", import.meta.url), {
-      workerData,
-    });
+    const worker = new Worker(
+      new URL("../workers/mapWorker.js", import.meta.url),
+      {
+        workerData,
+      }
+    );
     worker.on("message", resolve);
     worker.on("error", reject);
     worker.on("exit", (code) => {

@@ -3,9 +3,8 @@ import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 
-import mapRoutes from "./mapRoutes.js";
-import gameRoutes from "./gameRoutes.js";
-import { tickGameRooms } from "./gameLogic.js";
+import mapRoutes from "./routes/mapRoutes.js";
+import gameRoutes from "./routes/gameRoutes.js";
 
 const app = express();
 app.use(cors());
@@ -38,8 +37,8 @@ app.use("/api/gamerooms", gameRoutes);
 // -------------------------------------------------------------------
 // Global Tick Loop for Game Rooms with Strategy Game Logic
 // -------------------------------------------------------------------
-const TICK_INTERVAL_MS = 1000; // 1 second
-setInterval(tickGameRooms, TICK_INTERVAL_MS);
+// const TICK_INTERVAL_MS = 1000; // 1 second
+// setInterval(tickGameRooms, TICK_INTERVAL_MS);
 
 // -------------------------------------------------------------------
 // Global 404 & Error Handling Middleware

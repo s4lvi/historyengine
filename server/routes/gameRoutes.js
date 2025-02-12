@@ -1,7 +1,7 @@
 // gameRoutes.js
 import express from "express";
 import mongoose from "mongoose";
-
+import { gameWorkerManager } from "../workers/gameWorkerManager.js";
 const router = express.Router();
 
 // -------------------------------------------------------------------
@@ -101,6 +101,8 @@ router.post("/", async (req, res, next) => {
 
     await gameRoom.save();
 
+    await gameWorkerManager.startWorker(gameRoom._id, gameRoom);
+
     res.status(201).json(gameRoom);
   } catch (error) {
     next(error);
@@ -144,6 +146,8 @@ router.delete("/:id", async (req, res, next) => {
         .status(403)
         .json({ error: "Invalid room creator credentials" });
     }
+
+    await gameWorkerManager.stopWorker(req.params.id);
 
     // Remove the associated map and its map chunks.
     const MapModel = mongoose.model("Map");
@@ -227,7 +231,6 @@ router.post("/:id/join", async (req, res, next) => {
   }
 });
 
-// Updated GET /api/gamerooms/:id/state endpoint
 router.post("/:id/state", async (req, res, next) => {
   try {
     const { userId, password } = req.body;
@@ -239,8 +242,9 @@ router.post("/:id/state", async (req, res, next) => {
 
     // Retrieve the game room
     const gameRoom = await GameRoom.findById(req.params.id).lean();
-    if (!gameRoom)
+    if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
+    }
 
     // Find the player in the room's players array
     const player = gameRoom.players.find(
@@ -250,15 +254,52 @@ router.post("/:id/state", async (req, res, next) => {
       return res.status(403).json({ error: "Invalid credentials" });
     }
 
-    // No need to sanitize the game state since each player should see all nations
-    // but we'll ensure the gameState object exists
-    const gameState = gameRoom.gameState || { nations: [] };
+    // Get the latest state from the worker
+    const latestState = gameWorkerManager.getLatestState(req.params.id);
 
-    // Return the complete game state along with tickCount
+    if (latestState) {
+      // Return the worker's state if available
+      return res.json({
+        tickCount: latestState.tickCount,
+        gameState: latestState.gameState || { nations: [] },
+      });
+    }
+
+    // Fallback to database state if worker state isn't available
     res.json({
       tickCount: gameRoom.tickCount,
-      gameState: gameState,
+      gameState: gameRoom.gameState || { nations: [] },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/:id/updateState", async (req, res, next) => {
+  try {
+    const { userId, password, newState } = req.body;
+    if (!userId || !password || !newState) {
+      return res.status(400).json({
+        error: "userId, password, and newState are required",
+      });
+    }
+
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom)
+      return res.status(404).json({ error: "Game room not found" });
+
+    // Verify credentials (should be admin/creator only)
+    if (
+      gameRoom.creator.userId !== userId ||
+      gameRoom.creator.password !== password
+    ) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+
+    // Update the worker's state
+    gameWorkerManager.updateWorkerState(req.params.id, newState);
+
+    res.json({ message: "Game state updated successfully" });
   } catch (error) {
     next(error);
   }
@@ -280,8 +321,6 @@ router.get("/:id/user/:userId", async (req, res, next) => {
   }
 });
 
-// gameRoutes.js (additional endpoint)
-// In gameRoutes.js
 router.post("/:id/foundNation", async (req, res, next) => {
   try {
     const { userId, password, x, y } = req.body;
@@ -292,8 +331,9 @@ router.post("/:id/foundNation", async (req, res, next) => {
     }
 
     const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
+    if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
+    }
 
     // Verify the player's credentials
     const player = gameRoom.players.find(
@@ -352,8 +392,13 @@ router.post("/:id/foundNation", async (req, res, next) => {
 
     // Mark the document as modified since we're updating a nested array
     gameRoom.markModified("gameState.nations");
-
     await gameRoom.save();
+
+    // Update the worker with the new state
+    gameWorkerManager.updateWorkerState(gameRoom._id, {
+      gameState: gameRoom.gameState,
+      tickCount: gameRoom.tickCount,
+    });
 
     res.status(201).json({
       message: "Nation founded successfully",
@@ -364,7 +409,6 @@ router.post("/:id/foundNation", async (req, res, next) => {
   }
 });
 
-// New endpoint: POST /api/gamerooms/:id/playerState
 router.post("/:id/playerState", async (req, res, next) => {
   try {
     const { userName, password } = req.body;
@@ -396,7 +440,6 @@ router.post("/:id/playerState", async (req, res, next) => {
   }
 });
 
-// GET /api/gamerooms/:id/metadata
 router.get("/:id/metadata", async (req, res, next) => {
   try {
     const gameRoom = await GameRoom.findById(req.params.id).populate(
@@ -411,7 +454,6 @@ router.get("/:id/metadata", async (req, res, next) => {
   }
 });
 
-// GET /api/gamerooms/:id/data - Retrieve only the requested map data rows
 router.get("/:id/data", async (req, res, next) => {
   try {
     const { startRow, endRow } = req.query;

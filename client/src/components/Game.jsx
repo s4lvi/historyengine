@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ErrorMessage, LoadingSpinner } from './ErrorHandling';
-
+import NationStatsPanel from './NationStatsPanel';
 const CHUNK_SIZE = 10;
 const UPDATE_INTERVAL = 1000; // 1 second
 
@@ -20,29 +20,106 @@ const Game = () => {
   // Player credentials (for joining the game)
   const [loginName, setLoginName] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [joinCode, setJoinCode] = useState('');
   const [loginError, setLoginError] = useState('');
 
   const { id } = useParams();
   const roomKey = `gameRoom-${id}-userId`;
+  const [joinCode, setJoinCode] = useState(localStorage.getItem(`${roomKey}-joinCode`));
   const [userId, setUserId] = useState(localStorage.getItem(`${roomKey}-userId`));
   const [storedPassword, setStoredPassword] = useState(localStorage.getItem(`${roomKey}-password`));
   const navigate = useNavigate();
 
-  // Pan/zoom state
+  const canvasRef = useRef(null);
+  const isFetchingChunk = useRef(false);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const canvasRef = useRef(null);
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
-  const offsetStart = useRef({ x: 0, y: 0 });
-  const isFetchingChunk = useRef(false);
+  const offsetStart = useRef({ x: 0, y: 0 })
+  const [contextMenu, setContextMenu] = useState(null);;
+
+  const getMinScale = useCallback(() => {
+    if (!canvasRef.current || !mapMetadata) return 1;
+    const canvas = canvasRef.current;
+    const naturalWidth = canvas.width;
+    const naturalHeight = canvas.width * (mapMetadata.height / mapMetadata.width);
+    const scaleForHeight = canvas.height / naturalHeight;
+    return Math.min(1, scaleForHeight);
+  }, [mapMetadata]);
+
+  useEffect(() => {if (!contextMenu) setSelectedRegion(null)}, [contextMenu]);
+
+  const clampOffset = useCallback(
+    (offset, currentScale) => {
+      if (!canvasRef.current || !mapMetadata) return offset;
+      const canvas = canvasRef.current;
+      const canvasWidth = canvas.width;
+      const canvasHeight = canvas.height;
+      const effectiveWidth = canvasWidth * currentScale;
+      const effectiveHeight =
+        canvasWidth * (mapMetadata.height / mapMetadata.width) * currentScale;
+      
+      let clampedX, clampedY;
+      if (effectiveWidth <= canvasWidth) {
+        clampedX = (canvasWidth - effectiveWidth) / 2;
+      } else {
+        const minX = canvasWidth - effectiveWidth;
+        const maxX = 0;
+        clampedX = Math.min(maxX, Math.max(offset.x, minX));
+      }
+      
+      if (effectiveHeight <= canvasHeight) {
+        clampedY = (canvasHeight - effectiveHeight) / 2;
+      } else {
+        const minY = canvasHeight - effectiveHeight;
+        const maxY = 0;
+        clampedY = Math.min(maxY, Math.max(offset.y, minY));
+      }
+      
+      return { x: clampedX, y: clampedY };
+    },
+    [mapMetadata]
+  );
+
+
+  useEffect(() => {
+    setOffset((current) => clampOffset(current, scale));
+  }, [scale, mapMetadata, clampOffset]);
+
+  const handleWheel = useCallback(
+    (e) => {
+      //e.preventDefault();
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const mousePos = getCanvasMousePos(e);
+      const delta = -e.deltaY;
+      const zoomFactor = delta > 0 ? 1.1 : 0.9;
+      const minScale = getMinScale();
+
+      setScale((prevScale) => {
+        const newScale = Math.min(Math.max(prevScale * zoomFactor, minScale), 5);
+        const worldX = (mousePos.x - offset.x) / prevScale;
+        const worldY = (mousePos.y - offset.y) / prevScale;
+        let newOffset = {
+          x: mousePos.x - worldX * newScale,
+          y: mousePos.y - worldY * newScale,
+        };
+        newOffset = clampOffset(newOffset, newScale);
+        setOffset(newOffset);
+        return newScale;
+      });
+    },
+    [offset, getMinScale, clampOffset]
+  );
+
 
   // ---------------------------------------------------------------------------
   // Login: When there is no userId, show a login form that calls the join API.
   // ---------------------------------------------------------------------------
   const handleLoginSubmit = async (e) => {
-    e.preventDefault();
+    e?.preventDefault();
     setLoginError('');
     try {
       const response = await fetch(
@@ -51,8 +128,8 @@ const Game = () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            userName: loginName,
-            password: loginPassword,
+            userName: userId ? userId : loginName,
+            password: storedPassword ? storedPassword : loginPassword,
             joinCode: joinCode,
           }),
         }
@@ -67,16 +144,21 @@ const Game = () => {
       console.log('Join response:', data); // Debug log
       
       // Store credentials using the userName as userId
-      localStorage.setItem(`${roomKey}-userId`, loginName);
-      localStorage.setItem(`${roomKey}-password`, loginPassword);
-      setUserId(loginName);
-      setStoredPassword(loginPassword);
+      if (loginName) {
+
+        localStorage.setItem(`${roomKey}-userId`, loginName);
+        localStorage.setItem(`${roomKey}-password`, loginPassword);
+        localStorage.setItem(`${roomKey}-joinCode`, joinCode);
+        setUserId(loginName);
+        setStoredPassword(loginPassword);
+        setJoinCode(joinCode);
+        // Debug log the stored values
+        console.log('Stored credentials:', {
+          userId: loginName,
+          password: loginPassword
+        });
+      }
       
-      // Debug log the stored values
-      console.log('Stored credentials:', {
-        userId: loginName,
-        password: loginPassword
-      });
     } catch (err) {
       console.error('Join error:', err);
       setLoginError(err.message);
@@ -300,7 +382,6 @@ const Game = () => {
     }
   };
   
-
   const handleCellClick = (x, y) => {
     if (!gameState) return;
     
@@ -362,7 +443,7 @@ const Game = () => {
       }
     });
   
-    console.log('Territory color mapping:', mapping); // Debug log
+    //console.log('Territory color mapping:', mapping); // Debug log
     return mapping;
   }, [gameState, userId]);
 
@@ -379,28 +460,53 @@ const Game = () => {
         return;
       }
   
-      // Draw territory with semi-transparency
+      const territory = nation.territory || [];
+      const territorySet = new Set(territory.map(cell => `${cell.x},${cell.y}`));
+  
+      // Function to check if a cell is on the edge of territory
+      const isEdgeCell = (x, y) => {
+        // Check all 8 adjacent cells
+        const adjacentCells = [
+          [x-1, y], [x+1, y],   // Left, Right
+          [x, y-1], [x, y+1],   // Top, Bottom
+          [x-1, y-1], [x+1, y-1], // Top-Left, Top-Right
+          [x-1, y+1], [x+1, y+1]  // Bottom-Left, Bottom-Right
+        ];
+  
+        // If any adjacent cell is not in territory, this is an edge
+        return adjacentCells.some(([adjX, adjY]) => 
+          !territorySet.has(`${adjX},${adjY}`)
+        );
+      };
+  
+      // Draw territory fills
       const baseColor = color.slice(0, 7); // Get the hex color without alpha
       ctx.fillStyle = `${baseColor}40`; // 40 is hex for 25% opacity
       
-      nation.territory?.forEach(cell => {
-        // Fill territory
+      territory.forEach(cell => {
+        // Fill all territory cells
         ctx.fillRect(
           cell.x * cellSize,
           cell.y * cellSize,
           cellSize,
           cellSize
         );
-        
-        // Draw border
-        ctx.strokeStyle = baseColor;
-        ctx.lineWidth = 2 / scale;
-        ctx.strokeRect(
-          cell.x * cellSize,
-          cell.y * cellSize,
-          cellSize,
-          cellSize
-        );
+      });
+  
+      // Draw borders only for edge cells
+      ctx.strokeStyle = baseColor;
+      ctx.lineWidth = 2 / scale;
+      
+      territory.forEach(cell => {
+        if (isEdgeCell(cell.x, cell.y)) {
+          // Draw border only for edge cells
+          ctx.fillRect(
+            cell.x * cellSize,
+            cell.y * cellSize,
+            cellSize,
+            cellSize
+          );
+        }
       });
   
       // Draw cities
@@ -421,19 +527,20 @@ const Game = () => {
       });
     });
   }, [gameState, userId, scale, territoryColors]);
+
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !mapMetadata) return;
     const ctx = canvas.getContext("2d");
 
-    // Calculate cell size based on canvas width and map width.
-    const canvasWidth = canvas.width;
-    const cellSize = canvasWidth / mapMetadata.width;
-
     ctx.imageSmoothingEnabled = true;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(scale, 0, 0, scale, offset.x, offset.y);
+
+    const canvasWidth = canvas.width;
+    const cellSize = canvasWidth / mapMetadata.width;
 
     const visibleLeft = Math.max(0, Math.floor((-offset.x / scale) / cellSize));
     const visibleTop = Math.max(0, Math.floor((-offset.y / scale) / cellSize));
@@ -446,6 +553,7 @@ const Game = () => {
       Math.ceil((canvas.height / scale - offset.y / scale) / cellSize)
     );
 
+    // Draw map cells
     mapGrid.forEach(({ cell, x, y }) => {
       if (
         x >= visibleLeft &&
@@ -462,8 +570,10 @@ const Game = () => {
       }
     });
 
+    // Draw game overlay (nations, cities, etc.)
     drawGameOverlay(ctx, cellSize);
 
+    // Draw selected region
     if (selectedRegion) {
       ctx.strokeStyle = "red";
       ctx.lineWidth = 2 / scale;
@@ -476,6 +586,84 @@ const Game = () => {
     }
   }, [mapGrid, mapMetadata, scale, offset, selectedRegion, getBiomeColor, drawGameOverlay]);
 
+
+  const handleMouseDown = useCallback((e) => {
+    isDragging.current = true;
+    dragStart.current = { x: e.clientX, y: e.clientY };
+    offsetStart.current = { ...offset };
+    setContextMenu(null); // Close context menu when starting to drag
+  }, [offset]);
+
+  const handleMouseMove = useCallback((e) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !mapMetadata) return;
+    
+    if (isDragging.current) {
+      const dx = e.clientX - dragStart.current.x;
+      const dy = e.clientY - dragStart.current.y;
+      let newOffset = {
+        x: offsetStart.current.x + dx,
+        y: offsetStart.current.y + dy,
+      };
+      newOffset = clampOffset(newOffset, scale);
+      setOffset(newOffset);
+    }
+  }, [mapMetadata, scale, clampOffset]);
+
+
+  const handleMouseUp = useCallback((e) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !mapMetadata) return;
+
+    if (dragStart.current.x === e.clientX && dragStart.current.y === e.clientY) {
+      const { x: mouseX, y: mouseY } = getCanvasMousePos(e);
+      const adjustedX = (mouseX - offset.x) / scale;
+      const adjustedY = (mouseY - offset.y) / scale;
+      const cellSize = canvas.width / mapMetadata.width;
+      const cellX = Math.floor(adjustedX / cellSize);
+      const cellY = Math.floor(adjustedY / cellSize);
+
+      if (
+        cellX >= 0 &&
+        cellX < mapMetadata.width &&
+        cellY >= 0 &&
+        cellY < mapMetadata.height
+      ) {
+        const cellData = mapGrid.find(
+          (item) => item.x === cellX && item.y === cellY
+        );
+        if (cellData) {
+          // Update selected region with cell info
+          setSelectedRegion({
+            x: cellX,
+            y: cellY,
+            elevation: cellData.cell[0],
+            moisture: cellData.cell[1],
+            temperature: cellData.cell[2],
+            biome: mappings?.biomes[cellData.cell[3]] || "Unknown",
+            isRiver: cellData.cell[4] === 1,
+            features: (cellData.cell[5] || []).map(
+              (id) => mappings?.features[id] || `Feature ${id}`
+            ),
+            resources: (cellData.cell[6] || []).map(
+              (id) => mappings?.resources[id] || `Resource ${id}`
+            ),
+          });
+
+          // Show context menu with available actions
+          const rect = canvas.getBoundingClientRect();
+          setContextMenu({
+            x: cellX,
+            y: cellY,
+            screenX: e.clientX - rect.left,
+            screenY: e.clientY - rect.top,
+          });
+        }
+      }
+    }
+    isDragging.current = false;
+  }, [mapMetadata, offset, scale, mapGrid, mappings]);
+
   const getCanvasMousePos = useCallback((e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -487,43 +675,6 @@ const Game = () => {
     };
   }, []);
 
-  const handleMouseDown = useCallback((e) => {
-    isDragging.current = true;
-    dragStart.current = { x: e.clientX, y: e.clientY };
-    offsetStart.current = { ...offset };
-  }, [offset]);
-
-  const handleMouseMove = useCallback((e) => {
-    if (isDragging.current) {
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
-      setOffset({
-        x: offsetStart.current.x + dx,
-        y: offsetStart.current.y + dy,
-      });
-    }
-  }, []);
-
-  const handleMouseUp = useCallback((e) => {
-    const canvas = canvasRef.current;
-    if (!canvas || !mapMetadata) return;
-
-    if (dragStart.current.x === e.clientX && dragStart.current.y === e.clientY) {
-      const { x: mouseX, y: mouseY } = getCanvasMousePos(e);
-      const cellSize = canvas.width / mapMetadata.width;
-      const x = Math.floor((mouseX - offset.x) / scale / cellSize);
-      const y = Math.floor((mouseY - offset.y) / scale / cellSize);
-      
-      if (x >= 0 && x < mapMetadata.width && y >= 0 && y < mapMetadata.height) {
-        handleCellClick(x, y);
-      }
-    }
-    isDragging.current = false;
-  }, [mapMetadata, offset, scale, getCanvasMousePos]);
-
-  const handleMouseLeave = useCallback(() => {
-    isDragging.current = false;
-  }, []);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -554,7 +705,8 @@ const Game = () => {
         <ErrorMessage message={error} onRetry={() => window.location.reload()} />
       )}
 
-      <div className="flex gap-6">
+ 
+<div className="flex gap-6">
         <div className="flex-1">
           {(!mapChunks.length && loading) ? (
             <LoadingSpinner />
@@ -566,11 +718,51 @@ const Game = () => {
                 height={1000}
                 className="w-full h-auto block border border-gray-300 rounded-lg shadow-lg"
                 style={{ cursor: isDragging.current ? "grabbing" : "grab" }}
+                onWheel={handleWheel}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseLeave}
+                onMouseLeave={() => {
+                  isDragging.current = false;
+                }}
               />
+              
+              {/* Context Menu */}
+              {contextMenu && (
+                <div className="absolute bottom-0 left-0 right-0 bg-white p-4 border-t border-gray-200 shadow-lg">
+                  <div className="flex flex-col space-y-2 max-w-md mx-auto">
+                    {!gameState?.nations?.find(n => n.owner === userId) && (
+                      <button
+                        onClick={() => handleFoundNation(contextMenu.x, contextMenu.y)}
+                        className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded"
+                      >
+                        Found Nation Here
+                      </button>
+                    )}
+                    
+                    {gameState?.nations?.find(n => n.owner === userId) && (
+                      <button
+                        onClick={() => {
+                          const cityName = prompt('Enter city name:');
+                          if (cityName) {
+                            handleBuildCity(contextMenu.x, contextMenu.y, cityName);
+                          }
+                        }}
+                        className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded"
+                      >
+                        Build City Here
+                      </button>
+                    )}
+                    
+                    <button
+                      onClick={() => setContextMenu(null)}
+                      className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -627,15 +819,7 @@ const Game = () => {
             </div>
           )}
 
-          <div className="bg-white p-4 rounded-lg shadow-lg">
-            <h2 className="text-lg font-semibold mb-2">Controls</h2>
-            <ul className="text-sm space-y-1">
-              <li>Click: Select region</li>
-              <li>Drag: Pan map</li>
-              <li>Click empty tile: Found nation (if none)</li>
-              <li>Click owned tile: Build city</li>
-            </ul>
-          </div>
+          <NationStatsPanel gameState={gameState} userId={userId} />
         </div>
       </div>
 

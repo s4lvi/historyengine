@@ -10,6 +10,7 @@
     "babel-plugin-glsl": "^1.0.0",
     "cra-template": "1.2.0",
     "dotenv": "^16.4.7",
+    "lucide-react": "^0.475.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
     "react-router-dom": "^7.1.5",
