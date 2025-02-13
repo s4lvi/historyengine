@@ -6,10 +6,10 @@ class GameWorkerManager {
   constructor() {
     this.workers = new Map();
     this.latestStates = new Map();
-    this.updateInterval = 5000;
+    this.updateInterval = 1000;
     this.updateIntervals = new Map();
     this.workerStarting = new Map();
-    this.workerLocks = new Map(); // Add locks for worker operations
+    this.workerLocks = new Map(); // locks per room
   }
 
   async acquireLock(roomId) {
@@ -23,37 +23,18 @@ class GameWorkerManager {
     this.workerLocks.delete(roomId);
   }
 
-  async loadMapData(mapId) {
-    console.log("Loading map data for:", mapId);
-    const MapChunk = mongoose.model("MapChunk");
-    const chunks = await MapChunk.find({ map: mapId })
-      .sort({ startRow: 1 })
-      .lean();
-
-    let mapData = [];
-    for (const chunk of chunks) {
-      chunk.rows.forEach((row, index) => {
-        mapData[chunk.startRow + index] = row;
-      });
-    }
-    return mapData;
-  }
-
   async ensureWorkerExists(roomId) {
     await this.acquireLock(roomId);
     try {
-      // If worker is currently starting, wait for it
       if (this.workerStarting.get(roomId)) {
-        console.log(`Waiting for worker ${roomId} to start...`);
+        // console.log(`Waiting for worker ${roomId} to start...`);
         while (this.workerStarting.get(roomId)) {
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
       }
-
-      // Check if worker exists and is running
       const worker = this.workers.get(roomId);
       if (!worker) {
-        console.log(`Worker missing for room ${roomId}, recreating...`);
+        // console.log(`Worker missing for room ${roomId}, recreating...`);
         const GameRoom = mongoose.model("GameRoom");
         const gameRoom = await GameRoom.findById(roomId).lean();
         if (gameRoom) {
@@ -62,7 +43,6 @@ class GameWorkerManager {
         }
         return false;
       }
-
       return true;
     } finally {
       this.releaseLock(roomId);
@@ -71,62 +51,56 @@ class GameWorkerManager {
 
   async startWorker(roomId, gameRoom) {
     await this.acquireLock(roomId);
-
     try {
-      console.log(`Starting worker for room ${roomId}`);
+      // console.log(`Starting worker for room ${roomId}`);
       this.workerStarting.set(roomId, true);
 
-      // Stop any existing worker
+      // Stop any existing worker.
       await this.stopWorker(roomId);
 
+      // Load map data (assume loadMapData is defined elsewhere)
       const mapData = await this.loadMapData(gameRoom.map);
 
-      // Get fresh state from database
-      const GameRoom = mongoose.model("GameRoom");
-      const freshGameRoom = await GameRoom.findById(roomId).lean();
-
+      // Build the initial state.
       const initialState = {
-        gameState: freshGameRoom.gameState || { nations: [] },
-        tickCount: freshGameRoom.tickCount || 0,
+        roomId: roomId.toString(),
+        gameState: gameRoom.gameState,
+        tickCount: gameRoom.tickCount,
         mapData: mapData,
       };
 
-      console.log(
-        "Creating worker with initial state:",
-        JSON.stringify(initialState, null, 2)
-      );
+      // console.log(
+      //   "Creating worker with initial state:",
+      //   JSON.stringify(initialState, null, 2)
+      // );
 
       const worker = new Worker(new URL("./gameWorker.js", import.meta.url), {
         workerData: initialState,
       });
 
-      // Store initial state
+      // Save initial state in our cache.
       this.latestStates.set(roomId, {
         gameState: initialState.gameState,
         tickCount: initialState.tickCount,
       });
 
       worker.on("message", async (result) => {
-        if (
-          result &&
-          result.gameState &&
-          Array.isArray(result.gameState.nations)
-        ) {
-          await this.acquireLock(roomId);
-          try {
-            const currentState = this.latestStates.get(roomId);
-            const currentNations = currentState?.gameState?.nations || [];
-
-            // Only update if new state has more information
-            if (result.gameState.nations.length >= currentNations.length) {
-              console.log(
-                `Updating state for room ${roomId} with ${result.gameState.nations.length} nations`
-              );
-              this.latestStates.set(roomId, result);
-            }
-          } finally {
-            this.releaseLock(roomId);
+        await this.acquireLock(roomId);
+        try {
+          // Retrieve the current cached state (or default to 0)
+          const current = this.latestStates.get(roomId) || { tickCount: 0 };
+          if (result.tickCount >= current.tickCount) {
+            // console.log(
+            //   `(WORKER->MANAGER) Accepting state from tick ${result.tickCount} (cached tick: ${current.tickCount})`
+            // );
+            this.latestStates.set(roomId, result);
+          } else {
+            // console.log(
+            //   `(WORKER->MANAGER) Ignoring stale tick message with tickCount ${result.tickCount} (cached tick: ${current.tickCount})`
+            // );
           }
+        } finally {
+          this.releaseLock(roomId);
         }
       });
 
@@ -137,7 +111,7 @@ class GameWorkerManager {
       });
 
       worker.on("exit", async (code) => {
-        console.log(`Worker for room ${roomId} exited with code ${code}`);
+        // console.log(`Worker for room ${roomId} exited with code ${code}`);
         this.workerStarting.delete(roomId);
         await this.stopWorker(roomId);
       });
@@ -150,16 +124,68 @@ class GameWorkerManager {
     }
   }
 
+  async stopWorker(roomId) {
+    // console.log(`Stopping worker for room ${roomId}`);
+    const worker = this.workers.get(roomId);
+    if (worker) {
+      const interval = this.updateIntervals.get(roomId);
+      if (interval) {
+        clearInterval(interval);
+        this.updateIntervals.delete(roomId);
+      }
+      await worker.terminate();
+      this.workers.delete(roomId);
+    }
+  }
+
+  startPeriodicUpdates(roomId) {
+    // console.log(`Starting periodic updates for room ${roomId}`);
+    const existingInterval = this.updateIntervals.get(roomId);
+    if (existingInterval) {
+      clearInterval(existingInterval);
+    }
+    const interval = setInterval(async () => {
+      try {
+        const latestState = this.latestStates.get(roomId);
+        if (latestState?.gameState?.nations) {
+          const GameRoom = mongoose.model("GameRoom");
+          const currentRoom = await GameRoom.findById(roomId).lean();
+          if (
+            !currentRoom?.gameState?.nations?.length ||
+            latestState.gameState.nations.length > 0
+          ) {
+            // console.log(
+            //   `Updating database for room ${roomId} with ${latestState.gameState.nations.length} nations`
+            // );
+            await GameRoom.findByIdAndUpdate(
+              roomId,
+              {
+                $set: {
+                  gameState: latestState.gameState,
+                  tickCount: latestState.tickCount,
+                },
+              },
+              { new: true }
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`Error updating database for room ${roomId}:`, error);
+      }
+    }, this.updateInterval);
+    this.updateIntervals.set(roomId, interval);
+  }
+
+  // Use the snapshot approach in updateWorkerState:
   async updateWorkerState(roomId, newState) {
     await this.acquireLock(roomId);
-
     try {
-      console.log(
-        `Updating worker state for room ${roomId}:`,
-        JSON.stringify(newState, null, 2)
-      );
+      // console.log(
+      //   `Updating worker state for room ${roomId}:`,
+      //   JSON.stringify(newState, null, 2)
+      // );
 
-      // Ensure worker exists
+      // Ensure worker exists.
       const workerExists = await this.ensureWorkerExists(roomId);
       if (!workerExists) {
         console.error(`Could not recreate worker for room ${roomId}`);
@@ -167,55 +193,33 @@ class GameWorkerManager {
       }
 
       const worker = this.workers.get(roomId);
+      // console.log(`Worker found for room ${roomId}:`, worker);
       if (worker) {
-        // Get current state with fresh database query
-        const GameRoom = mongoose.model("GameRoom");
-        const currentRoom = await GameRoom.findById(roomId).lean();
-        const currentState = this.latestStates.get(roomId) || {
-          gameState: currentRoom?.gameState || { nations: [] },
-        };
+        // Update the local state cache with the complete snapshot.
+        this.latestStates.set(roomId, newState);
 
-        // Merge states, preserving all nations
-        const currentNations = currentState.gameState?.nations || [];
-        const newNations = newState.gameState?.nations || [];
-
-        // Combine nations, avoiding duplicates
-        const allNations = [...currentNations];
-        newNations.forEach((newNation) => {
-          const existingIndex = allNations.findIndex(
-            (n) => n.owner === newNation.owner
-          );
-          if (existingIndex === -1) {
-            allNations.push(newNation);
-          }
-        });
-
-        const updatedState = {
-          gameState: {
-            ...currentState.gameState,
-            ...newState.gameState,
-            nations: allNations,
-          },
-          tickCount: newState.tickCount || currentState.tickCount || 0,
-        };
-
-        // Update state immediately
-        this.latestStates.set(roomId, updatedState);
-
-        // Send to worker
+        // Send the complete snapshot to the worker.
         worker.postMessage({
           type: "UPDATE_STATE",
-          ...updatedState,
+          gameState: newState.gameState,
+          tickCount: newState.tickCount,
         });
 
-        // Save to database
+        // Save to database.
+        const GameRoom = mongoose.model("GameRoom");
         await GameRoom.findByIdAndUpdate(roomId, {
           $set: {
-            gameState: updatedState.gameState,
-            tickCount: updatedState.tickCount,
+            gameState: newState.gameState,
+            tickCount: newState.tickCount,
           },
         });
+
+        // console.log(
+        //   `State updated successfully for room ${roomId}. Nation count: ${newState.gameState.nations.length}`
+        // );
       }
+    } catch (err) {
+      console.log(err);
     } finally {
       this.releaseLock(roomId);
     }
@@ -224,11 +228,26 @@ class GameWorkerManager {
   getLatestState(roomId) {
     const state = this.latestStates.get(roomId);
     if (!state) return null;
-
     return {
-      gameState: state.gameState || { nations: [] },
-      tickCount: state.tickCount || 0,
+      gameState: state.gameState,
+      tickCount: state.tickCount,
     };
+  }
+
+  async loadMapData(mapId) {
+    // console.log("Loading map data for:", mapId);
+    const MapChunk = mongoose.model("MapChunk");
+    const chunks = await MapChunk.find({ map: mapId })
+      .sort({ startRow: 1 })
+      .lean();
+
+    let mapData = [];
+    for (const chunk of chunks) {
+      chunk.rows.forEach((row, index) => {
+        mapData[chunk.startRow + index] = row;
+      });
+    }
+    return mapData;
   }
 }
 

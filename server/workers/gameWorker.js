@@ -1,182 +1,114 @@
 // gameWorker.js
+import mongoose from "mongoose";
 import { parentPort, workerData } from "worker_threads";
 import { updateNation } from "../utils/gameLogic.js";
+import GameRoom from "../models/GameRoom.js";
+
+// Make sure we have a connection to the DB (you might have your own connection logic)
+if (mongoose.connection.readyState === 0) {
+  mongoose
+    .connect("mongodb://localhost:27017/fantasy-maps", {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    })
+    .catch((err) => console.error("Worker DB connection error:", err));
+}
 
 class GameProcessor {
   constructor(initialState) {
-    console.log(
-      "Worker initialized with state:",
-      JSON.stringify(initialState, null, 2)
-    );
-
-    this.gameState = JSON.parse(
-      JSON.stringify({
-        nations: [],
-        ...initialState.gameState,
-      })
-    );
-    this.tickCount = initialState.tickCount || 0;
+    // Expect initialState to contain the roomId so we know which room to load.
+    this.roomId = initialState.roomId;
     this.mapData = initialState.mapData || [];
-
-    console.log(
-      "Initial game state after construction:",
-      JSON.stringify(this.gameState, null, 2)
-    );
+    // We'll load the latest gameState from the DB on each tick.
+    this.tickCount = initialState.tickCount || 0;
   }
 
-  processGameTick() {
-    this.tickCount += 1;
-    console.log(`\n[Tick ${this.tickCount}] Starting tick processing`);
-    console.log("Current game state:", JSON.stringify(this.gameState, null, 2));
-
-    // Make a deep copy of the current state
-    const currentState = JSON.parse(JSON.stringify(this.gameState));
-    console.log(
-      "State after deep copy:",
-      JSON.stringify(currentState, null, 2)
-    );
-
-    // Process each nation
-    if (currentState.nations && currentState.nations.length > 0) {
-      console.log(`Processing ${currentState.nations.length} nations`);
-
-      currentState.nations = currentState.nations.map((nation) => {
-        console.log(
-          "Processing nation:",
-          JSON.stringify(nation.owner, null, 2)
-        );
-
-        // Create a working copy of the nation
-        const nationCopy = { ...nation };
-
-        if (nationCopy.territory && nationCopy.territory.length > 0) {
-          console.log("Nation has territory:", nationCopy.territory.length);
-
-          const validTerritory = nationCopy.territory.filter(
-            (cell) =>
-              cell.x >= 0 &&
-              cell.y >= 0 &&
-              cell.y < this.mapData.length &&
-              cell.x < this.mapData[0].length
-          );
-
-          console.log("Valid territory count:", validTerritory.length);
-
-          if (validTerritory.length > 0) {
-            // Ensure territory is preserved
-            nationCopy.territory = validTerritory;
-            const updatedNation = updateNation(
-              nationCopy,
-              this.mapData,
-              currentState
-            );
-            console.log(
-              "Nation after update:",
-              JSON.stringify(updatedNation.owner, null, 2)
-            );
-            return updatedNation;
-          }
-        }
-        console.log("Returning original nation (no valid territory)");
-        return nation;
-      });
-
-      console.log(
-        "Nations after processing:",
-        JSON.stringify(currentState.nations.length, null, 2)
-      );
+  // Load the latest game state for this room from the database.
+  async loadStateFromDB() {
+    const GameRoom = mongoose.model("GameRoom");
+    const gameRoom = await GameRoom.findById(this.roomId).lean();
+    if (gameRoom) {
+      // Ensure gameState has a nations array.
+      this.gameState =
+        gameRoom.gameState && Array.isArray(gameRoom.gameState.nations)
+          ? gameRoom.gameState
+          : { nations: [] };
+      this.tickCount = gameRoom.tickCount || this.tickCount;
     } else {
-      console.log("No nations to process");
+      // If room not found, default to empty state.
+      this.gameState = { nations: [] };
+    }
+  }
+
+  // Save the updated state back to the database.
+  async saveStateToDB() {
+    const GameRoom = mongoose.model("GameRoom");
+    await GameRoom.findByIdAndUpdate(this.roomId, {
+      $set: {
+        gameState: this.gameState,
+        tickCount: this.tickCount,
+      },
+    });
+  }
+
+  // Process a tick: load the latest state, update it, then save it back.
+  async processGameTick() {
+    await this.loadStateFromDB();
+
+    this.tickCount += 1;
+    // console.log(`\n[TICK ${this.tickCount}] Starting tick processing`);
+    // console.log(
+    //   "[TICK] Loaded gameState:",
+    //   JSON.stringify(this.gameState, null, 2)
+    // );
+
+    // If there are no nations, nothing to process.
+    if (
+      !this.gameState ||
+      !Array.isArray(this.gameState.nations) ||
+      this.gameState.nations.length === 0
+    ) {
+      // console.log("[TICK] No nations to process");
+      return;
     }
 
-    // Update the state with the processed data
-    this.gameState = currentState;
-    this.gameState.lastUpdated = new Date();
-
-    const result = {
-      gameState: this.gameState,
-      tickCount: this.tickCount,
-    };
-
-    console.log("Final state for tick: ", JSON.stringify(result, null, 2));
-    return result;
-  }
-
-  updateMapData(newMapData) {
-    console.log("Updating map data");
-    this.mapData = newMapData;
-  }
-
-  updateState(newState) {
-    console.log("Updating state with:", JSON.stringify(newState, null, 2));
-
-    if (newState.gameState) {
-      // Deep copy to prevent reference issues
-      const newGameState = JSON.parse(JSON.stringify(newState.gameState));
-
+    try {
+      const updatedNations = this.gameState.nations.map((nation) => {
+        // console.log(`[TICK] Processing nation: ${nation.owner}`);
+        return updateNation(nation, this.mapData, this.gameState);
+      });
+      // Update gameState with the processed nations and a timestamp.
       this.gameState = {
         ...this.gameState,
-        ...newGameState,
-        nations: newGameState.nations || this.gameState.nations || [],
+        nations: updatedNations,
+        lastUpdated: new Date(),
       };
-
-      console.log(
-        "State after update:",
-        JSON.stringify(this.gameState, null, 2)
-      );
-    }
-    if (typeof newState.tickCount === "number") {
-      this.tickCount = newState.tickCount;
+      // console.log(
+      //     "[TICK] Updated gameState:",
+      //     JSON.stringify(this.gameState, null, 2)
+      //   );
+      // Save the updated state back to the DB.
+      await this.saveStateToDB();
+    } catch (error) {
+      console.error("[TICK] Error processing nations:", error);
     }
   }
 }
 
-// Initialize game processor with worker data
-const processor = new GameProcessor(workerData);
-
-// Process game ticks
-const tickInterval = setInterval(() => {
-  try {
-    const result = processor.processGameTick();
-    parentPort.postMessage(result);
-  } catch (error) {
-    console.error("Error in game tick:", error);
-    console.error(error.stack);
-    parentPort.postMessage({
-      type: "ERROR",
-      error: error.message,
-      stack: error.stack,
-    });
-  }
-}, 1000);
-
-// Handle messages from the main thread
-parentPort.on("message", (message) => {
-  try {
-    console.log("Worker received message:", JSON.stringify(message, null, 2));
-
-    switch (message.type) {
-      case "UPDATE_STATE":
-        processor.updateState(message);
-        break;
-      case "UPDATE_MAP":
-        processor.updateMapData(message.mapData);
-        break;
-      default:
-        console.log("Unknown message type:", message.type);
+// Main asynchronous tick loop.
+async function tickLoop() {
+  // Create a processor instance using initial workerData.
+  // (We assume workerData contains roomId, tickCount, and mapData.)
+  const processor = new GameProcessor(workerData);
+  while (true) {
+    try {
+      await processor.processGameTick();
+    } catch (error) {
+      console.error("[WORKER] Error during tick processing:", error);
     }
-  } catch (error) {
-    console.error("Error handling message:", error);
-    console.error(error.stack);
-    parentPort.postMessage({
-      type: "ERROR",
-      error: error.message,
-      stack: error.stack,
-    });
+    // Wait 1 second between ticks.
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-});
+}
 
-// Cleanup on exit
-parentPort.on("close", () => {
-  clearInterval(tickInterval);
-});
+tickLoop();

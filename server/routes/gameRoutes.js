@@ -1,56 +1,462 @@
+// // gameRoutes.js
+// import express from "express";
+// import mongoose from "mongoose";
+// import { gameWorkerManager } from "../workers/gameWorkerManager.js";
+// const router = express.Router();
+
+// // -------------------------------------------------------------------
+// // GameRoom Model (unchanged)
+// // -------------------------------------------------------------------
+// import GameRoom from "../models/GameRoom.js";
+
+// router.post("/", async (req, res, next) => {
+//   try {
+//     const { mapId, roomName, joinCode, creatorName, creatorPassword } =
+//       req.body;
+
+//     if (!mapId) return res.status(400).json({ error: "mapId is required" });
+//     if (!creatorName || !creatorPassword) {
+//       return res
+//         .status(400)
+//         .json({ error: "Room creator name and password are required" });
+//     }
+
+//     // Retrieve the original map (assumes Map model is registered)
+//     const Map = mongoose.model("Map");
+//     const originalMap = await Map.findById(mapId).lean();
+//     if (!originalMap)
+//       return res.status(404).json({ error: "Original map not found" });
+
+//     // Create a copy of the original map
+//     const mapCopyData = {
+//       name: "Room:" + creatorName,
+//       width: originalMap.width,
+//       height: originalMap.height,
+//     };
+//     const gameMap = new Map(mapCopyData);
+//     await gameMap.save();
+
+//     // Copy associated map chunks
+//     const MapChunk = mongoose.model("MapChunk");
+//     const originalChunks = await MapChunk.find({ map: originalMap._id }).lean();
+//     const newChunks = originalChunks.map((chunk) => ({
+//       map: gameMap._id,
+//       startRow: chunk.startRow,
+//       endRow: chunk.endRow,
+//       rows: chunk.rows,
+//     }));
+//     if (newChunks.length > 0) {
+//       await MapChunk.insertMany(newChunks);
+//     }
+
+//     // Generate a join code if not provided
+//     const generatedJoinCode =
+//       joinCode || Math.random().toString(36).substring(2, 8).toUpperCase();
+
+//     // Create the game room with empty game state
+//     const gameRoom = new GameRoom({
+//       map: gameMap._id,
+//       roomName: roomName || "Game Room",
+//       joinCode: generatedJoinCode,
+//       status: "open",
+//       creator: {
+//         userId: creatorName,
+//         password: creatorPassword,
+//       },
+//       players: [
+//         {
+//           userId: creatorName,
+//           password: creatorPassword,
+//           userState: {},
+//         },
+//       ],
+//       gameState: {
+//         nations: [], // Nations will be added when players use the foundNation endpoint
+//       },
+//       tickCount: 0,
+//     });
+
+//     await gameRoom.save();
+
+//     await gameWorkerManager.startWorker(gameRoom._id, gameRoom);
+
+//     res.status(201).json(gameRoom);
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// router.get("/", async (req, res, next) => {
+//   try {
+//     const gameRooms = await GameRoom.find({ status: "open" })
+//       .select("roomName joinCode map createdAt tickCount")
+//       .populate("map", "name width height");
+//     res.json(gameRooms);
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// router.delete("/:id", async (req, res, next) => {
+//   try {
+//     const { userName, password } = req.body;
+//     if (!userName || !password) {
+//       return res
+//         .status(400)
+//         .json({ error: "userName and password are required" });
+//     }
+
+//     const gameRoom = await GameRoom.findById(req.params.id);
+//     if (!gameRoom)
+//       return res.status(404).json({ error: "Game room not found" });
+
+//     // Verify that the provided credentials match the room creator’s credentials.
+//     if (
+//       !gameRoom.creator ||
+//       gameRoom.creator.userId !== userName ||
+//       gameRoom.creator.password !== password
+//     ) {
+//       return res
+//         .status(403)
+//         .json({ error: "Invalid room creator credentials" });
+//     }
+
+//     await gameWorkerManager.stopWorker(req.params.id);
+
+//     // Remove the associated map and its map chunks.
+//     const MapModel = mongoose.model("Map");
+//     const MapChunk = mongoose.model("MapChunk");
+
+//     // Delete all map chunks for the game room's map.
+//     await MapChunk.deleteMany({ map: gameRoom.map });
+//     // Delete the map copy.
+//     await MapModel.findByIdAndDelete(gameRoom.map);
+//     // Finally, delete the game room itself.
+//     await GameRoom.findByIdAndDelete(req.params.id);
+
+//     res.json({
+//       message: "Game room and associated map data deleted successfully",
+//     });
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// router.post("/:id/end", async (req, res, next) => {
+//   try {
+//     const gameRoom = await GameRoom.findById(req.params.id);
+//     if (!gameRoom)
+//       return res.status(404).json({ error: "Game room not found" });
+//     gameRoom.status = "ended";
+//     await gameRoom.save();
+//     res.json({ message: "Game session ended successfully" });
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// router.post("/:id/join", async (req, res, next) => {
+//   try {
+//     const { joinCode, userName, password } = req.body;
+//     if (!userName || !password) {
+//       return res
+//         .status(400)
+//         .json({ error: "userName and password are required" });
+//     }
+
+//     const gameRoom = await GameRoom.findById(req.params.id);
+//     if (!gameRoom)
+//       return res.status(404).json({ error: "Game room not found" });
+//     if (gameRoom.status !== "open")
+//       return res.status(400).json({ error: "Game room is not open" });
+//     if (gameRoom.joinCode !== joinCode)
+//       return res.status(403).json({ error: "Invalid join code" });
+
+//     // Look for an existing player with this name
+//     let player = gameRoom.players.find((p) => p.userId === userName);
+//     if (player) {
+//       // Existing player: verify the password
+//       if (player.password !== password) {
+//         return res
+//           .status(403)
+//           .json({ error: "Invalid password for existing user" });
+//       }
+//       // Return success for existing player
+//       res.json({
+//         message: "Rejoined game room successfully",
+//         userId: player.userId,
+//       });
+//     } else {
+//       // New player: add them to the players array with userName as userId
+//       player = {
+//         userId: userName, // Use userName as the userId for consistency
+//         password: password,
+//         userState: {},
+//       };
+//       gameRoom.players.push(player);
+//       await gameRoom.save();
+//       res.json({
+//         message: "Joined game room successfully",
+//         userId: player.userId,
+//       });
+//     }
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// router.post("/:id/state", async (req, res, next) => {
+//   try {
+//     const { userId, password } = req.body;
+//     if (!userId || !password) {
+//       return res
+//         .status(400)
+//         .json({ error: "userId and password are required" });
+//     }
+
+//     // Retrieve the game room
+//     const gameRoom = await GameRoom.findById(req.params.id).lean();
+//     if (!gameRoom) {
+//       return res.status(404).json({ error: "Game room not found" });
+//     }
+
+//     // Find the player in the room's players array
+//     const player = gameRoom.players.find(
+//       (p) => p.userId === userId && p.password === password
+//     );
+//     if (!player) {
+//       return res.status(403).json({ error: "Invalid credentials" });
+//     }
+
+//     // Get the latest state from the worker
+//     const latestState = gameWorkerManager.getLatestState(req.params.id);
+
+//     if (latestState) {
+//       // Return the worker's state if available
+//       return res.json({
+//         tickCount: latestState.tickCount,
+//         gameState: latestState.gameState || { nations: [] },
+//       });
+//     }
+
+//     // Fallback to database state if worker state isn't available
+//     res.json({
+//       tickCount: gameRoom.tickCount,
+//       gameState: gameRoom.gameState || { nations: [] },
+//     });
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// router.post("/:id/updateState", async (req, res, next) => {
+//   try {
+//     const { userId, password, newState } = req.body;
+//     if (!userId || !password || !newState) {
+//       return res.status(400).json({
+//         error: "userId, password, and newState are required",
+//       });
+//     }
+
+//     const gameRoom = await GameRoom.findById(req.params.id);
+//     if (!gameRoom)
+//       return res.status(404).json({ error: "Game room not found" });
+
+//     // Verify credentials (should be admin/creator only)
+//     if (
+//       gameRoom.creator.userId !== userId ||
+//       gameRoom.creator.password !== password
+//     ) {
+//       return res.status(403).json({ error: "Invalid credentials" });
+//     }
+
+//     // Update worker
+//     await gameWorkerManager.updateWorkerState(req.params.id, {
+//       gameState: updatedGameState,
+//       tickCount: gameRoom.tickCount + 1,
+//     });
+
+//     res.json({ message: "Game state updated successfully" });
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// router.get("/:id/user/:userId", async (req, res, next) => {
+//   try {
+//     const gameRoom = await GameRoom.findById(req.params.id).lean();
+//     if (!gameRoom)
+//       return res.status(404).json({ error: "Game room not found" });
+//     const user = gameRoom.players.find((p) => p.userId === req.params.userId);
+//     if (!user)
+//       return res
+//         .status(404)
+//         .json({ error: "User not found in this game room" });
+//     res.json(user);
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// router.post("/:id/foundNation", async (req, res, next) => {
+//   try {
+//     const { userId, password, x, y } = req.body;
+//     console.log("[ROUTE] Found nation request:", { userId, x, y });
+
+//     if (!userId || !password || x == null || y == null) {
+//       return res
+//         .status(400)
+//         .json({ error: "userId, password, x, and y are required" });
+//     }
+
+//     // Get fresh state from database
+//     const gameRoom = await GameRoom.findById(req.params.id);
+//     if (!gameRoom) {
+//       return res.status(404).json({ error: "Game room not found" });
+//     }
+
+//     // Get worker state
+//     const workerState = await gameWorkerManager.getLatestState(req.params.id);
+//     console.log(
+//       "[ROUTE] Current worker state:",
+//       JSON.stringify(workerState, null, 2)
+//     );
+
+//     // Verify credentials
+//     const player = gameRoom.players.find(
+//       (p) => p.userId === userId && p.password === password
+//     );
+//     if (!player) {
+//       return res.status(403).json({ error: "Invalid credentials" });
+//     }
+
+//     // Initialize gameState using worker state if available
+//     const currentGameState = {
+//       nations: [],
+//       ...(workerState?.gameState || {}),
+//       ...(gameRoom.gameState || {}),
+//     };
+
+//     // Check for existing nation
+//     if (currentGameState.nations.find((n) => n.owner === userId)) {
+//       return res
+//         .status(400)
+//         .json({ error: "Nation already founded for this user" });
+//     }
+
+//     // Create new nation
+//     const newNation = {
+//       owner: userId,
+//       startingCell: { x, y },
+//       territory: [{ x, y }],
+//       population: 100,
+//       nationalWill: 50,
+//       resources: {
+//         "iron ore": 0,
+//         "precious metals": 0,
+//         // ... other resources ...
+//       },
+//       cities: [],
+//       structures: [],
+//     };
+
+//     // Create updated state preserving existing nations
+//     const updatedGameState = {
+//       ...currentGameState,
+//       nations: [...(currentGameState.nations || []), newNation],
+//     };
+
+//     console.log(
+//       "[ROUTE] Updated game state:",
+//       JSON.stringify(updatedGameState, null, 2)
+//     );
+
+//     // Update database
+//     gameRoom.gameState = updatedGameState;
+//     gameRoom.markModified("gameState");
+//     await gameRoom.save();
+
+//     // Update worker
+//     await gameWorkerManager.updateWorkerState(gameRoom._id, {
+//       gameState: updatedGameState,
+//       tickCount: gameRoom.tickCount + 1,
+//     });
+
+//     // Verify state update
+//     const verifyState = await gameWorkerManager.getLatestState(gameRoom._id);
+//     console.log(
+//       "[ROUTE] Verified state after update:",
+//       JSON.stringify(verifyState, null, 2)
+//     );
+
+//     res.status(201).json({
+//       message: "Nation founded successfully",
+//       nation: newNation,
+//     });
+//   } catch (error) {
+//     console.error("[ROUTE] Error in foundNation:", error);
+//     next(error);
+//   }
+// });
+
+// router.post("/:id/playerState", async (req, res, next) => {
+//   try {
+//     const { userName, password } = req.body;
+//     if (!userName || !password)
+//       return res
+//         .status(400)
+//         .json({ error: "userName and password are required" });
+
+//     // Retrieve the game room (using lean() here for read-only access)
+//     const gameRoom = await GameRoom.findById(req.params.id).lean();
+//     if (!gameRoom)
+//       return res.status(404).json({ error: "Game room not found" });
+
+//     // Find the matching player in the room
+//     const player = gameRoom.players.find((p) => p.userId === userName);
+//     if (!player || player.password !== password) {
+//       return res.status(403).json({ error: "Invalid credentials" });
+//     }
+
+//     // Return game state data along with the player’s own state.
+//     res.json({
+//       gameState: gameRoom.gameState,
+//       tickCount: gameRoom.tickCount,
+//       playerState: player.userState,
+//       // Optionally include other player-specific data (nation info, cities, etc.)
+//     });
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// export default router;
+
 // gameRoutes.js
 import express from "express";
 import mongoose from "mongoose";
 import { gameWorkerManager } from "../workers/gameWorkerManager.js";
 const router = express.Router();
 
-// -------------------------------------------------------------------
-// GameRoom Model (unchanged)
-// -------------------------------------------------------------------
-const gameRoomSchema = new mongoose.Schema({
-  map: { type: mongoose.Schema.Types.ObjectId, ref: "Map", required: true },
-  roomName: { type: String, default: "Game Room" },
-  joinCode: { type: String, required: true },
-  status: { type: String, enum: ["open", "ended"], default: "open" },
-  creator: {
-    userId: { type: String, required: true },
-    password: { type: String, required: true },
-  },
-  players: [
-    {
-      userId: { type: String, required: true },
-      password: { type: String, required: true },
-      userState: { type: mongoose.Schema.Types.Mixed, default: {} },
-    },
-  ],
-  gameState: { type: mongoose.Schema.Types.Mixed, default: {} },
-  tickCount: { type: Number, default: 0 },
-  createdAt: { type: Date, default: Date.now },
-});
-const GameRoom = mongoose.model("GameRoom", gameRoomSchema);
+import GameRoom from "../models/GameRoom.js";
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms - Create a game room with its own copy of the map
+// POST /api/gamerooms - Create a game room (with a map copy)
 // -------------------------------------------------------------------
 router.post("/", async (req, res, next) => {
   try {
     const { mapId, roomName, joinCode, creatorName, creatorPassword } =
       req.body;
-
     if (!mapId) return res.status(400).json({ error: "mapId is required" });
     if (!creatorName || !creatorPassword) {
       return res
         .status(400)
         .json({ error: "Room creator name and password are required" });
     }
-
-    // Retrieve the original map (assumes Map model is registered)
     const Map = mongoose.model("Map");
     const originalMap = await Map.findById(mapId).lean();
     if (!originalMap)
       return res.status(404).json({ error: "Original map not found" });
-
-    // Create a copy of the original map
     const mapCopyData = {
       name: "Room:" + creatorName,
       width: originalMap.width,
@@ -58,8 +464,6 @@ router.post("/", async (req, res, next) => {
     };
     const gameMap = new Map(mapCopyData);
     await gameMap.save();
-
-    // Copy associated map chunks
     const MapChunk = mongoose.model("MapChunk");
     const originalChunks = await MapChunk.find({ map: originalMap._id }).lean();
     const newChunks = originalChunks.map((chunk) => ({
@@ -71,12 +475,8 @@ router.post("/", async (req, res, next) => {
     if (newChunks.length > 0) {
       await MapChunk.insertMany(newChunks);
     }
-
-    // Generate a join code if not provided
     const generatedJoinCode =
       joinCode || Math.random().toString(36).substring(2, 8).toUpperCase();
-
-    // Create the game room with empty game state
     const gameRoom = new GameRoom({
       map: gameMap._id,
       roomName: roomName || "Game Room",
@@ -94,15 +494,12 @@ router.post("/", async (req, res, next) => {
         },
       ],
       gameState: {
-        nations: [], // Nations will be added when players use the foundNation endpoint
+        nations: [], // Nations will be added when players found their nation.
       },
       tickCount: 0,
     });
-
     await gameRoom.save();
-
     await gameWorkerManager.startWorker(gameRoom._id, gameRoom);
-
     res.status(201).json(gameRoom);
   } catch (error) {
     next(error);
@@ -110,7 +507,7 @@ router.post("/", async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------
-// (Other endpoints remain unchanged)
+// GET /api/gamerooms - List open game rooms
 // -------------------------------------------------------------------
 router.get("/", async (req, res, next) => {
   try {
@@ -118,323 +515,6 @@ router.get("/", async (req, res, next) => {
       .select("roomName joinCode map createdAt tickCount")
       .populate("map", "name width height");
     res.json(gameRooms);
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.delete("/:id", async (req, res, next) => {
-  try {
-    const { userName, password } = req.body;
-    if (!userName || !password) {
-      return res
-        .status(400)
-        .json({ error: "userName and password are required" });
-    }
-
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-
-    // Verify that the provided credentials match the room creator’s credentials.
-    if (
-      !gameRoom.creator ||
-      gameRoom.creator.userId !== userName ||
-      gameRoom.creator.password !== password
-    ) {
-      return res
-        .status(403)
-        .json({ error: "Invalid room creator credentials" });
-    }
-
-    await gameWorkerManager.stopWorker(req.params.id);
-
-    // Remove the associated map and its map chunks.
-    const MapModel = mongoose.model("Map");
-    const MapChunk = mongoose.model("MapChunk");
-
-    // Delete all map chunks for the game room's map.
-    await MapChunk.deleteMany({ map: gameRoom.map });
-    // Delete the map copy.
-    await MapModel.findByIdAndDelete(gameRoom.map);
-    // Finally, delete the game room itself.
-    await GameRoom.findByIdAndDelete(req.params.id);
-
-    res.json({
-      message: "Game room and associated map data deleted successfully",
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post("/:id/end", async (req, res, next) => {
-  try {
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-    gameRoom.status = "ended";
-    await gameRoom.save();
-    res.json({ message: "Game session ended successfully" });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post("/:id/join", async (req, res, next) => {
-  try {
-    const { joinCode, userName, password } = req.body;
-    if (!userName || !password) {
-      return res
-        .status(400)
-        .json({ error: "userName and password are required" });
-    }
-
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-    if (gameRoom.status !== "open")
-      return res.status(400).json({ error: "Game room is not open" });
-    if (gameRoom.joinCode !== joinCode)
-      return res.status(403).json({ error: "Invalid join code" });
-
-    // Look for an existing player with this name
-    let player = gameRoom.players.find((p) => p.userId === userName);
-    if (player) {
-      // Existing player: verify the password
-      if (player.password !== password) {
-        return res
-          .status(403)
-          .json({ error: "Invalid password for existing user" });
-      }
-      // Return success for existing player
-      res.json({
-        message: "Rejoined game room successfully",
-        userId: player.userId,
-      });
-    } else {
-      // New player: add them to the players array with userName as userId
-      player = {
-        userId: userName, // Use userName as the userId for consistency
-        password: password,
-        userState: {},
-      };
-      gameRoom.players.push(player);
-      await gameRoom.save();
-      res.json({
-        message: "Joined game room successfully",
-        userId: player.userId,
-      });
-    }
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post("/:id/state", async (req, res, next) => {
-  try {
-    const { userId, password } = req.body;
-    if (!userId || !password) {
-      return res
-        .status(400)
-        .json({ error: "userId and password are required" });
-    }
-
-    // Retrieve the game room
-    const gameRoom = await GameRoom.findById(req.params.id).lean();
-    if (!gameRoom) {
-      return res.status(404).json({ error: "Game room not found" });
-    }
-
-    // Find the player in the room's players array
-    const player = gameRoom.players.find(
-      (p) => p.userId === userId && p.password === password
-    );
-    if (!player) {
-      return res.status(403).json({ error: "Invalid credentials" });
-    }
-
-    // Get the latest state from the worker
-    const latestState = gameWorkerManager.getLatestState(req.params.id);
-
-    if (latestState) {
-      // Return the worker's state if available
-      return res.json({
-        tickCount: latestState.tickCount,
-        gameState: latestState.gameState || { nations: [] },
-      });
-    }
-
-    // Fallback to database state if worker state isn't available
-    res.json({
-      tickCount: gameRoom.tickCount,
-      gameState: gameRoom.gameState || { nations: [] },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post("/:id/updateState", async (req, res, next) => {
-  try {
-    const { userId, password, newState } = req.body;
-    if (!userId || !password || !newState) {
-      return res.status(400).json({
-        error: "userId, password, and newState are required",
-      });
-    }
-
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-
-    // Verify credentials (should be admin/creator only)
-    if (
-      gameRoom.creator.userId !== userId ||
-      gameRoom.creator.password !== password
-    ) {
-      return res.status(403).json({ error: "Invalid credentials" });
-    }
-
-    // Update the worker's state
-    gameWorkerManager.updateWorkerState(req.params.id, newState);
-
-    res.json({ message: "Game state updated successfully" });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.get("/:id/user/:userId", async (req, res, next) => {
-  try {
-    const gameRoom = await GameRoom.findById(req.params.id).lean();
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-    const user = gameRoom.players.find((p) => p.userId === req.params.userId);
-    if (!user)
-      return res
-        .status(404)
-        .json({ error: "User not found in this game room" });
-    res.json(user);
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post("/:id/foundNation", async (req, res, next) => {
-  try {
-    const { userId, password, x, y } = req.body;
-    if (!userId || !password || x == null || y == null) {
-      return res
-        .status(400)
-        .json({ error: "userId, password, x, and y are required" });
-    }
-
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom) {
-      return res.status(404).json({ error: "Game room not found" });
-    }
-
-    // Verify the player's credentials
-    const player = gameRoom.players.find(
-      (p) => p.userId === userId && p.password === password
-    );
-    if (!player) {
-      return res.status(403).json({ error: "Invalid credentials" });
-    }
-
-    // Initialize gameState if needed
-    if (!gameRoom.gameState) {
-      gameRoom.gameState = { nations: [] };
-    }
-
-    // Prevent founding more than one nation per player
-    if (gameRoom.gameState.nations?.find((n) => n.owner === userId)) {
-      return res
-        .status(400)
-        .json({ error: "Nation already founded for this user" });
-    }
-
-    // Create a new nation with all fields expected by gameLogic.js
-    const newNation = {
-      owner: userId,
-      startingCell: { x, y },
-      territory: [{ x, y }],
-      population: 100,
-      nationalWill: 50,
-      resources: {
-        "iron ore": 0,
-        "precious metals": 0,
-        gems: 0,
-        stone: 0,
-        "copper ore": 0,
-        "fresh water": 0,
-        fish: 0,
-        "medicinal plants": 0,
-        "wild fruits": 0,
-        "game animals": 0,
-        "arable land": 0,
-        pastures: 0,
-        "grazing animals": 0,
-        timber: 0,
-        salt: 0,
-        "date palm": 0,
-        "fur animals": 0,
-        "fertile soil": 0,
-        herbs: 0,
-      },
-      cities: [],
-      structures: [],
-    };
-
-    // Add the nation to the game state
-    gameRoom.gameState.nations.push(newNation);
-
-    // Mark the document as modified since we're updating a nested array
-    gameRoom.markModified("gameState.nations");
-    await gameRoom.save();
-
-    // Update the worker with the new state
-    gameWorkerManager.updateWorkerState(gameRoom._id, {
-      gameState: gameRoom.gameState,
-      tickCount: gameRoom.tickCount,
-    });
-
-    res.status(201).json({
-      message: "Nation founded successfully",
-      nation: newNation,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post("/:id/playerState", async (req, res, next) => {
-  try {
-    const { userName, password } = req.body;
-    if (!userName || !password)
-      return res
-        .status(400)
-        .json({ error: "userName and password are required" });
-
-    // Retrieve the game room (using lean() here for read-only access)
-    const gameRoom = await GameRoom.findById(req.params.id).lean();
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-
-    // Find the matching player in the room
-    const player = gameRoom.players.find((p) => p.userId === userName);
-    if (!player || player.password !== password) {
-      return res.status(403).json({ error: "Invalid credentials" });
-    }
-
-    // Return game state data along with the player’s own state.
-    res.json({
-      gameState: gameRoom.gameState,
-      tickCount: gameRoom.tickCount,
-      playerState: player.userState,
-      // Optionally include other player-specific data (nation info, cities, etc.)
-    });
   } catch (error) {
     next(error);
   }
@@ -589,76 +669,284 @@ router.get("/:id/data", async (req, res, next) => {
   }
 });
 
-// Example cost to build a city:
-const CITY_COST = {
-  stone: 10,
-  "arable land": 20,
-};
-
-router.post("/:id/buildCity", async (req, res, next) => {
+// -------------------------------------------------------------------
+// DELETE /api/gamerooms/:id - Delete a game room (room creator only)
+// -------------------------------------------------------------------
+router.delete("/:id", async (req, res, next) => {
   try {
-    const { userId, x, y, cityName } = req.body;
-    if (userId == null || x == null || y == null) {
-      return res.status(400).json({ error: "userId, x, and y are required" });
+    const { userName, password } = req.body;
+    if (!userName || !password) {
+      return res
+        .status(400)
+        .json({ error: "userName and password are required" });
     }
-
-    // Get the game room.
-    const GameRoom = mongoose.model("GameRoom");
     const gameRoom = await GameRoom.findById(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-
-    // Ensure gameState and nations array exist.
-    if (!gameRoom.gameState) gameRoom.gameState = {};
-    if (!gameRoom.gameState.nations) gameRoom.gameState.nations = [];
-
-    // Find the nation owned by this user.
-    const nation = gameRoom.gameState.nations.find((n) => n.owner === userId);
-    if (!nation) {
-      return res.status(404).json({ error: "Nation not found for this user" });
-    }
-
-    // Check if a city already exists at (x, y) or too near another city.
-    // (This is a naive check; you can expand it to enforce proper distance.)
     if (
-      nation.cities &&
-      nation.cities.some((city) => city.x === x && city.y === y)
+      !gameRoom.creator ||
+      gameRoom.creator.userId !== userName ||
+      gameRoom.creator.password !== password
     ) {
       return res
-        .status(400)
-        .json({ error: "A city already exists at this location" });
+        .status(403)
+        .json({ error: "Invalid room creator credentials" });
     }
+    await gameWorkerManager.stopWorker(req.params.id);
+    const MapModel = mongoose.model("Map");
+    const MapChunk = mongoose.model("MapChunk");
+    await MapChunk.deleteMany({ map: gameRoom.map });
+    await MapModel.findByIdAndDelete(gameRoom.map);
+    await GameRoom.findByIdAndDelete(req.params.id);
+    res.json({
+      message: "Game room and associated map data deleted successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
-    // Check if the nation has sufficient resources.
-    // (For simplicity, we assume resources are stored as key/value pairs in nation.resources.)
-    nation.resources = nation.resources || {};
-    for (let resource in CITY_COST) {
-      if ((nation.resources[resource] || 0) < CITY_COST[resource]) {
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/end - End a game session
+// -------------------------------------------------------------------
+router.post("/:id/end", async (req, res, next) => {
+  try {
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom)
+      return res.status(404).json({ error: "Game room not found" });
+    gameRoom.status = "ended";
+    await gameRoom.save();
+    res.json({ message: "Game session ended successfully" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/join - Join a game room
+// -------------------------------------------------------------------
+router.post("/:id/join", async (req, res, next) => {
+  try {
+    const { joinCode, userName, password } = req.body;
+    if (!userName || !password) {
+      return res
+        .status(400)
+        .json({ error: "userName and password are required" });
+    }
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom)
+      return res.status(404).json({ error: "Game room not found" });
+    if (gameRoom.status !== "open")
+      return res.status(400).json({ error: "Game room is not open" });
+    if (gameRoom.joinCode !== joinCode)
+      return res.status(403).json({ error: "Invalid join code" });
+    let player = gameRoom.players.find((p) => p.userId === userName);
+    if (player) {
+      if (player.password !== password) {
         return res
-          .status(400)
-          .json({ error: `Insufficient ${resource} to build a city` });
+          .status(403)
+          .json({ error: "Invalid password for existing user" });
+      }
+      res.json({
+        message: "Rejoined game room successfully",
+        userId: player.userId,
+      });
+    } else {
+      player = { userId: userName, password, userState: {} };
+      gameRoom.players.push(player);
+      await gameRoom.save();
+      res.json({
+        message: "Joined game room successfully",
+        userId: player.userId,
+      });
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/state - Get the latest game state
+// -------------------------------------------------------------------
+router.post("/:id/state", async (req, res, next) => {
+  try {
+    const { userId, password } = req.body;
+    if (!userId || !password) {
+      return res
+        .status(400)
+        .json({ error: "userId and password are required" });
+    }
+    const gameRoom = await GameRoom.findById(req.params.id).lean();
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
+    }
+    const player = gameRoom.players.find(
+      (p) => p.userId === userId && p.password === password
+    );
+    if (!player) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    const latestState = gameWorkerManager.getLatestState(req.params.id);
+    if (latestState) {
+      return res.json({
+        tickCount: latestState.tickCount,
+        gameState: latestState.gameState || { nations: [] },
+      });
+    }
+    res.json({
+      tickCount: gameRoom.tickCount,
+      gameState: gameRoom.gameState || { nations: [] },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/foundNation - Found a nation for a player
+// -------------------------------------------------------------------
+router.post("/:id/foundNation", async (req, res, next) => {
+  try {
+    const { userId, password, x, y } = req.body;
+    console.log("[ROUTE] Found nation request:", { userId, x, y });
+    if (!userId || !password || x == null || y == null) {
+      return res
+        .status(400)
+        .json({ error: "userId, password, x, and y are required" });
+    }
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
+    }
+    const workerState = await gameWorkerManager.getLatestState(req.params.id);
+    console.log(
+      "[ROUTE] Current worker state:",
+      JSON.stringify(workerState, null, 2)
+    );
+    const player = gameRoom.players.find(
+      (p) => p.userId === userId && p.password === password
+    );
+    if (!player) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    const currentGameState = {
+      nations: [],
+      ...(workerState?.gameState || {}),
+      ...(gameRoom.gameState || {}),
+    };
+    if (currentGameState.nations.find((n) => n.owner === userId)) {
+      return res
+        .status(400)
+        .json({ error: "Nation already founded for this user" });
+    }
+    // Create new nation – note that we now include an auto_city setting (default false)
+    const newNation = {
+      owner: userId,
+      startingCell: { x, y },
+      territory: [{ x, y }],
+      population: 100,
+      nationalWill: 50,
+      resources: {
+        "iron ore": 0,
+        "precious metals": 0,
+        // … other resources as needed …
+      },
+      cities: [],
+      structures: [],
+      auto_city: false, // Default auto_city setting; player may change this later via /playerSettings
+    };
+    const updatedGameState = {
+      ...currentGameState,
+      nations: [...(currentGameState.nations || []), newNation],
+    };
+    console.log(
+      "[ROUTE] Updated game state:",
+      JSON.stringify(updatedGameState, null, 2)
+    );
+    gameRoom.gameState = updatedGameState;
+    gameRoom.markModified("gameState");
+    await gameRoom.save();
+    await gameWorkerManager.updateWorkerState(gameRoom._id, {
+      gameState: updatedGameState,
+      tickCount: gameRoom.tickCount + 1,
+    });
+    const verifyState = await gameWorkerManager.getLatestState(gameRoom._id);
+    console.log(
+      "[ROUTE] Verified state after update:",
+      JSON.stringify(verifyState, null, 2)
+    );
+    res
+      .status(201)
+      .json({ message: "Nation founded successfully", nation: newNation });
+  } catch (error) {
+    console.error("[ROUTE] Error in foundNation:", error);
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/playerSettings - Update a player's settings
+// -------------------------------------------------------------------
+router.post("/:id/playerSettings", async (req, res, next) => {
+  try {
+    const { userId, password, settings } = req.body;
+    if (!userId || !password || !settings) {
+      return res
+        .status(400)
+        .json({ error: "userId, password, and settings are required" });
+    }
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom)
+      return res.status(404).json({ error: "Game room not found" });
+    const player = gameRoom.players.find(
+      (p) => p.userId === userId && p.password === password
+    );
+    if (!player) return res.status(403).json({ error: "Invalid credentials" });
+    // Merge new settings into the player's settings (for example, { auto_city: true })
+    player.settings = { ...player.settings, ...settings };
+    // Optionally, if the player's nation exists, update its settings too:
+    if (gameRoom.gameState?.nations) {
+      const nation = gameRoom.gameState.nations.find((n) => n.owner === userId);
+      if (nation) {
+        nation.auto_city = settings.auto_city ?? nation.auto_city;
       }
     }
-    // Deduct the resource cost.
-    for (let resource in CITY_COST) {
-      nation.resources[resource] -= CITY_COST[resource];
-    }
-
-    // Create the city. You can add more properties as needed.
-    const newCity = {
-      name: cityName || "New City",
-      x,
-      y,
-      population: 50, // starting population for a city
-      // Other city-specific stats can go here.
-    };
-
-    // Initialize the cities array if needed.
-    if (!nation.cities) nation.cities = [];
-    nation.cities.push(newCity);
-
     await gameRoom.save();
-    res.status(201).json({ message: "City built successfully", city: newCity });
+    res.json({
+      message: "Player settings updated successfully",
+      settings: player.settings,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/pause - Pause the game (room creator only)
+// -------------------------------------------------------------------
+router.post("/:id/pause", async (req, res, next) => {
+  try {
+    const { userId, password } = req.body;
+    if (!userId || !password)
+      return res
+        .status(400)
+        .json({ error: "userId and password are required" });
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom)
+      return res.status(404).json({ error: "Game room not found" });
+    if (
+      gameRoom.creator.userId !== userId ||
+      gameRoom.creator.password !== password
+    ) {
+      return res
+        .status(403)
+        .json({ error: "Only the room creator can pause the game" });
+    }
+    gameRoom.status = "paused";
+    await gameRoom.save();
+    // If your worker manager supports pausing, call it here.
+    await gameWorkerManager.pauseWorker(gameRoom._id);
+    res.json({ message: "Game paused successfully" });
   } catch (error) {
     next(error);
   }

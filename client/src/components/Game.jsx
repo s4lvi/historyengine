@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ErrorMessage, LoadingSpinner } from './ErrorHandling';
 import NationStatsPanel from './NationStatsPanel';
 const CHUNK_SIZE = 10;
-const UPDATE_INTERVAL = 1000; // 1 second
+const UPDATE_INTERVAL = 200; // 1 second
 
 const Game = () => {
   // Map and game state
@@ -99,7 +99,7 @@ const Game = () => {
       const minScale = getMinScale();
 
       setScale((prevScale) => {
-        const newScale = Math.min(Math.max(prevScale * zoomFactor, minScale), 5);
+        const newScale = Math.min(Math.max(prevScale * zoomFactor, minScale), 14);
         const worldX = (mousePos.x - offset.x) / prevScale;
         const worldY = (mousePos.y - offset.y) / prevScale;
         let newOffset = {
@@ -286,7 +286,7 @@ const Game = () => {
         );
         if (!response.ok) throw new Error('Failed to fetch game state');
         const data = await response.json();
-        console.log('Game state update:', data); // Debug log
+        //console.log('Game state update:', data); // Debug log
         setGameState(data);
       } catch (err) {
         console.error('Error fetching game state:', err);
@@ -481,7 +481,7 @@ const Game = () => {
   
       // Draw territory fills
       const baseColor = color.slice(0, 7); // Get the hex color without alpha
-      ctx.fillStyle = `${baseColor}40`; // 40 is hex for 25% opacity
+      ctx.fillStyle = `${baseColor}60`; // 40 is hex for 25% opacity
       
       territory.forEach(cell => {
         // Fill all territory cells
