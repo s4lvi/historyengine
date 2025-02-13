@@ -10,6 +10,7 @@ class GameWorkerManager {
     this.updateIntervals = new Map();
     this.workerStarting = new Map();
     this.workerLocks = new Map(); // locks per room
+    this.pausedWorkers = new Map(); // tracks paused rooms
   }
 
   async acquireLock(roomId) {
@@ -27,14 +28,12 @@ class GameWorkerManager {
     await this.acquireLock(roomId);
     try {
       if (this.workerStarting.get(roomId)) {
-        // console.log(`Waiting for worker ${roomId} to start...`);
         while (this.workerStarting.get(roomId)) {
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
       }
       const worker = this.workers.get(roomId);
       if (!worker) {
-        // console.log(`Worker missing for room ${roomId}, recreating...`);
         const GameRoom = mongoose.model("GameRoom");
         const gameRoom = await GameRoom.findById(roomId).lean();
         if (gameRoom) {
@@ -52,7 +51,6 @@ class GameWorkerManager {
   async startWorker(roomId, gameRoom) {
     await this.acquireLock(roomId);
     try {
-      // console.log(`Starting worker for room ${roomId}`);
       this.workerStarting.set(roomId, true);
 
       // Stop any existing worker.
@@ -68,11 +66,6 @@ class GameWorkerManager {
         tickCount: gameRoom.tickCount,
         mapData: mapData,
       };
-
-      // console.log(
-      //   "Creating worker with initial state:",
-      //   JSON.stringify(initialState, null, 2)
-      // );
 
       const worker = new Worker(new URL("./gameWorker.js", import.meta.url), {
         workerData: initialState,
@@ -90,14 +83,7 @@ class GameWorkerManager {
           // Retrieve the current cached state (or default to 0)
           const current = this.latestStates.get(roomId) || { tickCount: 0 };
           if (result.tickCount >= current.tickCount) {
-            // console.log(
-            //   `(WORKER->MANAGER) Accepting state from tick ${result.tickCount} (cached tick: ${current.tickCount})`
-            // );
             this.latestStates.set(roomId, result);
-          } else {
-            // console.log(
-            //   `(WORKER->MANAGER) Ignoring stale tick message with tickCount ${result.tickCount} (cached tick: ${current.tickCount})`
-            // );
           }
         } finally {
           this.releaseLock(roomId);
@@ -111,12 +97,11 @@ class GameWorkerManager {
       });
 
       worker.on("exit", async (code) => {
-        // console.log(`Worker for room ${roomId} exited with code ${code}`);
         this.workerStarting.delete(roomId);
         await this.stopWorker(roomId);
       });
 
-      this.workers.set(roomId, worker);
+      this.workers.set(roomId.toString(), worker);
       this.startPeriodicUpdates(roomId);
     } finally {
       this.workerStarting.delete(roomId);
@@ -125,7 +110,6 @@ class GameWorkerManager {
   }
 
   async stopWorker(roomId) {
-    // console.log(`Stopping worker for room ${roomId}`);
     const worker = this.workers.get(roomId);
     if (worker) {
       const interval = this.updateIntervals.get(roomId);
@@ -139,7 +123,6 @@ class GameWorkerManager {
   }
 
   startPeriodicUpdates(roomId) {
-    // console.log(`Starting periodic updates for room ${roomId}`);
     const existingInterval = this.updateIntervals.get(roomId);
     if (existingInterval) {
       clearInterval(existingInterval);
@@ -154,9 +137,6 @@ class GameWorkerManager {
             !currentRoom?.gameState?.nations?.length ||
             latestState.gameState.nations.length > 0
           ) {
-            // console.log(
-            //   `Updating database for room ${roomId} with ${latestState.gameState.nations.length} nations`
-            // );
             await GameRoom.findByIdAndUpdate(
               roomId,
               {
@@ -180,11 +160,6 @@ class GameWorkerManager {
   async updateWorkerState(roomId, newState) {
     await this.acquireLock(roomId);
     try {
-      // console.log(
-      //   `Updating worker state for room ${roomId}:`,
-      //   JSON.stringify(newState, null, 2)
-      // );
-
       // Ensure worker exists.
       const workerExists = await this.ensureWorkerExists(roomId);
       if (!workerExists) {
@@ -193,7 +168,6 @@ class GameWorkerManager {
       }
 
       const worker = this.workers.get(roomId);
-      // console.log(`Worker found for room ${roomId}:`, worker);
       if (worker) {
         // Update the local state cache with the complete snapshot.
         this.latestStates.set(roomId, newState);
@@ -213,10 +187,6 @@ class GameWorkerManager {
             tickCount: newState.tickCount,
           },
         });
-
-        // console.log(
-        //   `State updated successfully for room ${roomId}. Nation count: ${newState.gameState.nations.length}`
-        // );
       }
     } catch (err) {
       console.log(err);
@@ -235,7 +205,6 @@ class GameWorkerManager {
   }
 
   async loadMapData(mapId) {
-    // console.log("Loading map data for:", mapId);
     const MapChunk = mongoose.model("MapChunk");
     const chunks = await MapChunk.find({ map: mapId })
       .sort({ startRow: 1 })
@@ -248,6 +217,37 @@ class GameWorkerManager {
       });
     }
     return mapData;
+  }
+
+  // -----------------------------
+  // New Methods: Pause / Unpause
+  // -----------------------------
+  async pauseWorker(roomId) {
+    const worker = this.workers.get(roomId);
+    if (worker) {
+      // Mark the worker as paused.
+      this.pausedWorkers.set(roomId, true);
+      // Send a pause command to the worker thread.
+      worker.postMessage({ type: "PAUSE" });
+      // Stop periodic database updates.
+      const interval = this.updateIntervals.get(roomId);
+      if (interval) {
+        clearInterval(interval);
+        this.updateIntervals.delete(roomId);
+      }
+    }
+  }
+
+  async unpauseWorker(roomId) {
+    const worker = this.workers.get(roomId);
+    if (worker) {
+      // Remove the paused flag.
+      this.pausedWorkers.delete(roomId);
+      // Send an unpause command to the worker thread.
+      worker.postMessage({ type: "UNPAUSE" });
+      // Restart periodic database updates.
+      this.startPeriodicUpdates(roomId);
+    }
   }
 }
 

@@ -3,7 +3,12 @@
 @tailwind utilities;
 
 @layer base {
-  h1, h2, h3, h4, h5, h6 {
-    font-family: 'Estonia', cursive;
+  body {
+    font-family:Verdana, Geneva, Tahoma, sans-serif;
+    background-color: #fafafa;
+  }
+  h1,h2,h3,h4,h5,h6 {
+    font-weight: 300 !important;
+    font-style: italic;
   }
 }

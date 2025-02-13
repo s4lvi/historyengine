@@ -412,12 +412,12 @@ const GameRoomList = () => {
   return (
     <div className="max-w-4xl mx-auto p-6">
       <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Game Rooms</h1>
+        <h1 className="text-3xl font-bold text-gray-900">Open Games</h1>
         <button
           onClick={() => setIsCreateDialogOpen(true)}
           className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300 text-white px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
         >
-          Create New Game Room
+          Create New Game
         </button>
       </div>
 
@@ -434,6 +434,7 @@ const GameRoomList = () => {
       {createError && <ErrorMessage message={createError} />}
 
       <div className="space-y-4">
+        {gameRooms.length === 0 && <div>No open games available. Try starting your own!</div>}
         {gameRooms.map((room) => (
           <div
             key={room._id}

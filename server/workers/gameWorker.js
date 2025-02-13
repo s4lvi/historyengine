@@ -14,6 +14,19 @@ if (mongoose.connection.readyState === 0) {
     .catch((err) => console.error("Worker DB connection error:", err));
 }
 
+let paused = false;
+parentPort.on("message", (msg) => {
+  if (msg.type === "PAUSE") {
+    paused = true;
+    console.log("Worker paused");
+  } else if (msg.type === "UNPAUSE") {
+    paused = false;
+    console.log("Worker unpaused");
+  } else if (msg.type === "UPDATE_STATE") {
+    // Optionally update internal state from msg.gameState and msg.tickCount.
+  }
+});
+
 class GameProcessor {
   constructor(initialState) {
     // Expect initialState to contain the roomId so we know which room to load.
@@ -56,12 +69,6 @@ class GameProcessor {
     await this.loadStateFromDB();
 
     this.tickCount += 1;
-    // console.log(`\n[TICK ${this.tickCount}] Starting tick processing`);
-    // console.log(
-    //   "[TICK] Loaded gameState:",
-    //   JSON.stringify(this.gameState, null, 2)
-    // );
-
     // If there are no nations, nothing to process.
     if (
       !this.gameState ||
@@ -83,10 +90,6 @@ class GameProcessor {
         nations: updatedNations,
         lastUpdated: new Date(),
       };
-      // console.log(
-      //     "[TICK] Updated gameState:",
-      //     JSON.stringify(this.gameState, null, 2)
-      //   );
       // Save the updated state back to the DB.
       await this.saveStateToDB();
     } catch (error) {
@@ -97,18 +100,18 @@ class GameProcessor {
 
 // Main asynchronous tick loop.
 async function tickLoop() {
-  // Create a processor instance using initial workerData.
-  // (We assume workerData contains roomId, tickCount, and mapData.)
   const processor = new GameProcessor(workerData);
   while (true) {
+    // Wait while paused.
+    while (paused) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     try {
       await processor.processGameTick();
     } catch (error) {
       console.error("[WORKER] Error during tick processing:", error);
     }
-    // Wait 1 second between ticks.
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
-
 tickLoop();
