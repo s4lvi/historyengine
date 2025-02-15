@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import GameCanvas from "./GameCanvas";
-import LeftPanel from "./LeftPanel";
 import Modal from "./Modal";
 import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
+import { ControlButtons } from "./ControlButtons";
+import StatsBar from "./StatsBar";
+import SettingsModal from "./SettingsModal";
+import PlayerListModal from "./PlayerListModal";
+import ActionBar from "./ActionBar";
 
 const Game = () => {
   // Get game room ID from URL params.
@@ -22,6 +26,7 @@ const Game = () => {
   const [paused, setPaused] = useState(false);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [config, setConfig] = useState(null);
 
   // ----------------------------
   // Login and credentials state
@@ -43,9 +48,15 @@ const Game = () => {
   // ----------------------------
   // Modal and cell selection state
   // ----------------------------
-  const [selectedRegion, setSelectedRegion] = useState(null);
-  const [contextMenu, setContextMenu] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showPlayerList, setShowPlayerList] = useState(false);
   const [actionModal, setActionModal] = useState(null);
+  const [foundingNation, setFoundingNation] = useState(false);
+  const [buildingStructure, setBuildingStructure] = useState(null);
+
+  const startFoundNation = () => {
+    setFoundingNation(true);
+  };
 
   // ----------------------------
   // API call helpers
@@ -57,13 +68,14 @@ const Game = () => {
       );
       if (!response.ok) throw new Error("Failed to fetch map metadata");
       const data = await response.json();
-      setMapMetadata(data);
+      setMapMetadata(data.map);
+      setConfig(data.config);
     } catch (err) {
       setError(err.message);
     }
   };
 
-  const CHUNK_SIZE = 10;
+  const CHUNK_SIZE = 20;
   const fetchMapChunk = async (startRow) => {
     try {
       const endRow = startRow + CHUNK_SIZE;
@@ -79,6 +91,36 @@ const Game = () => {
     } catch (err) {
       throw err;
     }
+  };
+
+  const mergeTerritory = (existing, delta) => {
+    // If there’s no existing territory, then the new territory is just the additions.
+    if (!existing) {
+      return { x: delta.add.x.slice(), y: delta.add.y.slice() };
+    }
+    // Clone the existing arrays
+    let newX = existing.x.slice();
+    let newY = existing.y.slice();
+
+    // Process subtractions: remove each coordinate found in delta.sub
+    for (let i = 0; i < delta.sub.x.length; i++) {
+      const subX = delta.sub.x[i];
+      const subY = delta.sub.y[i];
+      // Look for a matching coordinate in newX/newY
+      const index = newX.findIndex(
+        (val, idx) => val === subX && newY[idx] === subY
+      );
+      if (index !== -1) {
+        newX.splice(index, 1);
+        newY.splice(index, 1);
+      }
+    }
+
+    // Process additions: append them to the territory arrays
+    newX = newX.concat(delta.add.x);
+    newY = newY.concat(delta.add.y);
+
+    return { x: newX, y: newY };
   };
 
   // ----------------------------
@@ -100,7 +142,10 @@ const Game = () => {
       try {
         const nextChunk = await fetchMapChunk(loadedRows);
         if (nextChunk && nextChunk.chunk && nextChunk.chunk.length > 0) {
-          setMapChunks((prev) => [...prev, nextChunk.chunk]);
+          setMapChunks((prev) => [
+            ...prev,
+            { startRow: nextChunk.startRow, chunk: nextChunk.chunk },
+          ]);
           setLoadedRows(nextChunk.endRow);
         }
       } catch (err) {
@@ -129,37 +174,113 @@ const Game = () => {
         );
         if (!response.ok) {
           navigate("/rooms");
+          return;
         }
         const data = await response.json();
-        setGameState(data);
+
+        // Use previous gameState to preserve the merged territories.
+        setGameState((prevState) => {
+          const previousNations = prevState?.gameState?.nations || [];
+          // Create a map of previous territory per nation owner.
+          const prevTerritories = previousNations.reduce((acc, nation) => {
+            acc[nation.owner] = nation.territory || null;
+            return acc;
+          }, {});
+
+          // Merge the territory delta into the existing territory from the previous state.
+          if (data.gameState.nations) {
+            data.gameState.nations = data.gameState.nations.map((nation) => {
+              const previousTerritory = prevTerritories[nation.owner] || null;
+              if (nation.territoryDeltaForClient) {
+                nation.territory = mergeTerritory(
+                  previousTerritory,
+                  nation.territoryDeltaForClient
+                );
+                // Remove the delta field after processing.
+                delete nation.territoryDeltaForClient;
+              }
+              return nation;
+            });
+          }
+
+          return {
+            tickCount: data.tickCount,
+            roomName: data.roomName,
+            roomCreator: data.roomCreator,
+            gameState: data.gameState,
+          };
+        });
+
+        // Also update userState if needed.
+        if (data.gameState.nations) {
+          setUserState(data.gameState.nations.find((n) => n.owner === userId));
+        }
       } catch (err) {
         console.error("Error fetching game state:", err);
       }
     };
     fetchGameState();
-    const interval = setInterval(fetchGameState, 200);
+    const interval = setInterval(fetchGameState, 100);
     return () => clearInterval(interval);
-  }, [id, userId, storedPassword]);
+  }, [id, userId, storedPassword, navigate]);
 
-  // ----------------------------
-  // Poll user state
-  // ----------------------------
+  // Full state polling effect: every 5 seconds, fetch the full state to overwrite local territory.
   useEffect(() => {
-    if (!userId) return;
-    const fetchUserState = async () => {
+    if (!userId || !storedPassword) return;
+    const fetchFullState = async () => {
       try {
         const response = await fetch(
-          `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/user/${userId}`
+          `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/state`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              userId,
+              password: storedPassword,
+              full: "true",
+            }),
+          }
         );
-        if (!response.ok) throw new Error("Failed to fetch user state");
+        if (!response.ok) {
+          navigate("/rooms");
+          return;
+        }
         const data = await response.json();
-        setUserState(data);
+
+        // Overwrite local state with the full state from the backend.
+        if (data.gameState.nations) {
+          data.gameState.nations = data.gameState.nations.map((nation) => {
+            // The full territory is provided from the backend.
+            // In case a delta exists, we ignore it by deleting.
+            if (nation.territoryDeltaForClient) {
+              delete nation.territoryDeltaForClient;
+            }
+            // The backend should provide nation.territory as the full territory.
+            return nation;
+          });
+        }
+
+        setGameState({
+          tickCount: data.tickCount,
+          roomName: data.roomName,
+          roomCreator: data.roomCreator,
+          gameState: data.gameState,
+        });
+
+        // Also update userState if needed.
+        if (data.gameState.nations) {
+          setUserState(data.gameState.nations.find((n) => n.owner === userId));
+        }
       } catch (err) {
-        console.error("Error fetching user state:", err);
+        console.error("Error fetching full game state:", err);
       }
     };
-    fetchUserState();
-  }, [id, userId]);
+    // Immediately fetch full state on mounting
+    fetchFullState();
+    // Then set interval for rectification (every 5 seconds; adjust to 10 if desired)
+    const interval = setInterval(fetchFullState, 5000);
+    return () => clearInterval(interval);
+  }, [id, userId, storedPassword, navigate]);
 
   // ----------------------------
   // Handle login form submission
@@ -193,6 +314,48 @@ const Game = () => {
         localStorage.setItem(`${roomKey}-joinCode`, joinCode);
         setUserId(loginName);
         setStoredPassword(loginPassword);
+
+        // Immediately fetch the full state so the new player gets all territories.
+        try {
+          const fullResp = await fetch(
+            `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/state`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                userId: loginName,
+                password: loginPassword,
+                full: "true",
+              }),
+            }
+          );
+          if (fullResp.ok) {
+            const fullData = await fullResp.json();
+            if (fullData.gameState.nations) {
+              fullData.gameState.nations = fullData.gameState.nations.map(
+                (nation) => {
+                  if (nation.territoryDeltaForClient) {
+                    delete nation.territoryDeltaForClient;
+                  }
+                  return nation;
+                }
+              );
+            }
+            setGameState({
+              tickCount: fullData.tickCount,
+              roomName: fullData.roomName,
+              roomCreator: fullData.roomCreator,
+              gameState: fullData.gameState,
+            });
+            if (fullData.gameState.nations) {
+              setUserState(
+                fullData.gameState.nations.find((n) => n.owner === loginName)
+              );
+            }
+          }
+        } catch (err) {
+          console.error("Error fetching full state on join:", err);
+        }
       }
     } catch (err) {
       console.error("Join error:", err);
@@ -205,6 +368,7 @@ const Game = () => {
   // ----------------------------
   const handleFoundNation = async (x, y) => {
     if (!userId || !storedPassword) return;
+
     try {
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/foundNation`,
@@ -214,17 +378,32 @@ const Game = () => {
           body: JSON.stringify({ userId, password: storedPassword, x, y }),
         }
       );
-      if (!response.ok) throw new Error("Failed to found nation");
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to found nation");
+      }
+
       const data = await response.json();
       console.log("Nation founded:", data);
+      setFoundingNation(false);
     } catch (err) {
       setError(err.message);
+      setFoundingNation(false);
     }
   };
 
-  const handleBuildCity = async (x, y, cityName) => {
+  const handleBuildCity = async (x, y, cityType, cityName) => {
+    // If x and y are null, it means we're just selecting what to build
+    if (x === null && y === null) {
+      setBuildingStructure(cityType);
+      return;
+    }
+
+    // Otherwise, we're actually building at the selected location
     const password = storedPassword || loginPassword;
     if (!userId || !password) return;
+
     try {
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/buildCity`,
@@ -236,31 +415,64 @@ const Game = () => {
             password,
             x,
             y,
-            cityType: "city",
+            cityType,
             cityName,
           }),
         }
       );
       if (!response.ok) throw new Error("Failed to build city");
+      // Clear building mode after successful build
+      setBuildingStructure(null);
+    } catch (err) {
+      setError(err.message);
+      // Also clear building mode on error
+      setBuildingStructure(null);
+    }
+  };
+
+  const handleRaiseArmy = async (type) => {
+    if (!userId || !storedPassword) return;
+    try {
+      const response = await fetch(
+        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/raiseArmy`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, password: storedPassword, type }),
+        }
+      );
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to raise army");
+      }
+      const data = await response.json();
+      console.log("Army raised:", data);
+      // Rely on polling to update gameState
     } catch (err) {
       setError(err.message);
     }
   };
 
-  const handleAttack = async (x, y) => {
+  const handleSetArmyAttackTarget = async (armyId, x, y) => {
     if (!userId || !storedPassword) return;
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/attack`,
+        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/setAttackTarget`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, password: storedPassword, x, y }),
+          body: JSON.stringify({
+            userId,
+            password: storedPassword,
+            armyId,
+            target: { x, y },
+          }),
         }
       );
-      if (!response.ok) throw new Error("Failed to perform attack");
-      const data = await response.json();
-      console.log("Attack result:", data);
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to set attack target");
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -268,26 +480,50 @@ const Game = () => {
 
   const handleSetExpandTarget = async (x, y) => {
     if (!userId || !storedPassword) return;
+
+    // Check if nation has enough resources before making API call
+    const userNation = gameState?.gameState?.nations?.find(
+      (n) => n.owner === userId
+    );
+    const canExpand =
+      userNation &&
+      userNation.resources &&
+      userNation.resources.gold >= (config?.expansionCost?.gold || 0) &&
+      userNation.resources.food >= (config?.expansionCost?.food || 0);
+
+    if (!canExpand) {
+      setError(
+        `Not enough resources. Expansion requires ${config?.expansionCost?.gold} gold and ${config?.expansionCost?.food} food.`
+      );
+      setTimeout(() => setError(null), 3000); // Clear error after 3 seconds
+      return;
+    }
+
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/setExpandTarget`,
+        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/setExpansionTarget`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, password: storedPassword, x, y }),
+          body: JSON.stringify({
+            userId,
+            password: storedPassword,
+            target: { x, y },
+          }),
         }
       );
-      if (!response.ok) throw new Error("Failed to set expand target");
-      const data = await response.json();
-      console.log("Expand target set:", data);
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to set expand target");
+      }
     } catch (err) {
       setError(err.message);
+      setTimeout(() => setError(null), 3000); // Clear error after 3 seconds
     }
   };
 
   const handlePauseGame = async () => {
     try {
-      // Assuming you have implemented a pause endpoint on the backend
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/pause`,
         {
@@ -302,7 +538,6 @@ const Game = () => {
       const data = await response.json();
       console.log("Game paused:", data);
       setPaused(true);
-      // Optionally, update local state to reflect the paused status
     } catch (err) {
       console.error("Error pausing game:", err);
     }
@@ -310,7 +545,6 @@ const Game = () => {
 
   const handleUnPauseGame = async () => {
     try {
-      // Assuming you have implemented a pause endpoint on the backend
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/unpause`,
         {
@@ -325,13 +559,11 @@ const Game = () => {
       const data = await response.json();
       console.log("Game unpaused:", data);
       setPaused(false);
-      // Optionally, update local state to reflect the paused status
     } catch (err) {
-      console.error("Error pausing game:", err);
+      console.error("Error unpausing game:", err);
     }
   };
 
-  // New end game handler
   const handleEndGame = async () => {
     try {
       const response = await fetch(
@@ -339,7 +571,6 @@ const Game = () => {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          // The endpoint expects creator credentials so we send them here
           body: JSON.stringify({ userName: userId, password: storedPassword }),
         }
       );
@@ -348,7 +579,7 @@ const Game = () => {
       }
       const data = await response.json();
       console.log("Game ended:", data);
-      // For example, you might navigate away or display a "game ended" message:
+      // For example, navigate to a game-over screen
       // navigate("/game-over");
     } catch (err) {
       console.error("Error ending game:", err);
@@ -360,16 +591,13 @@ const Game = () => {
   // ----------------------------
   const mapGrid = React.useMemo(() => {
     const grid = [];
-    let currentY = 0;
-    mapChunks.forEach((chunk) => {
-      if (Array.isArray(chunk)) {
-        chunk.forEach((row) => {
-          row.forEach((cell, x) => {
-            grid.push({ cell, x, y: currentY });
-          });
-          currentY++;
+    mapChunks.forEach(({ startRow, chunk }) => {
+      chunk.forEach((row, rowIndex) => {
+        const y = startRow + rowIndex;
+        row.forEach((cell, x) => {
+          grid.push({ cell, x, y });
         });
-      }
+      });
     });
     return grid;
   }, [mapChunks]);
@@ -398,149 +626,66 @@ const Game = () => {
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center mb-4 text-sm">
-        {gameState && (
-          <>
-            <p className="text-gray-700">Playing as: {userId}</p>
-            <p className="text-gray-700">{gameState.roomName}</p>
-            <p className="text-gray-700 w-40 text-right">
-              Tick: {gameState.tickCount}
-            </p>
-          </>
+    <div className="relative h-screen overflow-hidden">
+      {/* New UI Components */}
+      <ControlButtons
+        onOpenSettings={() => setShowSettings(true)}
+        onOpenPlayerList={() => setShowPlayerList(true)}
+      />
+
+      <StatsBar gameState={gameState} userId={userId} />
+
+      <SettingsModal
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        gameState={gameState}
+        userId={userId}
+        paused={paused}
+        onPause={handlePauseGame}
+        onUnpause={handleUnPauseGame}
+        onEndGame={handleEndGame}
+        onLeaveGame={() => navigate("/rooms")}
+        onBackToGameRooms={() => navigate("/rooms")}
+      />
+
+      <PlayerListModal
+        isOpen={showPlayerList}
+        onClose={() => setShowPlayerList(false)}
+        gameState={gameState}
+        getNationColor={getNationColor}
+      />
+
+      {/* Main Content Area */}
+      <div className="absolute inset-0">
+        {!mapChunks.length && loading ? (
+          <LoadingSpinner />
+        ) : (
+          <GameCanvas
+            mapMetadata={mapMetadata}
+            mapGrid={mapGrid}
+            mappings={mappings}
+            gameState={gameState}
+            userId={userId}
+            onArmyTargetSelect={handleSetArmyAttackTarget}
+            foundingNation={foundingNation}
+            onFoundNation={handleFoundNation}
+            buildingStructure={buildingStructure}
+            p
+            onBuildCity={handleBuildCity}
+          />
         )}
       </div>
-      <div className="flex justify-end items-center mb-4 text-sm">
-        {gameState && gameState?.roomCreator === userId && (
-          <div className="flex space-x-2">
-            {paused ? (
-              <button
-                onClick={handleUnPauseGame}
-                className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded"
-              >
-                Unpause
-              </button>
-            ) : (
-              <button
-                onClick={handlePauseGame}
-                className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded"
-              >
-                Pause
-              </button>
-            )}
-            <button
-              onClick={handleEndGame}
-              className="bg-red-600 hover:bg-red-800 text-white px-4 py-2 rounded"
-            >
-              End
-            </button>
-          </div>
-        )}
-      </div>
 
-      {error && (
-        <ErrorMessage
-          message={error}
-          onRetry={() => window.location.reload()}
-        />
-      )}
+      <ActionBar
+        onBuildCity={handleBuildCity}
+        onSetExpandTarget={handleSetExpandTarget}
+        onRaiseArmy={handleRaiseArmy}
+        onFoundNation={startFoundNation} // Pass the start function
+        config={config}
+        userState={userState}
+      />
 
-      {/* Main content area with three columns */}
-      <div className="flex gap-6">
-        {/* Left Panel */}
-        <LeftPanel
-          gameState={gameState}
-          userId={userId}
-          getNationColor={getNationColor}
-          contextMenu={contextMenu}
-          setContextMenu={setContextMenu}
-          onFoundNation={handleFoundNation}
-          setActionModal={setActionModal}
-        />
-
-        {/* Center: Game Canvas */}
-        <div className="flex-1 relative">
-          {!mapChunks.length && loading ? (
-            <LoadingSpinner />
-          ) : (
-            <GameCanvas
-              mapMetadata={mapMetadata}
-              mapGrid={mapGrid}
-              mappings={mappings}
-              gameState={gameState}
-              userId={userId}
-              selectedRegion={selectedRegion}
-              setSelectedRegion={setSelectedRegion}
-              contextMenu={contextMenu}
-              setContextMenu={setContextMenu}
-            />
-          )}
-        </div>
-
-        {/* Right Panel: Selected Region details */}
-        <div className="w-64">
-          {selectedRegion && (
-            <div className="bg-white p-4 rounded-lg shadow-lg">
-              <h2 className="text-lg font-semibold mb-2">Selected Region</h2>
-              <div className="space-y-1 text-sm">
-                <p>
-                  Position: ({selectedRegion.x}, {selectedRegion.y})
-                </p>
-                <p>Biome: {selectedRegion.biome}</p>
-                <p>Elevation: {selectedRegion.elevation.toFixed(2)}</p>
-                <p>Temperature: {selectedRegion.temperature.toFixed(1)}°C</p>
-                {selectedRegion.resources &&
-                  selectedRegion.resources.length > 0 && (
-                    <div>
-                      <p className="font-medium">Resources:</p>
-                      <ul className="list-disc pl-4">
-                        {selectedRegion.resources.map((resource) => (
-                          <li key={resource}>{resource}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                {selectedRegion.features &&
-                  selectedRegion.features.length > 0 && (
-                    <div>
-                      <p className="font-medium">Features:</p>
-                      <ul className="list-disc pl-4">
-                        {selectedRegion.features.map((feature) => (
-                          <li key={feature}>{feature}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                {selectedRegion.extraInfo && (
-                  <div className="mt-2 p-2 border-t">
-                    <h3 className="font-semibold">Player Info</h3>
-                    <p>Name: {selectedRegion.extraInfo.owner}</p>
-                    <p>
-                      Territory: {selectedRegion.extraInfo.territoryCount} tiles
-                    </p>
-                    <p>
-                      Cities: {selectedRegion.extraInfo.cities?.length || 0}
-                    </p>
-                    <p>Population: {selectedRegion.extraInfo.population}</p>
-                  </div>
-                )}
-                {selectedRegion.cityInfo && (
-                  <div className="mt-2 p-2 border-t">
-                    <h3 className="font-semibold">
-                      City: {selectedRegion.cityInfo.name}
-                    </h3>
-                    <p>Population: {selectedRegion.cityInfo.population}</p>
-                    <p>Type: {selectedRegion.cityInfo.type}</p>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Modal for login or action */}
+      {/* Keep Login Modal */}
       <Modal
         showLoginModal={!userId}
         onLoginSubmit={handleLoginSubmit}
@@ -554,9 +699,21 @@ const Game = () => {
         actionModal={actionModal}
         setActionModal={setActionModal}
         onBuildCity={handleBuildCity}
-        onAttack={handleAttack}
         onSetExpandTarget={handleSetExpandTarget}
+        config={config}
+        userState={userState}
+        onRaiseArmy={handleRaiseArmy}
       />
+
+      {/* Error Message Overlay */}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center z-50">
+          <ErrorMessage
+            message={error}
+            onRetry={() => window.location.reload()}
+          />
+        </div>
+      )}
     </div>
   );
 };

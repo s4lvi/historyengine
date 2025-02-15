@@ -1,0 +1,92 @@
+{
+    "tickCount": 6543,
+    "roomName": "asdf",
+    "roomCreator": "jordansalvi@gmail.com",
+    "gameState": {
+        "nations": [
+            {
+                "owner": "jordansalvi@gmail.com",
+                "startingCell": {
+                    "x": 148,
+                    "y": 111
+                },
+                "territory": {
+                    "x": [
+                        148,
+                        149,
+                        148,
+                        147,
+                        147,
+                        146,
+                        149
+                    ],
+                    "y": [
+                        111,
+                        112,
+                        112,
+                        112,
+                        113,
+                        113,
+                        111
+                    ]
+                },
+                "population": 984656,
+                "nationalWill": 50,
+                "resources": {
+                    "stone": 612,
+                    "arable land": 3848,
+                    "fresh water": 2454,
+                    "game animals": 1453,
+                    "timber": 3012,
+                    "copper ore": 458,
+                    "iron ore": 130,
+                    "precious metals": 90,
+                    "gems": 74,
+                    "fish": 773,
+                    "medicinal plants": 948,
+                    "fertile soil": 2956,
+                    "herbs": 855,
+                    "wild fruits": 813,
+                    "pastures": 3137,
+                    "grazing animals": 1418,
+                    "date palms": 5,
+                    "salt": 2
+                },
+                "cities": [
+                    {
+                        "name": "Capital",
+                        "x": 148,
+                        "y": 111,
+                        "population": 50,
+                        "type": "capital"
+                    }
+                ],
+                "structures": [],
+                "auto_city": false,
+                "expansionTarget": null,
+                "attackTarget": null,
+                "armies": [
+                    {
+                        "id": "67b107ce8b8a18fdd4878666",
+                        "men": 1000,
+                        "position": {
+                            "x": 83.6892722037797,
+                            "y": 99.2924685423043
+                        },
+                        "attackTarget": {
+                            "current": {
+                                "x": 83.6892722037797,
+                                "y": 99.2924685423043
+                            },
+                            "final": {
+                                "x": 116,
+                                "y": 79
+                            }
+                        }
+                    }
+                ]
+            }
+        ],
+        "lastUpdated": "2025-02-15T21:39:58.854Z"
+    }
+}

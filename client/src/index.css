@@ -11,4 +11,10 @@
     font-weight: 300 !important;
     font-style: italic;
   }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+  }
 }

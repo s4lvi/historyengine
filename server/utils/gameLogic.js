@@ -1,4 +1,3 @@
-// gameLogic.js
 import mongoose from "mongoose";
 import _ from "lodash";
 import {
@@ -6,6 +5,7 @@ import {
   canExpandTerritory,
   deductExpansionCosts,
 } from "./resourceManagement.js";
+import config from "../config/config.js";
 
 // Constants for yields, population, and auto‑city
 const RESOURCE_BASE_YIELD = 1; // Base yield per territory cell (can be adjusted)
@@ -13,6 +13,29 @@ const MAX_POPULATION_PER_TERRITORY = 100;
 const CITY_POPULATION_BONUS = 500;
 const POPULATION_GROWTH_RATE = 0.02;
 const COMPACTNESS_WEIGHT = 40;
+
+/**
+ * Helper: Iterate over all cells in a territory.
+ * Territory is assumed to have the structure:
+ * { x: [x1, x2, ...], y: [y1, y2, ...] }
+ */
+function forEachTerritoryCell(territory, callback) {
+  if (!territory || !territory.x || !territory.y) return;
+  for (let i = 0; i < territory.x.length; i++) {
+    callback(territory.x[i], territory.y[i], i);
+  }
+}
+
+/**
+ * Helper: Check if a given cell (x, y) is in the territory.
+ */
+function isCellInTerritory(territory, x, y) {
+  let found = false;
+  forEachTerritoryCell(territory, (tx, ty) => {
+    if (tx === x && ty === y) found = true;
+  });
+  return found;
+}
 
 // -----------------------
 // Helper: Count adjacent territory cells
@@ -22,7 +45,7 @@ function countAdjacentTerritory(x, y, territory) {
   for (let dx = -1; dx <= 1; dx++) {
     for (let dy = -1; dy <= 1; dy++) {
       if (dx === 0 && dy === 0) continue;
-      if (territory.some((cell) => cell.x === x + dx && cell.y === y + dy)) {
+      if (isCellInTerritory(territory, x + dx, y + dy)) {
         count++;
       }
     }
@@ -39,19 +62,7 @@ export function calculateCellDesirability(cell, x, y, territory) {
     return -Infinity;
   }
   let score = 0;
-  const biomeScores = {
-    GRASSLAND: 8,
-    WOODLAND: 8,
-    TROPICAL_FOREST: 7,
-    RAINFOREST: 7,
-    FOREST: 7,
-    SAVANNA: 5,
-    COASTAL: 8,
-    DESERT: 2,
-    MOUNTAIN: 3,
-    RIVER: 10,
-    OCEAN: -100,
-  };
+  const biomeScores = config.biomeDesirabilityScores;
   score += biomeScores[cell.biome] || 0;
   score += calculateResourceDesirability(cell) * 2;
   score += (Array.isArray(cell.resources) ? cell.resources.length : 0) * 2;
@@ -77,25 +88,21 @@ export function calculateCellDesirability(cell, x, y, territory) {
 function getBestCityLocation(nation, mapData) {
   let bestScore = -Infinity;
   let bestLocation = null;
-  for (const pos of nation.territory) {
+  // Iterate over territory cells using the new structure.
+  forEachTerritoryCell(nation.territory, (x, y) => {
     if (
       nation.cities &&
-      nation.cities.some((city) => city.x === pos.x && city.y === pos.y)
+      nation.cities.some((city) => city.x === x && city.y === y)
     )
-      continue;
-    const cell = mapData[pos.y] && mapData[pos.y][pos.x];
-    if (!cell) continue;
-    const score = calculateCellDesirability(
-      cell,
-      pos.x,
-      pos.y,
-      nation.territory
-    );
+      return;
+    const cell = mapData[y] && mapData[y][x];
+    if (!cell) return;
+    const score = calculateCellDesirability(cell, x, y, nation.territory);
     if (score > bestScore) {
       bestScore = score;
-      bestLocation = pos;
+      bestLocation = { x, y };
     }
-  }
+  });
   return bestLocation;
 }
 
@@ -109,24 +116,30 @@ function getValidAdjacentCells(territory, mapData, allNations) {
   }
   const adjacentCells = new Set();
   const allOccupiedPositions = new Set();
-  territory.forEach((cell) => {
-    allOccupiedPositions.add(`${cell.x},${cell.y}`);
+
+  // Add current territory cells.
+  forEachTerritoryCell(territory, (x, y) => {
+    allOccupiedPositions.add(`${x},${y}`);
   });
+
+  // Add cells occupied by other nations.
   if (Array.isArray(allNations)) {
     allNations.forEach((nation) => {
-      if (nation.territory) {
-        nation.territory.forEach((cell) => {
-          allOccupiedPositions.add(`${cell.x},${cell.y}`);
+      if (nation.territory && nation.territory.x && nation.territory.y) {
+        forEachTerritoryCell(nation.territory, (x, y) => {
+          allOccupiedPositions.add(`${x},${y}`);
         });
       }
     });
   }
-  territory.forEach((cell) => {
+
+  // Find adjacent cells.
+  forEachTerritoryCell(territory, (x, y) => {
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         if (dx === 0 && dy === 0) continue;
-        const newX = cell.x + dx;
-        const newY = cell.y + dy;
+        const newX = x + dx;
+        const newY = y + dy;
         const posKey = `${newX},${newY}`;
         if (allOccupiedPositions.has(posKey)) continue;
         if (
@@ -138,56 +151,163 @@ function getValidAdjacentCells(territory, mapData, allNations) {
           continue;
         const cellData = mapData[newY][newX];
         if (!cellData || cellData.biome === "OCEAN") continue;
-        adjacentCells.add({ x: newX, y: newY, cell: cellData });
+        // Use a unique key to avoid duplicates.
+        adjacentCells.add(JSON.stringify({ x: newX, y: newY, cell: cellData }));
       }
     }
   });
-  return Array.from(adjacentCells);
+
+  // Convert the set back into an array.
+  return Array.from(adjacentCells).map((str) => JSON.parse(str));
+}
+
+// -----------------------
+// Set expansion target with resource cost and tick duration.
+// Returns an object with a success flag and a message.
+// -----------------------
+export function setExpansionTarget(nation, target, mapData) {
+  // Verify the target cell is on land.
+  if (
+    !mapData[target.y] ||
+    !mapData[target.y][target.x] ||
+    mapData[target.y][target.x].biome === "OCEAN"
+  ) {
+    return {
+      success: false,
+      message: "Expansion target must be on land (non-OCEAN biome)",
+    };
+  }
+
+  // Use resource cost from config.
+  const cost = config.expansionTarget.cost;
+  for (const resource in cost) {
+    if ((nation.resources[resource] || 0) < cost[resource]) {
+      return {
+        success: false,
+        message: `Insufficient resources: ${resource} required`,
+      };
+    }
+  }
+  // Deduct the resource cost.
+  for (const resource in cost) {
+    nation.resources[resource] -= cost[resource];
+  }
+  const duration = config.expansionTarget.duration;
+
+  // Determine the starting point for the expansion target:
+  // Prefer the nearest city; if none exist, use the nation's starting cell.
+  let startingPoint = null;
+  if (nation.cities && nation.cities.length > 0) {
+    let bestDistance = Infinity;
+    nation.cities.forEach((city) => {
+      const distance =
+        Math.abs(city.x - target.x) + Math.abs(city.y - target.y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        startingPoint = { x: city.x, y: city.y };
+      }
+    });
+  } else if (nation.startingCell) {
+    startingPoint = nation.startingCell;
+  }
+  if (!startingPoint) {
+    return {
+      success: false,
+      message:
+        "No valid starting point (city or starting cell) found for expansion target",
+    };
+  }
+
+  // Always reset the expansion target.
+  nation.expansionTarget = {
+    start: { ...startingPoint },
+    current: { ...startingPoint },
+    final: { x: target.x, y: target.y },
+    ticksRemaining: duration,
+    totalDuration: duration,
+  };
+
+  return { success: true, message: "Expansion target set" };
 }
 
 // -----------------------
 // Territory Expansion (with Expansion Target Bonus)
 // -----------------------
 export function expandTerritory(nation, mapData, allNations) {
-  if (!canExpandTerritory(nation)) {
-    console.log(nation.owner + " cannot afford territory expansion");
-    return;
-  }
-  if (!nation.territory || nation.territory.length === 0) {
+  if (!canExpandTerritory(nation)) return;
+
+  // Initialize territory if not set.
+  if (
+    !nation.territory ||
+    !nation.territory.x ||
+    nation.territory.x.length === 0
+  ) {
     if (nation.startingCell) {
-      nation.territory = [nation.startingCell];
-      deductExpansionCosts(nation);
+      nation.territory = {
+        x: [nation.startingCell.x],
+        y: [nation.startingCell.y],
+      };
+      // Initialize delta with the starting cell as an addition.
+      nation.territoryDelta = {
+        add: { x: [nation.startingCell.x], y: [nation.startingCell.y] },
+        sub: { x: [], y: [] },
+      };
     }
     return;
   }
+
+  // Ensure a delta object exists.
+  if (!nation.territoryDelta) {
+    nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
+  }
+
   const adjacentCells = getValidAdjacentCells(
     nation.territory,
     mapData,
     allNations
   );
   if (adjacentCells.length === 0) return;
+
+  const BONUS_MULTIPLIER = 1000;
+  let currentMinDistance = Infinity;
+  if (nation.expansionTarget) {
+    forEachTerritoryCell(nation.territory, (x, y) => {
+      const d =
+        Math.abs(x - nation.expansionTarget.current.x) +
+        Math.abs(y - nation.expansionTarget.current.y);
+      if (d < currentMinDistance) currentMinDistance = d;
+    });
+  }
+
   const scoredCells = adjacentCells
     .map((adj) => {
+      if (adj.cell.biome === "OCEAN") return null;
       let score = calculateCellDesirability(
         adj.cell,
         adj.x,
         adj.y,
         nation.territory
       );
-      if (nation.expansionTarget) {
-        const dist =
-          Math.abs(adj.x - nation.expansionTarget.x) +
-          Math.abs(adj.y - nation.expansionTarget.y);
-        if (dist <= 1) {
-          score += 1000; // Massive bonus for cells near the target.
+      if (nation.expansionTarget && nation.expansionTarget.ticksRemaining > 0) {
+        const candidateDistance =
+          Math.abs(adj.x - nation.expansionTarget.current.x) +
+          Math.abs(adj.y - nation.expansionTarget.current.y);
+        if (candidateDistance < currentMinDistance) {
+          score += (currentMinDistance - candidateDistance) * BONUS_MULTIPLIER;
         }
       }
       return { ...adj, score };
     })
-    .filter((cell) => cell.score > -Infinity);
+    .filter((cell) => cell && cell.score > -Infinity);
+
   const bestCell = _.maxBy(scoredCells, "score");
   if (bestCell) {
-    nation.territory.push({ x: bestCell.x, y: bestCell.y });
+    // Add new cell to the territory.
+    nation.territory.x.push(bestCell.x);
+    nation.territory.y.push(bestCell.y);
+    // Record the addition in the delta.
+    nation.territoryDelta.add.x.push(bestCell.x);
+    nation.territoryDelta.add.y.push(bestCell.y);
     deductExpansionCosts(nation);
   }
 }
@@ -197,17 +317,15 @@ export function expandTerritory(nation, mapData, allNations) {
 // -----------------------
 function calculateNaturalResourceLimits(territory, mapData, cities = []) {
   const naturalLimits = {};
-  territory.forEach((pos) => {
-    if (!mapData[pos.y] || !mapData[pos.y][pos.x]) return;
-    const cell = mapData[pos.y][pos.x];
+  forEachTerritoryCell(territory, (x, y) => {
+    if (!mapData[y] || !mapData[y][x]) return;
+    const cell = mapData[y][x];
     if (!cell || !Array.isArray(cell.resources)) return;
-    // Check if a capital city exists on this cell
     let multiplier = 1;
     if (
       cities &&
       cities.some(
-        (city) =>
-          city.x === pos.x && city.y === pos.y && city.type === "capital"
+        (city) => city.x === x && city.y === y && city.type === "capital"
       )
     ) {
       multiplier = 5;
@@ -224,7 +342,7 @@ function calculateNaturalResourceLimits(territory, mapData, cities = []) {
 // Population Calculation
 // -----------------------
 function calculateMaxPopulation(nation) {
-  let maxPop = nation.territory.length * MAX_POPULATION_PER_TERRITORY;
+  let maxPop = nation.territory.x.length * MAX_POPULATION_PER_TERRITORY;
   maxPop += (nation.cities?.length || 0) * CITY_POPULATION_BONUS;
   const resources = nation.resources || {};
   if (resources["arable land"] > 0) maxPop *= 1.2;
@@ -246,7 +364,7 @@ export function updatePopulation(nation) {
 }
 
 // -----------------------
-// Main updateNation function – resources regenerate; auto‑city spawning remains
+// Main updateNation function – resources regenerate; expansion & armies update; auto‑city spawning remains
 // -----------------------
 export function updateNation(nation, mapData, gameState) {
   if (!Array.isArray(mapData) || !Array.isArray(mapData[0])) {
@@ -256,13 +374,12 @@ export function updateNation(nation, mapData, gameState) {
   const updatedNation = { ...nation };
   updatedNation.resources = updatedNation.resources || {};
 
-  // Pass the nation's cities so capitals boost yields.
+  // Regenerate natural resources.
   const naturalLimits = calculateNaturalResourceLimits(
     updatedNation.territory,
     mapData,
     updatedNation.cities
   );
-
   const RESOURCE_REGEN_RATE = 0.1;
   Object.entries(naturalLimits).forEach(([resource, limit]) => {
     const current = updatedNation.resources[resource] || 0;
@@ -275,10 +392,71 @@ export function updateNation(nation, mapData, gameState) {
     }
   });
 
+  // Update expansion target.
+  if (
+    updatedNation.expansionTarget &&
+    updatedNation.expansionTarget.ticksRemaining > 0
+  ) {
+    const expTarget = updatedNation.expansionTarget;
+    const baseStep = 0.2;
+    const maxAngleVariation = Math.PI / 36;
+    const dx = expTarget.final.x - expTarget.current.x;
+    const dy = expTarget.final.y - expTarget.current.y;
+    const targetAngle = Math.atan2(dy, dx);
+    const randomVariation = (Math.random() - 0.5) * 2 * maxAngleVariation;
+    const newAngle = targetAngle + randomVariation;
+    const newX = expTarget.current.x + baseStep * Math.cos(newAngle);
+    const newY = expTarget.current.y + baseStep * Math.sin(newAngle);
+    if (
+      mapData[Math.floor(newY)] &&
+      mapData[Math.floor(newY)][Math.floor(newX)] &&
+      mapData[Math.floor(newY)][Math.floor(newX)].biome !== "OCEAN"
+    ) {
+      expTarget.current = { x: newX, y: newY };
+    }
+    expTarget.ticksRemaining--;
+  }
+  if (updatedNation.expansionTarget?.ticksRemaining === 0) {
+    delete updatedNation.expansionTarget;
+  }
+
+  // Update armies movement.
+  if (updatedNation.armies && Array.isArray(updatedNation.armies)) {
+    const ARMY_STEP = config.armyMovementStep || 0.2;
+    updatedNation.armies = updatedNation.armies.map((army) => {
+      if (army.attackTarget) {
+        const { current, final } = army.attackTarget;
+        const dx = final.x - current.x;
+        const dy = final.y - current.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < 0.1) {
+          army.attackTarget = null;
+        } else {
+          const targetAngle = Math.atan2(dy, dx);
+          const maxAngleVariation = Math.PI / 36;
+          const randomVariation = (Math.random() - 0.5) * 2 * maxAngleVariation;
+          const newAngle = targetAngle + randomVariation;
+          const newX = current.x + ARMY_STEP * Math.cos(newAngle);
+          const newY = current.y + ARMY_STEP * Math.sin(newAngle);
+          if (
+            mapData[Math.floor(newY)] &&
+            mapData[Math.floor(newY)][Math.floor(newX)] &&
+            mapData[Math.floor(newY)][Math.floor(newX)].biome !== "OCEAN"
+          ) {
+            army.attackTarget.current = { x: newX, y: newY };
+            army.position = { x: newX, y: newY };
+          }
+        }
+      }
+      return army;
+    });
+  }
+
+  // Update territory expansion and population.
   expandTerritory(updatedNation, mapData, gameState.nations);
   updatePopulation(updatedNation);
 
-  // Auto‑city spawning logic (unchanged)
+  // Auto‑city spawning.
   const AUTO_CITY_SPAWN_CHANCE = 0.05;
   const CITY_BUILD_COST = {
     stone: 10,
@@ -312,6 +490,14 @@ export function updateNation(nation, mapData, gameState) {
         updatedNation.cities.push(newCity);
       }
     }
+  }
+
+  if (updatedNation.territoryDelta) {
+    updatedNation.territoryDeltaForClient = updatedNation.territoryDelta;
+    updatedNation.territoryDelta = {
+      add: { x: [], y: [] },
+      sub: { x: [], y: [] },
+    };
   }
   return updatedNation;
 }

@@ -14,7 +14,7 @@ function App() {
       <Router>
         <div className="App min-h-screen bg-gray-50">
           <Header />
-          <main className="pt-6 pb-12 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <main className="pb-12 max-w-7xl mx-auto ">
             <Routes>
               <Route path="/" element={<MapList />} />
               <Route path="/map/:id" element={<WorldMap />} />
