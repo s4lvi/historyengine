@@ -27,26 +27,6 @@ const nationWorkerPath = fileURLToPath(
 );
 const nationPool = workerpool.pool(nationWorkerPath);
 
-let paused = false;
-parentPort.on("message", (msg) => {
-  if (msg.type === "PAUSE") {
-    paused = true;
-    console.log("Worker paused");
-  } else if (msg.type === "UNPAUSE") {
-    paused = false;
-    console.log("Worker unpaused");
-  } else if (msg.type === "UPDATE_STATE") {
-    if (!msg.timestamp || msg.timestamp > processor.stateVersion) {
-      processor.gameState = msg.gameState;
-      processor.tickCount = msg.tickCount;
-      processor.stateVersion = msg.timestamp;
-      console.log("[WORKER] State updated to version:", msg.timestamp);
-    } else {
-      console.log("[WORKER] Ignored older state update");
-    }
-  }
-});
-
 class GameProcessor {
   constructor(initialState) {
     // Expect initialState to contain the roomId so we know which room to load.
@@ -144,21 +124,43 @@ class GameProcessor {
   }
 }
 
+let paused = false;
+const processor = new GameProcessor(workerData);
+
+parentPort.on("message", (msg) => {
+  if (msg.type === "PAUSE") {
+    paused = true;
+    console.log("Worker paused");
+  } else if (msg.type === "UNPAUSE") {
+    paused = false;
+    console.log("Worker unpaused");
+  } else if (msg.type === "UPDATE_STATE") {
+    if (!msg.timestamp || msg.timestamp > processor.stateVersion) {
+      processor.gameState = msg.gameState;
+      processor.tickCount = msg.tickCount;
+      processor.stateVersion = msg.timestamp;
+      console.log("[WORKER] State updated to version:", msg.timestamp);
+    } else {
+      console.log("[WORKER] Ignored older state update");
+    }
+  }
+});
+
 // Main asynchronous tick loop.
 async function tickLoop() {
-  const processor = new GameProcessor(workerData);
   while (true) {
-    // Wait while paused.
-    while (paused) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    if (!paused) {
+      try {
+        await processor.processGameTick();
+      } catch (error) {
+        console.error("[WORKER] Error during tick:", error);
+      }
     }
-    try {
-      await processor.processGameTick();
-    } catch (error) {
-      console.error("[WORKER] Error during tick processing:", error);
-    }
-    // Wait a bit before processing the next tick.
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
-tickLoop();
+
+tickLoop().catch((error) => {
+  console.error("[WORKER] Fatal error in tick loop:", error);
+  process.exit(1);
+});
