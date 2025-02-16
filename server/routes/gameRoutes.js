@@ -570,10 +570,6 @@ router.post("/:id/foundNation", async (req, res, next) => {
       ...currentGameState,
       nations: [...(currentGameState.nations || []), newNation],
     };
-    console.log(
-      "[ROUTE] Updated game state:",
-      JSON.stringify(updatedGameState, null, 2)
-    );
     gameRoom.gameState = updatedGameState;
     gameRoom.markModified("gameState");
     console.log("[FOUND] GameRoom state before save:", {

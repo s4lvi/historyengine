@@ -169,58 +169,28 @@ class GameWorkerManager {
 
   // Use the snapshot approach in updateWorkerState:
   async updateWorkerState(roomId, newState) {
-    const workerExists = await this.ensureWorkerExists(roomId);
-    if (!workerExists) {
-      console.error(`Could not recreate worker for room ${roomId}`);
-      return;
-    }
+    const worker = this.workers.get(roomId.toString());
+    if (worker) {
+      this.latestStates.set(roomId, newState);
 
-    await this.acquireLock(roomId);
-    try {
-      // Get the latest state first
-      const GameRoom = mongoose.model("GameRoom");
-      const currentRoom = await GameRoom.findById(roomId).lean();
-      if (!currentRoom) {
-        throw new Error("Game room not found");
-      }
-
-      // Merge the new state with current state
-      const mergedState = {
-        ...currentRoom.gameState,
-        nations: currentRoom.gameState.nations.map((nation) => {
-          // Find matching nation in new state
-          const updatedNation = newState.gameState.nations.find(
-            (n) => n.owner === nation.owner
-          );
-          return updatedNation || nation;
-        }),
-      };
-
-      // Update the local state cache
-      this.latestStates.set(roomId, {
-        gameState: mergedState,
+      // Add timestamp to state update
+      worker.postMessage({
+        type: "UPDATE_STATE",
+        gameState: newState.gameState,
         tickCount: newState.tickCount,
+        timestamp: Date.now(),
       });
 
-      const worker = this.workers.get(roomId.toString());
-      if (worker) {
-        worker.postMessage({
-          type: "UPDATE_STATE",
-          gameState: mergedState,
+      const GameRoom = mongoose.model("GameRoom");
+      await GameRoom.findByIdAndUpdate(roomId, {
+        $set: {
+          gameState: newState.gameState,
           tickCount: newState.tickCount,
-        });
-
-        await GameRoom.findByIdAndUpdate(roomId, {
-          $set: {
-            gameState: mergedState,
-            tickCount: newState.tickCount,
-          },
-        });
-      }
-    } finally {
-      this.releaseLock(roomId);
+        },
+      });
     }
   }
+
   getLatestState(roomId) {
     const state = this.latestStates.get(roomId);
     if (!state) return null;

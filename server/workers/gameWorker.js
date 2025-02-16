@@ -36,7 +36,14 @@ parentPort.on("message", (msg) => {
     paused = false;
     console.log("Worker unpaused");
   } else if (msg.type === "UPDATE_STATE") {
-    // Optionally update internal state if needed.
+    if (!msg.timestamp || msg.timestamp > processor.stateVersion) {
+      processor.gameState = msg.gameState;
+      processor.tickCount = msg.tickCount;
+      processor.stateVersion = msg.timestamp;
+      console.log("[WORKER] State updated to version:", msg.timestamp);
+    } else {
+      console.log("[WORKER] Ignored older state update");
+    }
   }
 });
 
@@ -45,8 +52,9 @@ class GameProcessor {
     // Expect initialState to contain the roomId so we know which room to load.
     this.roomId = initialState.roomId;
     this.mapData = initialState.mapData || [];
-    // We'll load the latest gameState from the DB on each tick.
+    this.gameState = initialState.gameState;
     this.tickCount = initialState.tickCount || 0;
+    this.stateVersion = Date.now();
   }
 
   // Load the latest game state for this room from the database.
@@ -104,51 +112,32 @@ class GameProcessor {
   }
   // Process a tick: load the latest state, update it using a worker pool, then save it.
   async processGameTick() {
+    // Load fresh state from DB instead of using potentially stale state
     await this.loadStateFromDB();
     this.tickCount += 1;
 
     if (!this.gameState?.nations?.length) return;
-    // At start of processGameTick
+
     console.log(
       "[TICK] Processing tick, nations:",
-      this.gameState?.nations?.map((n) => n.owner)
+      this.gameState.nations.map((n) => n.owner)
     );
+
     try {
-      // Process one nation at a time to avoid state conflicts
-      for (let i = 0; i < this.gameState.nations.length; i++) {
-        const nation = this.gameState.nations[i];
+      // Process nations
+      const updatedNations = await Promise.all(
+        this.gameState.nations.map((nation) =>
+          nationPool.exec("updateNationInWorker", [
+            nation,
+            this.mapData,
+            this.gameState,
+          ])
+        )
+      );
 
-        // Get latest state for this nation from DB to ensure we have any player actions
-        const GameRoom = mongoose.model("GameRoom");
-        const latestRoom = await GameRoom.findById(this.roomId).lean();
-        if (!latestRoom) continue;
-
-        // Find the latest version of this nation
-        const latestNation = latestRoom.gameState.nations.find(
-          (n) => n.owner === nation.owner
-        );
-        if (!latestNation) continue;
-
-        // Process this nation with latest game state
-        const updatedNation = await nationPool.exec("updateNationInWorker", [
-          latestNation,
-          this.mapData,
-          latestRoom.gameState,
-        ]);
-
-        // Update just this nation in the game state
-        const nationIndex = this.gameState.nations.findIndex(
-          (n) => n.owner === nation.owner
-        );
-        if (nationIndex !== -1) {
-          this.gameState.nations[nationIndex] = updatedNation;
-        }
-
-        // Save after each nation update
-        await this.saveStateToDB();
-      }
-
+      this.gameState.nations = updatedNations;
       this.gameState.lastUpdated = new Date();
+      await this.saveStateToDB();
     } catch (error) {
       console.error("[TICK] Error processing nations:", error);
     }
