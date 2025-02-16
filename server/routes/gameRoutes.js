@@ -277,7 +277,6 @@ router.delete("/:id", async (req, res, next) => {
         .status(403)
         .json({ error: "Invalid room creator credentials" });
     }
-    await gameWorkerManager.stopWorker(req.params.id);
     const MapModel = mongoose.model("Map");
     const MapChunk = mongoose.model("MapChunk");
     await MapChunk.deleteMany({ map: gameRoom.map });
@@ -299,9 +298,6 @@ router.post("/:id/end", async (req, res, next) => {
     const gameRoom = await GameRoom.findById(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-
-    // Stop the game worker so ticks stop progressing
-    await gameWorkerManager.stopWorker(req.params.id);
 
     // Delete associated map data: MapChunks and the copied Map
     const MapModel = mongoose.model("Map");
@@ -325,13 +321,7 @@ router.post("/:id/end", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/pause", async (req, res, next) => {
   try {
-    // Pause the game worker (you must implement pauseWorker in your gameWorkerManager)
-    console.log("[ROUTE] Pausing game worker for room ID:", req.params.id);
-    await gameWorkerManager.pauseWorker(req.params.id);
-
-    // Optionally update the game room status to "paused"
     await GameRoom.findByIdAndUpdate(req.params.id, { status: "paused" });
-
     res.json({ message: "Game session paused successfully" });
   } catch (error) {
     next(error);
@@ -343,12 +333,7 @@ router.post("/:id/pause", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/unpause", async (req, res, next) => {
   try {
-    // Unpause the game worker (you must implement unpauseWorker in your gameWorkerManager)
-    await gameWorkerManager.unpauseWorker(req.params.id);
-
-    // Optionally update the game room status back to "open"
     await GameRoom.findByIdAndUpdate(req.params.id, { status: "open" });
-
     res.json({ message: "Game session unpaused successfully" });
   } catch (error) {
     next(error);
@@ -402,6 +387,7 @@ router.post("/:id/join", async (req, res, next) => {
 // -------------------------------------------------------------------
 // POST /api/gamerooms/:id/state - Get the latest game state
 // -------------------------------------------------------------------
+// In gameRoutes.js
 router.post("/:id/state", async (req, res, next) => {
   try {
     const { userId, password, full } = req.body;
@@ -422,8 +408,6 @@ router.post("/:id/state", async (req, res, next) => {
     if (!player) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
-
-    const latestState = gameWorkerManager.getLatestState(req.params.id);
 
     // Modified filterNation to handle loyalty and defeated status
     const filterNation = (nation) => {
@@ -467,22 +451,6 @@ router.post("/:id/state", async (req, res, next) => {
       }
     };
 
-    if (latestState) {
-      // Process each nation accordingly
-      const filteredGameState = {
-        ...latestState.gameState,
-        nations: (latestState.gameState.nations || []).map(filterNation),
-      };
-
-      return res.json({
-        tickCount: latestState.tickCount,
-        roomName: gameRoom.roomName,
-        roomCreator: gameRoom.creator.userId,
-        gameState: filteredGameState,
-      });
-    }
-
-    // Fallback if there is no worker state
     const filteredGameState = {
       ...gameRoom.gameState,
       nations: (gameRoom.gameState.nations || []).map(filterNation),
@@ -498,6 +466,7 @@ router.post("/:id/state", async (req, res, next) => {
     next(error);
   }
 });
+
 // -------------------------------------------------------------------
 // POST /api/gamerooms/:id/foundNation - Found a nation for a player
 // (Automatically builds a capital city on the founding cell)

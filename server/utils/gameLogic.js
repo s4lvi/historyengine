@@ -575,3 +575,23 @@ export function updateNation(nation, mapData, gameState) {
   }
   return updatedNation;
 }
+
+async function processGameTick(gameRoom) {
+  // Get map data for territory expansion
+  const MapModel = mongoose.model("Map");
+  const MapChunk = mongoose.model("MapChunk");
+  const chunks = await MapChunk.find({ map: gameRoom.map }).lean();
+  const mapData = []; // Build mapData same as before
+
+  // Process each nation
+  if (gameRoom.gameState?.nations) {
+    gameRoom.gameState.nations = gameRoom.gameState.nations.map((nation) =>
+      updateNation(nation, mapData, gameRoom.gameState)
+    );
+  }
+
+  gameRoom.tickCount += 1;
+  await gameRoom.save();
+
+  return gameRoom;
+}

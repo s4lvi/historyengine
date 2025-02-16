@@ -1,17 +1,19 @@
 // gameWorkerManager.js
+import { Worker } from "worker_threads";
+import mongoose from "mongoose";
+import "../models/GameRoom.js";
 class GameWorkerManager {
   constructor() {
     this.workers = new Map();
   }
 
   async startWorker(roomId, gameRoom) {
-    // Stop any existing worker
     await this.stopWorker(roomId);
 
     // Load map data
     const mapData = await this.loadMapData(gameRoom.map);
 
-    // Create new worker
+    // Create new worker with just roomId and map data
     const worker = new Worker(new URL("./gameWorker.js", import.meta.url), {
       workerData: {
         roomId: roomId.toString(),
