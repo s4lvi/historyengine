@@ -5,6 +5,10 @@
           "stone": 20,
           "arable land": 30
         },
+        "fort": {
+          "stone": 2000,
+          "arable land": 30
+        },
         "workshop": {
           "stone": 300,
           "arable land": 400

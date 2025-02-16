@@ -4,10 +4,27 @@ import mongoose from "mongoose";
 import { gameWorkerManager } from "../workers/gameWorkerManager.js";
 import { setExpansionTarget } from "../utils/gameLogic.js";
 import config from "../config/config.js";
+import { LOYALTY } from "../utils/loyaltySystem.js";
 
 const router = express.Router();
 
 import GameRoom from "../models/GameRoom.js";
+
+function getMaxDepth(obj, currentDepth = 0) {
+  if (typeof obj !== "object" || obj === null) {
+    return currentDepth;
+  }
+  let maxDepth = currentDepth;
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const depth = getMaxDepth(obj[key], currentDepth + 1);
+      if (depth > maxDepth) {
+        maxDepth = depth;
+      }
+    }
+  }
+  return maxDepth;
+}
 
 // -------------------------------------------------------------------
 // POST /api/gamerooms - Create a game room (with a map copy)
@@ -393,42 +410,70 @@ router.post("/:id/state", async (req, res, next) => {
         .status(400)
         .json({ error: "userId and password are required" });
     }
+
     const gameRoom = await GameRoom.findById(req.params.id).lean();
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
+
     const player = gameRoom.players.find(
       (p) => p.userId === userId && p.password === password
     );
     if (!player) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
+
     const latestState = gameWorkerManager.getLatestState(req.params.id);
 
-    // Modify filterNation to check the 'full' flag.
+    // Modified filterNation to handle loyalty and defeated status
     const filterNation = (nation) => {
+      // If nation is defeated, only send minimal info
+      if (nation.status === "defeated") {
+        return {
+          owner: nation.owner,
+          status: "defeated",
+        };
+      }
+
       if (full) {
-        // When full is true, return the nation as is (full territory included).
-        return nation;
+        // When full is true, return the complete nation data including territory and loyalty
+        return {
+          ...nation,
+          territoryLoyalty: nation.territoryLoyalty || {},
+          // Clear the delta since we're sending full data
+          territoryDeltaForClient: {
+            add: { x: [], y: [] },
+            sub: { x: [], y: [] },
+          },
+        };
       } else {
-        // Otherwise, remove the full territory and only send territoryDeltaForClient.
-        const { territory, ...rest } = nation;
+        // When not full, remove full territory and send only delta
+        const { territory, territoryLoyalty, ...rest } = nation;
+
+        // For the owner of the nation, include loyalty data for their territory
+        const shouldIncludeLoyalty = nation.owner === userId;
+
         return {
           ...rest,
           territoryDeltaForClient: nation.territoryDeltaForClient || {
             add: { x: [], y: [] },
             sub: { x: [], y: [] },
           },
+          // Only include loyalty data if this is the nation owner
+          ...(shouldIncludeLoyalty
+            ? { territoryLoyalty: nation.territoryLoyalty || {} }
+            : {}),
         };
       }
     };
 
     if (latestState) {
-      // Process each nation accordingly.
+      // Process each nation accordingly
       const filteredGameState = {
         ...latestState.gameState,
         nations: (latestState.gameState.nations || []).map(filterNation),
       };
+
       return res.json({
         tickCount: latestState.tickCount,
         roomName: gameRoom.roomName,
@@ -436,11 +481,13 @@ router.post("/:id/state", async (req, res, next) => {
         gameState: filteredGameState,
       });
     }
-    // Fallback if there is no worker state.
+
+    // Fallback if there is no worker state
     const filteredGameState = {
       ...gameRoom.gameState,
       nations: (gameRoom.gameState.nations || []).map(filterNation),
     };
+
     res.json({
       tickCount: gameRoom.tickCount,
       roomName: gameRoom.roomName,
@@ -451,7 +498,6 @@ router.post("/:id/state", async (req, res, next) => {
     next(error);
   }
 });
-
 // -------------------------------------------------------------------
 // POST /api/gamerooms/:id/foundNation - Found a nation for a player
 // (Automatically builds a capital city on the founding cell)
@@ -493,8 +539,10 @@ router.post("/:id/foundNation", async (req, res, next) => {
     // Create new nation with territory stored as {x: [...], y: [...]}
     const newNation = {
       owner: userId,
+      status: "active",
       startingCell: { x, y },
       territory: { x: [x], y: [y] },
+      territoryLoyalty: { [`${x},${y}`]: LOYALTY.INITIAL },
       population: 100,
       nationalWill: 50,
       resources: {
@@ -528,16 +576,16 @@ router.post("/:id/foundNation", async (req, res, next) => {
     );
     gameRoom.gameState = updatedGameState;
     gameRoom.markModified("gameState");
+    console.log("[FOUND] GameRoom state before save:", {
+      nationCount: gameRoom.gameState?.nations?.length,
+      nations: gameRoom.gameState?.nations?.map((n) => n.owner),
+    });
     await gameRoom.save();
     await gameWorkerManager.updateWorkerState(gameRoom._id, {
       gameState: updatedGameState,
       tickCount: gameRoom.tickCount + 1,
     });
     const verifyState = await gameWorkerManager.getLatestState(gameRoom._id);
-    console.log(
-      "[ROUTE] Verified state after update:",
-      JSON.stringify(verifyState, null, 2)
-    );
     res
       .status(201)
       .json({ message: "Nation founded successfully", nation: newNation });
@@ -792,7 +840,7 @@ router.post("/:id/raiseArmy", async (req, res, next) => {
 
     // Create the new army object using the stats from the config.
     const newArmy = {
-      id: new mongoose.Types.ObjectId(), // unique identifier for the army
+      id: new mongoose.Types.ObjectId().toString(), // unique identifier for the army
       type,
       speed: armyStats.speed,
       power: armyStats.power,

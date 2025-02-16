@@ -1,10 +1,16 @@
 // gameWorker.js
 import mongoose from "mongoose";
 import { parentPort, workerData } from "worker_threads";
-import { updateNation } from "../utils/gameLogic.js";
-import GameRoom from "../models/GameRoom.js";
+import path from "path";
+import { fileURLToPath } from "url";
+import workerpool from "workerpool";
+import "../models/GameRoom.js";
 
-// Make sure we have a connection to the DB (you might have your own connection logic)
+// Setup __dirname for ES Modules.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Ensure we have a connection to the DB.
 if (mongoose.connection.readyState === 0) {
   mongoose
     .connect("mongodb://localhost:27017/fantasy-maps", {
@@ -13,6 +19,13 @@ if (mongoose.connection.readyState === 0) {
     })
     .catch((err) => console.error("Worker DB connection error:", err));
 }
+
+// Create a worker pool for processing nation updates.
+// We use the nationWorker.js file we created.
+const nationWorkerPath = fileURLToPath(
+  new URL("./nationWorker.js", import.meta.url)
+);
+const nationPool = workerpool.pool(nationWorkerPath);
 
 let paused = false;
 parentPort.on("message", (msg) => {
@@ -23,7 +36,7 @@ parentPort.on("message", (msg) => {
     paused = false;
     console.log("Worker unpaused");
   } else if (msg.type === "UPDATE_STATE") {
-    // Optionally update internal state from msg.gameState and msg.tickCount.
+    // Optionally update internal state if needed.
   }
 });
 
@@ -54,8 +67,34 @@ class GameProcessor {
   }
 
   // Save the updated state back to the database.
+  // Add this to saveStateToDB in gameWorker.js
   async saveStateToDB() {
     const GameRoom = mongoose.model("GameRoom");
+
+    // Debug the state structure
+    function getMaxDepth(obj, currentPath = "") {
+      if (typeof obj !== "object" || obj === null) {
+        return { depth: 0, path: currentPath };
+      }
+
+      let maxDepth = 0;
+      let maxPath = currentPath;
+
+      for (const key in obj) {
+        const result = getMaxDepth(
+          obj[key],
+          currentPath ? `${currentPath}.${key}` : key
+        );
+        if (result.depth + 1 > maxDepth) {
+          maxDepth = result.depth + 1;
+          maxPath = result.path;
+        }
+      }
+
+      return { depth: maxDepth, path: maxPath };
+    }
+
+    // Proceed with the save
     await GameRoom.findByIdAndUpdate(this.roomId, {
       $set: {
         gameState: this.gameState,
@@ -63,35 +102,53 @@ class GameProcessor {
       },
     });
   }
-
-  // Process a tick: load the latest state, update it, then save it back.
+  // Process a tick: load the latest state, update it using a worker pool, then save it.
   async processGameTick() {
     await this.loadStateFromDB();
-
     this.tickCount += 1;
-    // If there are no nations, nothing to process.
-    if (
-      !this.gameState ||
-      !Array.isArray(this.gameState.nations) ||
-      this.gameState.nations.length === 0
-    ) {
-      // console.log("[TICK] No nations to process");
-      return;
-    }
 
+    if (!this.gameState?.nations?.length) return;
+    // At start of processGameTick
+    console.log(
+      "[TICK] Processing tick, nations:",
+      this.gameState?.nations?.map((n) => n.owner)
+    );
     try {
-      const updatedNations = this.gameState.nations.map((nation) => {
-        // console.log(`[TICK] Processing nation: ${nation.owner}`);
-        return updateNation(nation, this.mapData, this.gameState);
-      });
-      // Update gameState with the processed nations and a timestamp.
-      this.gameState = {
-        ...this.gameState,
-        nations: updatedNations,
-        lastUpdated: new Date(),
-      };
-      // Save the updated state back to the DB.
-      await this.saveStateToDB();
+      // Process one nation at a time to avoid state conflicts
+      for (let i = 0; i < this.gameState.nations.length; i++) {
+        const nation = this.gameState.nations[i];
+
+        // Get latest state for this nation from DB to ensure we have any player actions
+        const GameRoom = mongoose.model("GameRoom");
+        const latestRoom = await GameRoom.findById(this.roomId).lean();
+        if (!latestRoom) continue;
+
+        // Find the latest version of this nation
+        const latestNation = latestRoom.gameState.nations.find(
+          (n) => n.owner === nation.owner
+        );
+        if (!latestNation) continue;
+
+        // Process this nation with latest game state
+        const updatedNation = await nationPool.exec("updateNationInWorker", [
+          latestNation,
+          this.mapData,
+          latestRoom.gameState,
+        ]);
+
+        // Update just this nation in the game state
+        const nationIndex = this.gameState.nations.findIndex(
+          (n) => n.owner === nation.owner
+        );
+        if (nationIndex !== -1) {
+          this.gameState.nations[nationIndex] = updatedNation;
+        }
+
+        // Save after each nation update
+        await this.saveStateToDB();
+      }
+
+      this.gameState.lastUpdated = new Date();
     } catch (error) {
       console.error("[TICK] Error processing nations:", error);
     }
@@ -111,6 +168,7 @@ async function tickLoop() {
     } catch (error) {
       console.error("[WORKER] Error during tick processing:", error);
     }
+    // Wait a bit before processing the next tick.
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }

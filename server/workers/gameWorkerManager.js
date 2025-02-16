@@ -130,6 +130,7 @@ class GameWorkerManager {
       clearInterval(existingInterval);
     }
     const interval = setInterval(async () => {
+      const startTime = performance.now();
       try {
         const latestState = this.latestStates.get(roomId);
         if (latestState?.gameState?.nations) {
@@ -151,8 +152,16 @@ class GameWorkerManager {
             );
           }
         }
+        const duration = performance.now() - startTime;
+        console.log(
+          `[TICK] Room ${roomId} - Tick completed in ${duration.toFixed(2)}ms`
+        );
       } catch (error) {
-        console.error(`Error updating database for room ${roomId}:`, error);
+        const duration = performance.now() - startTime;
+        console.error(
+          `[TICK ERROR] Room ${roomId} failed after ${duration.toFixed(2)}ms:`,
+          error
+        );
       }
     }, this.updateInterval);
     this.updateIntervals.set(roomId.toString(), interval);
@@ -160,46 +169,58 @@ class GameWorkerManager {
 
   // Use the snapshot approach in updateWorkerState:
   async updateWorkerState(roomId, newState) {
-    // Ensure the worker exists (this call manages its own locking)
     const workerExists = await this.ensureWorkerExists(roomId);
     if (!workerExists) {
       console.error(`Could not recreate worker for room ${roomId}`);
       return;
     }
 
-    // Now, acquire the lock for the update operation.
     await this.acquireLock(roomId);
     try {
+      // Get the latest state first
+      const GameRoom = mongoose.model("GameRoom");
+      const currentRoom = await GameRoom.findById(roomId).lean();
+      if (!currentRoom) {
+        throw new Error("Game room not found");
+      }
+
+      // Merge the new state with current state
+      const mergedState = {
+        ...currentRoom.gameState,
+        nations: currentRoom.gameState.nations.map((nation) => {
+          // Find matching nation in new state
+          const updatedNation = newState.gameState.nations.find(
+            (n) => n.owner === nation.owner
+          );
+          return updatedNation || nation;
+        }),
+      };
+
+      // Update the local state cache
+      this.latestStates.set(roomId, {
+        gameState: mergedState,
+        tickCount: newState.tickCount,
+      });
+
       const worker = this.workers.get(roomId.toString());
       if (worker) {
-        // Update the local state cache.
-        this.latestStates.set(roomId, newState);
-        console.log("Worker state updated in cache.");
-
-        // Send the updated state to the worker.
         worker.postMessage({
           type: "UPDATE_STATE",
-          gameState: newState.gameState,
+          gameState: mergedState,
           tickCount: newState.tickCount,
         });
 
-        // Save the new state to the database.
-        const GameRoom = mongoose.model("GameRoom");
         await GameRoom.findByIdAndUpdate(roomId, {
           $set: {
-            gameState: newState.gameState,
+            gameState: mergedState,
             tickCount: newState.tickCount,
           },
         });
-        console.log("Worker state updated successfully.");
       }
-    } catch (err) {
-      console.error(err);
     } finally {
       this.releaseLock(roomId);
     }
   }
-
   getLatestState(roomId) {
     const state = this.latestStates.get(roomId);
     if (!state) return null;
