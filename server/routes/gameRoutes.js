@@ -505,38 +505,35 @@ router.post("/:id/state", async (req, res, next) => {
 router.post("/:id/foundNation", async (req, res, next) => {
   try {
     const { userId, password, x, y } = req.body;
-    console.log("[ROUTE] Found nation request:", { userId, x, y });
-    if (!userId || !password || x == null || y == null) {
-      return res
-        .status(400)
-        .json({ error: "userId, password, x, and y are required" });
-    }
+    console.log("[FOUND] Attempt:", { userId, x, y });
+
+    // 1. Load current state
     const gameRoom = await GameRoom.findById(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
-    const workerState = await gameWorkerManager.getLatestState(req.params.id);
-    console.log(
-      "[ROUTE] Current worker state:",
-      JSON.stringify(workerState, null, 2)
-    );
+
+    // 2. Validate
     const player = gameRoom.players.find(
       (p) => p.userId === userId && p.password === password
     );
     if (!player) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
-    const currentGameState = {
-      nations: [],
-      ...(workerState?.gameState || {}),
-      ...(gameRoom.gameState || {}),
-    };
-    if (currentGameState.nations.find((n) => n.owner === userId)) {
+
+    // Initialize gameState if needed
+    if (!gameRoom.gameState) {
+      gameRoom.gameState = { nations: [] };
+    }
+
+    // 3. Check for existing nation
+    if (gameRoom.gameState.nations.some((n) => n.owner === userId)) {
       return res
         .status(400)
-        .json({ error: "Nation already founded for this user" });
+        .json({ error: "Nation already exists for this user" });
     }
-    // Create new nation with territory stored as {x: [...], y: [...]}
+
+    // 4. Create new nation
     const newNation = {
       owner: userId,
       status: "active",
@@ -566,27 +563,17 @@ router.post("/:id/foundNation", async (req, res, next) => {
       expansionTarget: null,
       attackTarget: null,
     };
-    const updatedGameState = {
-      ...currentGameState,
-      nations: [...(currentGameState.nations || []), newNation],
-    };
-    gameRoom.gameState = updatedGameState;
-    gameRoom.markModified("gameState");
-    console.log("[FOUND] GameRoom state before save:", {
-      nationCount: gameRoom.gameState?.nations?.length,
-      nations: gameRoom.gameState?.nations?.map((n) => n.owner),
+
+    // 5. Save directly to DB
+    await GameRoom.findByIdAndUpdate(req.params.id, {
+      $push: { "gameState.nations": newNation },
     });
-    await gameRoom.save();
-    await gameWorkerManager.updateWorkerState(gameRoom._id, {
-      gameState: updatedGameState,
-      tickCount: gameRoom.tickCount + 1,
-    });
-    const verifyState = await gameWorkerManager.getLatestState(gameRoom._id);
+
     res
       .status(201)
       .json({ message: "Nation founded successfully", nation: newNation });
   } catch (error) {
-    console.error("[ROUTE] Error in foundNation:", error);
+    console.error("[FOUND] Error:", error);
     next(error);
   }
 });
@@ -676,12 +663,16 @@ router.post("/:id/buildCity", async (req, res, next) => {
     nation.cities.push(newCity);
 
     // Save updated game state.
-    gameRoom.markModified("gameState");
-    await gameRoom.save();
-    await gameWorkerManager.updateWorkerState(gameRoom._id, {
-      gameState: gameRoom.gameState,
-      tickCount: gameRoom.tickCount + 1,
-    });
+    await GameRoom.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        "gameState.nations.owner": userId,
+      },
+      {
+        $push: { "gameState.nations.$.cities": newCity },
+        $set: { "gameState.nations.$.resources": nation.resources },
+      }
+    );
 
     res.status(201).json({ message: "City built successfully", city: newCity });
   } catch (error) {
@@ -746,12 +737,15 @@ router.post("/:id/setExpansionTarget", async (req, res, next) => {
     }
 
     // Save updated game state.
-    gameRoom.markModified("gameState");
-    await gameRoom.save();
-    await gameWorkerManager.updateWorkerState(gameRoom._id, {
-      gameState: gameRoom.gameState,
-      tickCount: gameRoom.tickCount + 1,
-    });
+    await GameRoom.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        "gameState.nations.owner": userId,
+      },
+      {
+        $set: { "gameState.nations.$.expansionTarget": nation.expansionTarget },
+      }
+    );
 
     res.json({
       message: "Expansion target set successfully",
@@ -851,12 +845,19 @@ router.post("/:id/raiseArmy", async (req, res, next) => {
     nation.armies.push(newArmy);
 
     // Mark gameState as modified and update the worker state.
-    gameRoom.markModified("gameState");
-    await gameRoom.save();
-    await gameWorkerManager.updateWorkerState(gameRoom._id, {
-      gameState: gameRoom.gameState,
-      tickCount: gameRoom.tickCount + 1,
-    });
+    await GameRoom.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        "gameState.nations.owner": userId,
+      },
+      {
+        $push: { "gameState.nations.$.armies": newArmy },
+        $set: {
+          "gameState.nations.$.resources": nation.resources,
+          "gameState.nations.$.population": nation.population,
+        },
+      }
+    );
 
     res.status(201).json({
       message: "Army raised successfully",
@@ -913,12 +914,22 @@ router.post("/:id/setAttackTarget", async (req, res, next) => {
       // You can add extra fields here (e.g., movement speed, etc.) if needed.
     };
 
-    gameRoom.markModified("gameState");
-    await gameRoom.save();
-    await gameWorkerManager.updateWorkerState(gameRoom._id, {
-      gameState: gameRoom.gameState,
-      tickCount: gameRoom.tickCount + 1,
-    });
+    await GameRoom.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        "gameState.nations.owner": userId,
+        "gameState.nations.armies.id": armyId,
+      },
+      {
+        $set: {
+          "gameState.nations.$[nation].armies.$[army].attackTarget":
+            army.attackTarget,
+        },
+      },
+      {
+        arrayFilters: [{ "nation.owner": userId }, { "army.id": armyId }],
+      }
+    );
 
     res.json({
       message: "Attack target set successfully",
