@@ -17,4 +17,13 @@
     height: 100%;
     overflow: hidden;
   }
+  img {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges; /* for some browsers */
+  }
+
+  .landing {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
 }

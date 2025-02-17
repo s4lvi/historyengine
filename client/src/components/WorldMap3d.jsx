@@ -1,10 +1,10 @@
 // WorldMap3D.jsx
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Sky, Environment } from '@react-three/drei';
-import * as THREE from 'three';
-import WaterPlane from './WaterPlane';
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { Canvas } from "@react-three/fiber";
+import { OrbitControls, Environment } from "@react-three/drei";
+import * as THREE from "three";
+import WaterPlane from "./WaterPlane";
 const CHUNK_SIZE = 10;
 
 const WorldMap3D = () => {
@@ -24,7 +24,7 @@ const WorldMap3D = () => {
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}/api/maps/${id}/metadata`
       );
-      if (!response.ok) throw new Error('Failed to fetch map metadata');
+      if (!response.ok) throw new Error("Failed to fetch map metadata");
       const data = await response.json();
       setMapMetadata(data);
     } catch (err) {
@@ -39,7 +39,7 @@ const WorldMap3D = () => {
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}/api/maps/${id}/data?startRow=${startRow}&endRow=${endRow}`
       );
-      if (!response.ok) throw new Error('Failed to fetch map chunk');
+      if (!response.ok) throw new Error("Failed to fetch map chunk");
       const data = await response.json();
       if (data.mappings && !mappings) {
         setMappings(data.mappings);
@@ -102,9 +102,12 @@ const WorldMap3D = () => {
   }, [mapChunks]);
 
   // ── TerrainMesh: Creates a 3D mesh from the grid data ──────────────
-  const TerrainMesh = ({ mapMetadata, gridData, mappings, renderMode = 'biome' }) => {
-
-    
+  const TerrainMesh = ({
+    mapMetadata,
+    gridData,
+    mappings,
+    renderMode = "biome",
+  }) => {
     const geometry = useMemo(() => {
       // Ensure that the grid data is complete.
       if (!mapMetadata || !gridData || gridData.length < mapMetadata.height) {
@@ -126,15 +129,15 @@ const WorldMap3D = () => {
           // cell[0] is the elevation (normalized). Multiply by 2 for vertical displacement.
           const elevation = cell[0];
           // Map grid coordinates into a plane centered at (0,0).
-          const posX = ((x / (width - 1)) - 0.5) * size;
-          const posY = ((y / (height - 1)) - 0.5) * size;
-          const posZ = elevation /5; // Vertical displacement.
+          const posX = (x / (width - 1) - 0.5) * size;
+          const posY = (y / (height - 1) - 0.5) * size;
+          const posZ = elevation / 5; // Vertical displacement.
 
           vertices.push(posX, posZ, posY);
 
           // Compute vertex color based on render mode.
           let color = new THREE.Color(0.8, 0.8, 0.8);
-          if (renderMode === 'biome' && mappings) {
+          if (renderMode === "biome" && mappings) {
             const biomeName = mappings.biomes[cell[3]];
             const biomeColors = {
               OCEAN: "#1E90FF",
@@ -152,12 +155,12 @@ const WorldMap3D = () => {
               RIVER: "#1E90FF",
             };
             color = new THREE.Color(biomeColors[biomeName] || "#ccc");
-          } else if (renderMode === 'heightmap') {
+          } else if (renderMode === "heightmap") {
             const clampedH = Math.min(Math.max(cell[0], 0), 1);
             color = new THREE.Color(clampedH, clampedH, clampedH);
-          } else if (renderMode === 'temperature') {
+          } else if (renderMode === "temperature") {
             const temp = cell[2];
-            const normalizedTemp = (temp - (-20)) / (100 - (-20));
+            const normalizedTemp = (temp - -20) / (100 - -20);
             const clampedTemp = Math.min(Math.max(normalizedTemp, 0), 1);
             let red, blue;
             if (clampedTemp < 0.5) {
@@ -186,8 +189,14 @@ const WorldMap3D = () => {
       }
 
       const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3));
-      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3));
+      geo.setAttribute(
+        "position",
+        new THREE.BufferAttribute(new Float32Array(vertices), 3)
+      );
+      geo.setAttribute(
+        "color",
+        new THREE.BufferAttribute(new Float32Array(colors), 3)
+      );
       geo.setIndex(indices);
       geo.computeVertexNormals();
       return geo;
@@ -205,7 +214,9 @@ const WorldMap3D = () => {
   const waterNormalizedLevel = 0.37;
   const waterElevation = waterNormalizedLevel / 5; // This will be the Y-coordinate.
 
-  const loadingProgress = mapMetadata ? (loadedRows / mapMetadata.height) * 100 : 0;
+  const loadingProgress = mapMetadata
+    ? (loadedRows / mapMetadata.height) * 100
+    : 0;
 
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-6">
@@ -213,7 +224,7 @@ const WorldMap3D = () => {
       <div className="flex justify-between items-center mb-4">
         <div className="flex gap-2">
           <button
-            onClick={() => navigate('/')}
+            onClick={() => navigate("/")}
             className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg"
           >
             ← Back to Maps
@@ -233,44 +244,46 @@ const WorldMap3D = () => {
                 style={{ width: `${loadingProgress}%` }}
               />
             </div>
-            <span className="text-sm text-gray-600">{loadingProgress.toFixed(0)}%</span>
+            <span className="text-sm text-gray-600">
+              {loadingProgress.toFixed(0)}%
+            </span>
           </div>
         )}
       </div>
 
       {error && <div className="text-red-500">{error}</div>}
 
-      {(!gridData && loading) ? (
+      {!gridData && loading ? (
         <div>Loading...</div>
       ) : (
-        <div style={{ width: '100%', height: '600px' }}>
-<Canvas shadows camera={{ position: [0, 5, 10], fov: 60 }}>
-{/* <color attach="background" args={['#87CEEB']} />
+        <div style={{ width: "100%", height: "600px" }}>
+          <Canvas shadows camera={{ position: [0, 5, 10], fov: 60 }}>
+            {/* <color attach="background" args={['#87CEEB']} />
 <axesHelper args={[10]} /> */}
-   <Environment
-      files="/kloofendal_48d_partly_cloudy_puresky_1k.hdr"
-      background={false}
-      blur={0.0}
-      intensity={1} 
-      environmentIntensity={.4}
-        ground={{
-          height: 0,
-          radius: 1000,
-          scale: 100
-        }}
-    />
+            <Environment
+              files="/kloofendal_48d_partly_cloudy_puresky_1k.hdr"
+              background={false}
+              blur={0.0}
+              intensity={1}
+              environmentIntensity={0.4}
+              ground={{
+                height: 0,
+                radius: 1000,
+                scale: 100,
+              }}
+            />
 
-  <OrbitControls />
-  
-  {/* Your scene objects */}
-  <TerrainMesh
-    mapMetadata={mapMetadata}
-    gridData={gridData}
-    mappings={mappings}
-    renderMode="biome"
-  />
-    <WaterPlane waterElevation={waterElevation} />
-</Canvas>
+            <OrbitControls />
+
+            {/* Your scene objects */}
+            <TerrainMesh
+              mapMetadata={mapMetadata}
+              gridData={gridData}
+              mappings={mappings}
+              renderMode="biome"
+            />
+            <WaterPlane waterElevation={waterElevation} />
+          </Canvas>
         </div>
       )}
     </div>

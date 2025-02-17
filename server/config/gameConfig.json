@@ -1,154 +1,73 @@
 {
-    "buildCosts": {
-      "structures": {
-        "town": {
-          "stone": 20,
-          "arable land": 30
-        },
-        "fort": {
-          "stone": 2000,
-          "arable land": 30
-        },
-        "workshop": {
-          "stone": 300,
-          "arable land": 400
-        },
-        "farm": {
-          "stone": 500,
-          "arable land": 700
-        },
-        "mine": {
-          "stone": 1000,
-          "arable land": 1500
-        }
-      },
-      "armies": {
-        "light infantry": {
-          "stone": 10,
-          "arable land": 20
-        },
-        "heavy infantry": {
-          "stone": 20,
-          "arable land": 30
-        },
-        "cavalry": {
-          "stone": 30,
-          "arable land": 40
-        }
-    }
+  "buildCosts": {
+    "structures": {
+      "town": { "wood": 200, "stone": 100, "food": 500 },
+      "fort": { "stone": 2000, "wood": 500, "food": 300 },
+      "workshop": { "wood": 300, "stone": 300, "bronze": 100 },
+      "farm": { "wood": 50 },
+      "mine": { "wood": 50},
+      "stable": { "wood": 100, "stone": 50},
+      "lumber mill": { "wood": 50 }
     },
     "armies": {
-        "stats": {
-            "light infantry": {
-              "speed": 0.4,
-              "power": 50,
-              "populationCost": 10000
-            },
-            "heavy infantry": {
-              "speed": 0.2,
-              "power": 200,
-              "populationCost": 15000
-            },
-            "cavalry": {
-              "speed": 0.8,
-              "power": 150,
-              "populationCost": 15000
-            }
-          }
-    },
-    "expansionTarget": {
-      "cost": {
-        "stone": 20,
-        "arable land": 10
-      },
-      "duration": 100
-    },
-    "cellDesirabilityBonus": {
-      "bonusMultiplier": 1000,
-      "adjacentWeight": 40
-    },
-    "population": {
-      "maxPerTerritory": 100,
-      "cityBonus": 500,
-      "growthRate": 0.02
-    },
-    "resource": {
-      "baseYield": 1
-    },
-    "resourceGroups": {
-      "Water": [
-        "fresh water"
-      ],
-      "Minerals": [
-        "iron ore",
-        "precious metals",
-        "gems",
-        "stone",
-        "copper ore",
-        "salt"
-      ],
-      "Food": [
-        "fish",
-        "wild fruits",
-        "game animals",
-        "grazing animals"
-      ],
-      "Agriculture": [
-        "fertile soil",
-        "arable land",
-        "pastures"
-      ],
-      "Flora": [
-        "medicinal plants",
-        "timber",
-        "date palm",
-        "fur animals",
-        "herbs"
-      ]
-    },
-    "resourceWeights": {
-      "fresh water": 1,
-      "stone": 1,
-      "copper ore": 2,
-      "iron ore": 3,
-      "salt": 4,
-      "precious metals": 8,
-      "gems": 10,
-      "wild fruits": 1,
-      "fish": 10,
-      "game animals": 15,
-      "grazing animals": 30,
-      "fertile soil": 1,
-      "arable land": 2,
-      "pastures": 3,
-      "herbs": 1,
-      "medicinal plants": 2,
-      "date palm": 3,
-      "timber": 4,
-      "fur animals": 5
-    },
-    "territoryMaintenance": {
-      "costs": {
-        "Water": 1,
-        "Minerals": 0,
-        "Food": 2,
-        "Agriculture": 1,
-        "Flora": 1
-      },
-      "expansionMultiplier": 5
-    },
-    "biomeDesirabilityScores": {
-        "GRASSLAND": 8,
-        "WOODLAND": 8,
-        "TROPICAL_FOREST": 7,
-        "RAINFOREST": 7,
-        "FOREST": 7,
-        "SAVANNA": 5,
-        "COASTAL": 8,
-        "DESERT": 2,
-        "MOUNTAIN": 3,
-        "RIVER": 10,
-        "OCEAN": 0
-      }
+      "light infantry": { "food": 150, "wood": 50 },
+      "heavy infantry": { "food": 200, "wood": 100, "bronze": 150 },
+      "cavalry": { "food": 150, "bronze": 100, "horses": 100 }
+    }
+  },
+  "armies": {
+    "stats": {
+      "light infantry": { "speed": 0.5, "power": 50, "populationCost": 100 },
+      "heavy infantry": { "speed": 0.3, "power": 200, "populationCost": 150 },
+      "cavalry": { "speed": 0.9, "power": 150, "populationCost": 150 }
+    }
+  },
+  "structures": {
+    "descriptions": {
+      "town": "Gives bonuses to territory expansion and population growth.",
+      "fort": "Provides a defensive bonus to the territory.",
+      "workshop": "Gives bonus to the regeneration of bronze and steel.",
+      "farm": "Provides a bonus to food regeneration.",
+      "mine": "Provides a bonus to stone regeneration. If built near an iron or copper depost, it will also provide a bonus to bronze and steel regeneration.",
+      "stable": "Provides a increase to the horse resource capacity.",
+      "lumber mill": "Provides a bonus to wood regeneration."
+    }
+  },
+  "resources": [
+    "food",
+    "wood",
+    "stone",
+    "bronze",
+    "steel",
+    "horses"
+  ],
+  "expansionTarget": {
+    "cost": { "stone": 20, "wood": 10 },
+    "duration": 100
+  },
+  "cellDesirabilityBonus": {
+    "bonusMultiplier": 1000,
+    "adjacentWeight": 40
+  },
+  "population": {
+    "maxPerTerritory": 100,
+    "cityBonus": 500,
+    "growthRate": 0.02
+  },
+  "resource": {
+    "baseYield": 1
+  },
+  "biomeDesirabilityScores": {
+    "GRASSLAND": 10,
+    "WOODLAND": 8,
+    "TROPICAL_FOREST": 10,
+    "RAINFOREST": 7,
+    "FOREST": 10,
+    "SAVANNA": 5,
+    "COASTAL": 8,
+    "DESERT": 2,
+    "MOUNTAIN": 6,
+    "RIVER": 10,
+    "OCEAN": 0
   }
-  
+}

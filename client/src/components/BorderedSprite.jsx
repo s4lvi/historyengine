@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { Container, Sprite, Graphics } from "@pixi/react";
+import { Container, Sprite, Text } from "@pixi/react";
 import { OutlineFilter } from "@pixi/filter-outline";
 
 const BorderedSprite = ({
@@ -9,17 +9,19 @@ const BorderedSprite = ({
   width,
   height,
   borderColor = 0x000000,
-  borderWidth = 2,
-  outlineQuality = 0.5,
+  borderWidth = 0.1,
+  outlineQuality = 0.2,
   interactive = false,
   pointerdown,
   isSelected = false, // New prop
+  baseZ = 100,
+  text = null, // Optional text to render
 }) => {
   // Create the outline filter for the sprite.
   const filters = useMemo(
     () => [
       new OutlineFilter(
-        borderWidth,
+        1,
         isSelected ? "0x00ff00" : borderColor,
         outlineQuality
       ),
@@ -28,19 +30,7 @@ const BorderedSprite = ({
   );
 
   return (
-    <Container x={x} y={y}>
-      {/* Optional selection outline */}
-      {/* {isSelected && (
-        <Graphics
-          draw={(g) => {
-            g.clear();
-            // Draw a green rectangle around the sprite.
-            // Since the sprite's anchor is 0.5, the top-left is at (-width/2, -height/2)
-            g.lineStyle(3, 0x00ff00, 1);
-            g.drawRect(-width / 2, -height / 2, width, height);
-          }}
-        />
-      )} */}
+    <Container x={x} y={y} zIndex={baseZ + y}>
       <Sprite
         image={texture}
         width={width}
@@ -53,6 +43,25 @@ const BorderedSprite = ({
           if (pointerdown) pointerdown(e);
         }}
       />
+      {text && (
+        <Text
+          text={text}
+          // Place the text at the lower right corner relative to the sprite.
+          // Since the sprite is centered (anchor = 0.5), its lower right is at (width/2, height/2)
+          x={width / 2}
+          y={height / 2 + 1}
+          anchor={{ x: 1, y: 1 }}
+          style={{
+            fontFamily: "system-ui",
+            fill: "#ffffff",
+            fontSize: 16,
+            stroke: "#000000",
+            strokeThickness: 2,
+          }}
+          width={width / 2}
+          height={height / 2}
+        />
+      )}
     </Container>
   );
 };

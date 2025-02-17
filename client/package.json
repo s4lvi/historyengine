@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@pixi/constants": "^7.4.2",
     "@pixi/events": "^7.4.2",
     "@pixi/filter-outline": "^5.2.0",
     "@pixi/react": "^7.1.2",
+    "@pixi/settings": "^7.4.2",
     "@pixi/utils": "^7.4.2",
     "@react-three/drei": "^9.121.4",
     "@react-three/fiber": "^8.17.14",

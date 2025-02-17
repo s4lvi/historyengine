@@ -26,8 +26,8 @@ const Header = ({ title }) => {
                   alt="Logo"
                   className="w-16 h-16"
                 />
-                <h1 className="text-5xl font-bold text-gray-900 font-estonia">
-                  History Engine
+                <h1 className="text-5xl pl-4 font-bold text-gray-900">
+                  ANNEXI.IO
                 </h1>
               </button>
             </div>

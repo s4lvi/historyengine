@@ -18,7 +18,7 @@ const SettingsModal = ({
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-96 relative">
+      <div className="bg-gray-900 bg-opacity-75 text-white rounded-lg p-6 w-96 relative">
         <div className="relative top-0 right-0">
           <button
             onClick={onClose}
@@ -32,17 +32,17 @@ const SettingsModal = ({
 
         <div className="space-y-4">
           <div className="flex justify-between items-center">
-            <span className="text-gray-700">Playing as:</span>
+            <span className="text-gray-500">Playing as:</span>
             <span className="font-medium">{userId}</span>
           </div>
 
           <div className="flex justify-between items-center">
-            <span className="text-gray-700">Room:</span>
+            <span className="text-gray-500">Room:</span>
             <span className="font-medium">{gameState?.roomName}</span>
           </div>
 
           <div className="flex justify-between items-center">
-            <span className="text-gray-700">Tick Count:</span>
+            <span className="text-gray-500">Tick Count:</span>
             <span className="font-medium">{gameState?.tickCount}</span>
           </div>
 

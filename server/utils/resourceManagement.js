@@ -1,220 +1,130 @@
-// Resource configuration
-export const RESOURCE_GROUPS = {
-  Water: ["fresh water"],
-  Minerals: [
-    "iron ore",
-    "precious metals",
-    "gems",
-    "stone",
-    "copper ore",
-    "salt",
-  ],
-  Food: ["fish", "wild fruits", "game animals", "grazing animals"],
-  Agriculture: ["arable land", "pastures", "fertile soil"],
-  Flora: ["medicinal plants", "timber", "date palm", "fur animals", "herbs"],
-};
+// resourceManagement.js
 
-// Resource weights (relative to base unit in each group)
+// New flat resource list
+export const RESOURCE_LIST = [
+  "food",
+  "wood",
+  "stone",
+  "bronze",
+  "steel",
+  "horses",
+];
+
+// New resource weights (used for cell desirability, etc.)
 export const RESOURCE_WEIGHTS = {
-  // Water (base: fresh water = 1)
-  "fresh water": 1,
-
-  // Minerals (base: stone = 1)
+  food: 1,
+  wood: 1,
   stone: 1,
-  "copper ore": 2,
-  "iron ore": 3,
-  salt: 4,
-  "precious metals": 8,
-  gems: 10,
-
-  // Food (base: wild fruits = 1)
-  "wild fruits": 1,
-  fish: 10,
-  "game animals": 15,
-  "grazing animals": 30,
-
-  // Agriculture (base: fertile soil = 1)
-  "fertile soil": 1,
-  "arable land": 2,
-  pastures: 3,
-
-  // Flora (base: herbs = 1)
-  herbs: 1,
-  "medicinal plants": 2,
-  "date palm": 3,
-  timber: 4,
-  "fur animals": 5,
+  bronze: 2,
+  steel: 3,
+  horses: 2,
 };
 
-// Territory maintenance costs per tick (in base units of each group)
+// Territory maintenance cost per cell (per tick) for each resource.
+// Adjust these values to balance how expensive it is to maintain each cell.
 export const TERRITORY_MAINTENANCE_COSTS = {
-  Water: 1, // 1 fresh water
-  Minerals: 0, // 0.5 stone equivalent
-  Food: 2, // 2 wild fruit equivalents
-  Agriculture: 1, // 1 fertile soil equivalent
-  Flora: 1, // 1 herb equivalent
+  food: 1, // each cell costs 1 unit of food per tick
+  wood: 0, // each cell costs 1 unit of wood per tick
+  stone: 0, // each cell costs 1 unit of stone per tick
+  bronze: 0, // no cost
+  steel: 0, // no cost
+  horses: 0, // no cost
 };
 
-// Territory expansion costs (multiplier of maintenance costs)
+// Multiplier for territory expansion cost.
 export const EXPANSION_COST_MULTIPLIER = 5;
 
 /**
- * Convert a resource amount to its base unit equivalent within its group
- */
-function convertToBaseUnits(resource, amount) {
-  return (amount || 0) * (RESOURCE_WEIGHTS[resource] || 1);
-}
-
-/**
- * Calculate total available resources in base units for each group
+ * Calculate available resources for a nation using the flat resource list.
  */
 export function calculateAvailableResources(nation) {
   const available = {};
-
-  Object.keys(RESOURCE_GROUPS).forEach((group) => {
-    available[group] = 0;
-    RESOURCE_GROUPS[group].forEach((resource) => {
-      const amount = nation.resources[resource] || 0;
-      available[group] += convertToBaseUnits(resource, amount);
-    });
-  });
-
+  for (const resource of RESOURCE_LIST) {
+    available[resource] = nation.resources?.[resource] || 0;
+  }
   return available;
 }
 
-/**
- * Check if nation can afford territory maintenance
- */
-export function canMaintainTerritory(nation) {
-  const available = calculateAvailableResources(nation);
-  const territoryCells = nation.territory?.length || 0;
+export function assignResourcesToMap(mapData) {
+  // First, ensure we're working with a 2D array
+  if (!Array.isArray(mapData)) {
+    console.error("mapData is not an array");
+    return mapData;
+  }
 
-  return Object.keys(TERRITORY_MAINTENANCE_COSTS).every((group) => {
-    const requiredAmount = TERRITORY_MAINTENANCE_COSTS[group] * territoryCells;
-    return available[group] >= requiredAmount;
-  });
-}
+  // Map over rows first, then cells
+  return mapData.map((row, rowIndex) => {
+    // Handle case where row is an object with numeric keys
+    if (!Array.isArray(row) && typeof row === "object") {
+      // Convert object row to array
+      const arrayRow = Object.keys(row)
+        .filter((key) => !isNaN(key))
+        .sort((a, b) => parseInt(a) - parseInt(b))
+        .map((key) => row[key]);
 
-/**
- * Check if nation can afford expansion
- */
-export function canExpandTerritory(nation) {
-  const available = calculateAvailableResources(nation);
+      // Now process each cell in the array row
+      return arrayRow.map((cell, colIndex) => {
+        if (!cell) return null;
 
-  return Object.keys(TERRITORY_MAINTENANCE_COSTS).every((group) => {
-    const expansionCost =
-      TERRITORY_MAINTENANCE_COSTS[group] * EXPANSION_COST_MULTIPLIER;
-    return available[group] >= expansionCost;
-  });
-}
-
-/**
- * Deduct maintenance costs for territory
- */
-export function deductMaintenanceCosts(nation) {
-  if (!nation.territory?.length) return;
-
-  const totalCells = nation.territory.length;
-  Object.keys(RESOURCE_GROUPS).forEach((group) => {
-    const requiredAmount = TERRITORY_MAINTENANCE_COSTS[group] * totalCells;
-    let remainingCost = requiredAmount;
-
-    // Try to deduct from each resource in the group, starting with lowest weight
-    const sortedResources = RESOURCE_GROUPS[group].sort(
-      (a, b) => RESOURCE_WEIGHTS[a] - RESOURCE_WEIGHTS[b]
-    );
-
-    for (const resource of sortedResources) {
-      const baseUnitsAvailable = convertToBaseUnits(
-        resource,
-        nation.resources[resource] || 0
-      );
-      if (baseUnitsAvailable > 0) {
-        const baseUnitsToDeduct = Math.min(remainingCost, baseUnitsAvailable);
-        const actualUnitsToDeduct = Math.ceil(
-          baseUnitsToDeduct / RESOURCE_WEIGHTS[resource]
-        );
-
-        nation.resources[resource] -= actualUnitsToDeduct;
-        if (nation.resources[resource] <= 0) {
-          delete nation.resources[resource];
-        }
-
-        remainingCost -= baseUnitsToDeduct;
-        if (remainingCost <= 0) break;
-      }
+        return {
+          ...cell,
+          resources: generateFlatResources(
+            cell.biome,
+            cell.elevation,
+            cell.moisture,
+            cell.temperature
+          ),
+        };
+      });
     }
+
+    // If row is already an array, process it directly
+    if (Array.isArray(row)) {
+      return row.map((cell, colIndex) => {
+        if (!cell) return null;
+
+        return {
+          ...cell,
+          resources: generateFlatResources(
+            cell.biome,
+            cell.elevation,
+            cell.moisture,
+            cell.temperature
+          ),
+        };
+      });
+    }
+
+    console.error(`Invalid row format at index ${rowIndex}:`, row);
+    return row; // Return unchanged if invalid format
   });
 }
 
-/**
- * Deduct expansion costs
- */
-export function deductExpansionCosts(nation) {
-  Object.keys(RESOURCE_GROUPS).forEach((group) => {
-    const expansionCost =
-      TERRITORY_MAINTENANCE_COSTS[group] * EXPANSION_COST_MULTIPLIER;
-    let remainingCost = expansionCost;
+function generateFlatResources(biome, elevation, moisture, temperature) {
+  const resources = [];
 
-    const sortedResources = RESOURCE_GROUPS[group].sort(
-      (a, b) => RESOURCE_WEIGHTS[a] - RESOURCE_WEIGHTS[b]
-    );
+  // In grassland or savanna, assign food and a chance for horses.
+  if (biome === "GRASSLAND" || biome === "SAVANNA") {
+    if (Math.random() < 0.004) resources.push("food");
+    if (Math.random() < 0.0008) resources.push("horses");
+  }
 
-    for (const resource of sortedResources) {
-      const baseUnitsAvailable = convertToBaseUnits(
-        resource,
-        nation.resources[resource] || 0
-      );
-      if (baseUnitsAvailable > 0) {
-        const baseUnitsToDeduct = Math.min(remainingCost, baseUnitsAvailable);
-        const actualUnitsToDeduct = Math.ceil(
-          baseUnitsToDeduct / RESOURCE_WEIGHTS[resource]
-        );
+  // In woodlands or forests, assign wood.
+  if (
+    biome === "WOODLAND" ||
+    biome === "FOREST" ||
+    biome === "TROPICAL_FOREST" ||
+    biome === "RAINFOREST"
+  ) {
+    if (Math.random() < 0.008) resources.push("wood");
+  }
 
-        nation.resources[resource] -= actualUnitsToDeduct;
-        if (nation.resources[resource] <= 0) {
-          delete nation.resources[resource];
-        }
+  // In mountains, assign stone and, at higher elevations, bronze or steel.
+  if (biome === "MOUNTAIN") {
+    if (Math.random() < 0.015) resources.push("stone");
+    if (elevation > 0.7 && Math.random() < 0.005) resources.push("bronze");
+    if (elevation > 0.85 && Math.random() < 0.0005) resources.push("steel");
+  }
 
-        remainingCost -= baseUnitsToDeduct;
-        if (remainingCost <= 0) break;
-      }
-    }
-  });
-}
-
-/**
- * Calculate cell desirability with resource considerations
- */
-export function calculateResourceDesirability(cell) {
-  if (!cell?.resources) return 0;
-
-  let score = 0;
-  const resourceSet = new Set(cell.resources);
-
-  // Score each resource group
-  Object.entries(RESOURCE_GROUPS).forEach(([group, resources]) => {
-    const groupResources = resources.filter((r) => resourceSet.has(r));
-    if (groupResources.length > 0) {
-      // Calculate weighted value of resources in this group
-      const groupScore = groupResources.reduce(
-        (sum, resource) => sum + RESOURCE_WEIGHTS[resource],
-        0
-      );
-
-      // Apply group-specific multipliers
-      switch (group) {
-        case "Water":
-          score += groupScore * 3; // Water is critical
-          break;
-        case "Food":
-          score += groupScore * 2; // Food is very important
-          break;
-        default:
-          score += groupScore;
-      }
-    }
-  });
-
-  return score;
+  return resources;
 }

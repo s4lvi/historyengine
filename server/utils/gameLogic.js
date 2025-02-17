@@ -1,25 +1,14 @@
 // gameLogic.js
 import _ from "lodash";
-import {
-  calculateResourceDesirability,
-  canExpandTerritory,
-  deductExpansionCosts,
-} from "./resourceManagement.js";
 import config from "../config/config.js";
 import { updateLoyalty, initializeLoyalty } from "./loyaltySystem.js";
 
-// Constants for yields, population, and auto‑city
-const RESOURCE_BASE_YIELD = 1; // Base yield per territory cell (can be adjusted)
-const MAX_POPULATION_PER_TERRITORY = 100;
+const MAX_POPULATION_PER_TERRITORY = 10;
 const CITY_POPULATION_BONUS = 500;
-const POPULATION_GROWTH_RATE = 0.02;
-const COMPACTNESS_WEIGHT = 40;
+const COMPACTNESS_WEIGHT = 10;
+const REINFORCEMENT_RATE = 1;
+const ENEMY_TERRITORY_PENALTY = 1;
 
-/**
- * Helper: Iterate over all cells in a territory.
- * Territory is assumed to have the structure:
- * { x: [x1, x2, ...], y: [y1, y2, ...] }
- */
 export function forEachTerritoryCell(territory, callback) {
   if (!territory || !territory.x || !territory.y) return;
   for (let i = 0; i < territory.x.length; i++) {
@@ -27,9 +16,6 @@ export function forEachTerritoryCell(territory, callback) {
   }
 }
 
-/**
- * Helper: Build and return a Set of territory cell keys ("x,y") for fast lookup.
- */
 export function getTerritorySet(territory) {
   const set = new Set();
   if (!territory || !territory.x || !territory.y) return set;
@@ -39,14 +25,9 @@ export function getTerritorySet(territory) {
   return set;
 }
 
-/**
- * Helper: Check if a given cell (x, y) is in the territory.
- * If a precomputed territorySet is provided, it uses that for O(1) lookup.
- */
 export function isCellInTerritory(territory, x, y, territorySet = null) {
   const key = `${x},${y}`;
   if (territorySet) return territorySet.has(key);
-  // Fallback to linear scan if no set provided.
   let found = false;
   forEachTerritoryCell(territory, (tx, ty) => {
     if (tx === x && ty === y) found = true;
@@ -54,15 +35,8 @@ export function isCellInTerritory(territory, x, y, territorySet = null) {
   return found;
 }
 
-/**
- * -----------------------
- * Helper: Count adjacent territory cells
- * -----------------------
- * Accepts an optional territorySet for fast membership checking.
- */
 function countAdjacentTerritory(x, y, territory, territorySet = null) {
   let count = 0;
-  // Use a cached set if available; otherwise build one.
   const tSet = territorySet || getTerritorySet(territory);
   for (let dx = -1; dx <= 1; dx++) {
     for (let dy = -1; dy <= 1; dy++) {
@@ -75,18 +49,13 @@ function countAdjacentTerritory(x, y, territory, territorySet = null) {
   return count;
 }
 
-/**
- * -----------------------
- * Helper: Calculate cell desirability
- * -----------------------
- * Accepts an optional territorySet to speed up adjacent count checks.
- */
 export function calculateCellDesirability(
   cell,
   x,
   y,
   territory,
-  territorySet = null
+  territorySet = null,
+  cities = []
 ) {
   if (!cell || typeof cell !== "object") {
     console.warn("Invalid cell data received:", cell);
@@ -94,47 +63,49 @@ export function calculateCellDesirability(
   }
   let score = 0;
   const biomeScores = config.biomeDesirabilityScores;
-  score += biomeScores[cell.biome] || 0;
-  score += calculateResourceDesirability(cell) * 2;
-  score += (Array.isArray(cell.resources) ? cell.resources.length : 0) * 2;
-  score += Array.isArray(cell.features) ? cell.features.length : 0;
+  score += biomeScores[cell.biome] * 5 || 0;
+  score += (Array.isArray(cell.resources) ? cell.resources.length : 0) * 50;
   if (cell.isRiver) score += 5;
-  if (typeof cell.elevation === "number") {
-    score -= Math.abs(cell.elevation - 0.5) * 5;
-  }
-  if (typeof cell.moisture === "number") {
-    score += cell.moisture * 3;
-  }
   if (typeof cell.temperature === "number") {
-    score -= Math.abs(cell.temperature / 100 - 0.5) * 2;
+    score + (cell.temperature - 0.5) * 100;
   }
   const adjacentCount = countAdjacentTerritory(x, y, territory, territorySet);
   score += adjacentCount * COMPACTNESS_WEIGHT;
+
+  // Factor in the distance to the nearest 'town' or 'capital'
+  if (Array.isArray(cities) && cities.length > 0) {
+    let minDistance = Infinity;
+    cities.forEach((city) => {
+      if (city.type === "town" || city.type === "capital") {
+        // Using distance
+        const distance = Math.sqrt((x - city.x) ** 2 + (y - city.y) ** 2);
+        if (distance < minDistance) {
+          minDistance = distance;
+        }
+      }
+    });
+    const CITY_PROXIMITY_WEIGHT = 5; // Adjust this constant to change the influence.
+    if (minDistance < Infinity) {
+      // Closer cells get a higher bonus.
+      //score += CITY_PROXIMITY_WEIGHT / (minDistance + 1);
+      score -= minDistance * CITY_PROXIMITY_WEIGHT;
+    }
+  }
+
   return score;
 }
 
-/**
- * -----------------------
- * Helper: Get best location for an auto‑spawned city within a nation’s territory
- * -----------------------
- */
 function getBestCityLocation(nation, mapData) {
   let bestScore = -Infinity;
   let bestLocation = null;
-
-  // Precompute a set of territory cells for faster lookup.
   const territorySet = getTerritorySet(nation.territory);
-  // Precompute positions where cities already exist.
   const cityPositions = new Set();
   if (nation.cities) {
     nation.cities.forEach((city) => {
       cityPositions.add(`${city.x},${city.y}`);
     });
   }
-
-  // Iterate over territory cells.
   forEachTerritoryCell(nation.territory, (x, y) => {
-    // Skip if a city already exists on this cell.
     if (cityPositions.has(`${x},${y}`)) return;
     const cell = mapData[y] && mapData[y][x];
     if (!cell) return;
@@ -153,11 +124,25 @@ function getBestCityLocation(nation, mapData) {
   return bestLocation;
 }
 
-/**
- * -----------------------
- * Helper: Get valid adjacent cells for territory expansion
- * -----------------------
- */
+function getBorderCells(nation, mapData, allNations) {
+  // If we have a cached border set and no territory delta changes, reuse it.
+  if (
+    nation.cachedBorderSet &&
+    (!nation.territoryDelta ||
+      (nation.territoryDelta.add.x.length === 0 &&
+        nation.territoryDelta.sub.x.length === 0))
+  ) {
+    return nation.cachedBorderSet;
+  }
+  const borderCells = getValidAdjacentCells(
+    nation.territory,
+    mapData,
+    allNations
+  );
+  nation.cachedBorderSet = borderCells;
+  return borderCells;
+}
+
 function getValidAdjacentCells(territory, mapData, allNations) {
   if (!Array.isArray(mapData) || !Array.isArray(mapData[0])) {
     console.warn("Invalid map data structure");
@@ -165,12 +150,8 @@ function getValidAdjacentCells(territory, mapData, allNations) {
   }
   const adjacentCells = new Set();
   const allOccupiedPositions = new Set();
-
-  // Add current territory cells.
   const territorySet = getTerritorySet(territory);
   territorySet.forEach((pos) => allOccupiedPositions.add(pos));
-
-  // Add cells occupied by other nations.
   if (Array.isArray(allNations)) {
     allNations.forEach((nation) => {
       if (nation.territory && nation.territory.x && nation.territory.y) {
@@ -180,8 +161,6 @@ function getValidAdjacentCells(territory, mapData, allNations) {
       }
     });
   }
-
-  // Find adjacent cells.
   forEachTerritoryCell(territory, (x, y) => {
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
@@ -199,22 +178,13 @@ function getValidAdjacentCells(territory, mapData, allNations) {
           continue;
         const cellData = mapData[newY][newX];
         if (!cellData || cellData.biome === "OCEAN") continue;
-        // Use a unique key to avoid duplicates.
         adjacentCells.add(JSON.stringify({ x: newX, y: newY, cell: cellData }));
       }
     }
   });
-
-  // Convert the set back into an array.
   return Array.from(adjacentCells).map((str) => JSON.parse(str));
 }
 
-/**
- * -----------------------
- * Set expansion target with resource cost and tick duration.
- * Returns an object with a success flag and a message.
- * -----------------------
- */
 export function setExpansionTarget(nation, target, mapData) {
   // Verify the target cell is on land.
   if (
@@ -280,14 +250,7 @@ export function setExpansionTarget(nation, target, mapData) {
   return { success: true, message: "Expansion target set" };
 }
 
-/**
- * -----------------------
- * Territory Expansion (with Expansion Target Bonus)
- * -----------------------
- */
 export function expandTerritory(nation, mapData, allNations) {
-  if (!canExpandTerritory(nation)) return;
-
   // Initialize territory if not set.
   if (
     !nation.territory ||
@@ -299,7 +262,6 @@ export function expandTerritory(nation, mapData, allNations) {
         x: [nation.startingCell.x],
         y: [nation.startingCell.y],
       };
-      // Initialize delta with the starting cell as an addition.
       nation.territoryDelta = {
         add: { x: [nation.startingCell.x], y: [nation.startingCell.y] },
         sub: { x: [], y: [] },
@@ -307,19 +269,62 @@ export function expandTerritory(nation, mapData, allNations) {
     }
     return;
   }
-
-  // Ensure a delta object exists.
   if (!nation.territoryDelta) {
     nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
   }
 
-  const adjacentCells = getValidAdjacentCells(
-    nation.territory,
-    mapData,
-    allNations
-  );
+  // Get the current border cells.
+  const adjacentCells = getBorderCells(nation, mapData, allNations);
   if (adjacentCells.length === 0) return;
 
+  // Get cities that can support territory expansion
+  const supportCities = (nation.cities || []).filter(
+    (city) => city.type === "capital" || city.type === "town"
+  );
+
+  if (supportCities.length === 0) return; // No valid cities to support expansion
+
+  // Define maximum expansion distance from cities
+  const MAX_EXPANSION_DISTANCE = 10; // Maximum tiles away from a city
+
+  // Filter cells based on distance from supporting cities
+  const validDistanceCells = adjacentCells.filter((adj) => {
+    // Check distance to nearest supporting city
+    let minDistance = Infinity;
+    for (const city of supportCities) {
+      const distance = Math.sqrt(
+        Math.pow(adj.x - city.x, 2) + Math.pow(adj.y - city.y, 2)
+      );
+      minDistance = Math.min(minDistance, distance);
+    }
+    return minDistance <= MAX_EXPANSION_DISTANCE;
+  });
+
+  if (validDistanceCells.length === 0) return; // No valid cells within distance
+
+  // *** Filter out candidates not adjacent to connected (capital-linked) territory ***
+  const connectedCells = computeConnectedCells(nation);
+  const validAdjacentCells = validDistanceCells.filter((adj) => {
+    // For each candidate, check its neighboring territory cells.
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (dx === 0 && dy === 0) continue;
+        const neighborX = adj.x + dx;
+        const neighborY = adj.y + dy;
+        if (isCellInTerritory(nation.territory, neighborX, neighborY)) {
+          // Only allow expansion if one of the adjacent territory cells is connected.
+          if (connectedCells.has(`${neighborX},${neighborY}`)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  });
+
+  if (validAdjacentCells.length === 0) return;
+
+  // Continue with scoring candidates (using the filtered list)
   const BONUS_MULTIPLIER = 1000;
   let currentMinDistance = Infinity;
   if (nation.expansionTarget) {
@@ -331,10 +336,8 @@ export function expandTerritory(nation, mapData, allNations) {
     });
   }
 
-  // Precompute territory set for adjacent desirability calculations.
   const territorySet = getTerritorySet(nation.territory);
-
-  const scoredCells = adjacentCells
+  const scoredCells = validAdjacentCells
     .map((adj) => {
       if (adj.cell.biome === "OCEAN") return null;
       let score = calculateCellDesirability(
@@ -342,8 +345,21 @@ export function expandTerritory(nation, mapData, allNations) {
         adj.x,
         adj.y,
         nation.territory,
-        territorySet
+        territorySet,
+        nation.cities.filter((c) => c.type === "town" || c.type === "capital")
       );
+
+      // Add distance-based scoring modifier
+      let minCityDistance = Infinity;
+      for (const city of supportCities) {
+        const distance = Math.sqrt(
+          Math.pow(adj.x - city.x, 2) + Math.pow(adj.y - city.y, 2)
+        );
+        minCityDistance = Math.min(minCityDistance, distance);
+      }
+      // Prefer cells closer to cities
+      score += (MAX_EXPANSION_DISTANCE - minCityDistance) * 50;
+
       if (nation.expansionTarget && nation.expansionTarget.ticksRemaining > 0) {
         const candidateDistance =
           Math.abs(adj.x - nation.expansionTarget.current.x) +
@@ -358,57 +374,23 @@ export function expandTerritory(nation, mapData, allNations) {
 
   const bestCell = _.maxBy(scoredCells, "score");
   if (bestCell) {
-    // Add new cell to the territory.
     nation.territory.x.push(bestCell.x);
     nation.territory.y.push(bestCell.y);
     initializeLoyalty(nation, bestCell.x, bestCell.y);
-    // Record the addition in the delta.
     nation.territoryDelta.add.x.push(bestCell.x);
     nation.territoryDelta.add.y.push(bestCell.y);
-    deductExpansionCosts(nation);
+    // Invalidate caches since territory changed.
+    delete nation.cachedBorderSet;
+    delete nation.cachedNaturalLimits;
   }
 }
 
-/**
- * -----------------------
- * Helper: Calculate natural resource limits based on territory yields
- * -----------------------
- */
-function calculateNaturalResourceLimits(territory, mapData, cities = []) {
-  const naturalLimits = {};
-  forEachTerritoryCell(territory, (x, y) => {
-    if (!mapData[y] || !mapData[y][x]) return;
-    const cell = mapData[y][x];
-    if (!cell || !Array.isArray(cell.resources)) return;
-    let multiplier = 1;
-    if (
-      cities &&
-      cities.some(
-        (city) => city.x === x && city.y === y && city.type === "capital"
-      )
-    ) {
-      multiplier = 5;
-    }
-    cell.resources.forEach((resource) => {
-      naturalLimits[resource] =
-        (naturalLimits[resource] || 0) + RESOURCE_BASE_YIELD * multiplier;
-    });
-  });
-  return naturalLimits;
-}
-
-/**
- * -----------------------
- * Population Calculation
- * -----------------------
- */
 function calculateMaxPopulation(nation) {
   let maxPop = nation.territory.x.length * MAX_POPULATION_PER_TERRITORY;
   maxPop += (nation.cities?.length || 0) * CITY_POPULATION_BONUS;
   const resources = nation.resources || {};
-  if (resources["arable land"] > 0) maxPop *= 1.2;
-  if (resources["fresh water"] > 0) maxPop *= 1.1;
-  if (resources["pastures"] > 0) maxPop *= 1.15;
+  // Updated multiplier: use "food" (instead of "arable land", "fresh water", or "pastures")
+  if (resources["food"] > 0) maxPop *= 1.2;
   return Math.floor(maxPop);
 }
 
@@ -416,55 +398,246 @@ export function updatePopulation(nation) {
   const maxPopulation = calculateMaxPopulation(nation);
   const currentPopulation = nation.population || 0;
   if (currentPopulation < maxPopulation) {
-    const growthFactor = 1 - currentPopulation / maxPopulation;
-    const growth = Math.floor(
-      currentPopulation * POPULATION_GROWTH_RATE * growthFactor
-    );
+    const growth = currentPopulation + (nation.cities.length + 5) * 0.01;
     nation.population = Math.min(currentPopulation + growth, maxPopulation);
   }
 }
 
-/**
- * -----------------------
- * Main updateNation function – resources regenerate; expansion & armies update; auto‑city spawning remains
- * -----------------------
- */
+export function updateArmyMovements(updatedNation, mapData, gameState) {
+  if (!updatedNation.armies || !Array.isArray(updatedNation.armies)) {
+    return updatedNation.armies || [];
+  }
+
+  // Create a map of current army positions for collision detection
+  const occupiedPositions = new Map();
+
+  // First pass: Record current positions of all armies from all nations
+  if (gameState.nations && Array.isArray(gameState.nations)) {
+    gameState.nations.forEach((nation) => {
+      if (nation.armies && Array.isArray(nation.armies)) {
+        nation.armies.forEach((army) => {
+          if (army.position) {
+            const posKey = `${Math.floor(army.position.x)},${Math.floor(
+              army.position.y
+            )}`;
+            occupiedPositions.set(posKey, {
+              nationId: nation.id,
+              armyId: army.id,
+            });
+          }
+        });
+      }
+    });
+  }
+
+  const ARMY_STEP = config.armyMovementStep || 0.2;
+  const TARGET_SNAP_DISTANCE = 1.0; // Distance at which army snaps to target
+
+  updatedNation.armies = updatedNation.armies
+    .map((army) => {
+      // Skip movement if army has no position
+      if (!army.position) return army;
+
+      let newPosition = { ...army.position };
+
+      // Update movement based on attackTarget
+      if (army.attackTarget) {
+        const { current, final } = army.attackTarget;
+        const dx = final.x - current.x;
+        const dy = final.y - current.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance <= TARGET_SNAP_DISTANCE) {
+          // Check if final position is occupied
+          const finalPosKey = `${Math.floor(final.x)},${Math.floor(final.y)}`;
+          const isFinalPositionOccupied =
+            occupiedPositions.has(finalPosKey) &&
+            occupiedPositions.get(finalPosKey).armyId !== army.id;
+
+          if (!isFinalPositionOccupied) {
+            // Snap to final position
+            newPosition = { x: final.x, y: final.y };
+
+            // Update occupied positions map
+            const oldPosKey = `${Math.floor(army.position.x)},${Math.floor(
+              army.position.y
+            )}`;
+            occupiedPositions.delete(oldPosKey);
+            occupiedPositions.set(finalPosKey, {
+              nationId: updatedNation.id,
+              armyId: army.id,
+            });
+
+            // Clear attack target since we've reached destination
+            army.attackTarget = null;
+          }
+        } else {
+          const targetAngle = Math.atan2(dy, dx);
+          const maxAngleVariation = Math.PI / 36;
+          const randomVariation = (Math.random() - 0.5) * 2 * maxAngleVariation;
+          const newAngle = targetAngle + randomVariation;
+
+          // Calculate proposed new position
+          const proposedX =
+            current.x +
+            config.armies.stats[army.type].speed * Math.cos(newAngle);
+          const proposedY =
+            current.y +
+            config.armies.stats[army.type].speed * Math.sin(newAngle);
+
+          // Check if the proposed position is valid (on map and not ocean)
+          const isValidTerrain =
+            mapData[Math.floor(proposedY)] &&
+            mapData[Math.floor(proposedY)][Math.floor(proposedX)] &&
+            mapData[Math.floor(proposedY)][Math.floor(proposedX)].biome !==
+              "OCEAN";
+
+          // Check for army collision at the proposed position
+          const proposedPosKey = `${Math.floor(proposedX)},${Math.floor(
+            proposedY
+          )}`;
+          const isPositionOccupied =
+            occupiedPositions.has(proposedPosKey) &&
+            occupiedPositions.get(proposedPosKey).armyId !== army.id;
+
+          // Only move if position is valid and unoccupied
+          if (isValidTerrain && !isPositionOccupied) {
+            newPosition = { x: proposedX, y: proposedY };
+            army.attackTarget.current = { ...newPosition };
+
+            // Update occupied positions map
+            const oldPosKey = `${Math.floor(army.position.x)},${Math.floor(
+              army.position.y
+            )}`;
+            occupiedPositions.delete(oldPosKey);
+            occupiedPositions.set(proposedPosKey, {
+              nationId: updatedNation.id,
+              armyId: army.id,
+            });
+          }
+        }
+      }
+
+      // Update army position
+      army.position = newPosition;
+
+      const posX = Math.floor(army.position.x);
+      const posY = Math.floor(army.position.y);
+
+      // Retrieve the maximum power for this army type from config
+      const maxPower = config.armies?.stats?.[army.type]?.power || 100;
+
+      // Initialize currentPower if not already set
+      if (army.currentPower === undefined) {
+        army.currentPower = maxPower;
+      }
+
+      // Apply territory modifiers
+      if (isCellInTerritory(updatedNation.territory, posX, posY)) {
+        // Army is in friendly territory—reinforce it
+        army.currentPower += REINFORCEMENT_RATE;
+      } else {
+        // Check if army is in enemy territory
+        let inEnemyTerritory = false;
+        if (gameState.nations && Array.isArray(gameState.nations)) {
+          for (const otherNation of gameState.nations) {
+            if (
+              otherNation.owner !== updatedNation.owner &&
+              isCellInTerritory(otherNation.territory, posX, posY)
+            ) {
+              inEnemyTerritory = true;
+              break;
+            }
+          }
+        }
+        if (inEnemyTerritory) {
+          army.currentPower -= ENEMY_TERRITORY_PENALTY;
+        }
+      }
+
+      // Clamp currentPower between 0 and maxPower
+      army.currentPower = Math.min(maxPower, Math.max(0, army.currentPower));
+
+      // Return null if army is destroyed (power = 0)
+      return army.currentPower > 0 ? army : null;
+    })
+    .filter((army) => army !== null);
+
+  return updatedNation.armies;
+}
+
+// Helper function to check if a position is within map bounds
+function isInBounds(x, y, mapData) {
+  return (
+    mapData &&
+    Array.isArray(mapData) &&
+    y >= 0 &&
+    y < mapData.length &&
+    x >= 0 &&
+    x < mapData[0].length
+  );
+}
+
 export function updateNation(nation, mapData, gameState) {
+  const overallStart = process.hrtime();
   if (!Array.isArray(mapData) || !Array.isArray(mapData[0])) {
     console.warn("Invalid map data structure in updateNation");
     return nation;
   }
-
-  nation.territoryDelta = {
-    add: { x: [], y: [] },
-    sub: { x: [], y: [] },
-  };
-
+  // Reset territory delta
+  nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
+  // Invalidate caches if territory changed (this should be done when delta is nonempty)
+  if (
+    nation.territoryDelta.add.x.length > 0 ||
+    nation.territoryDelta.sub.x.length > 0
+  ) {
+    delete nation.cachedBorderSet;
+    delete nation.cachedNaturalLimits;
+    delete nation.cachedConnectedCells;
+  }
   const updatedNation = { ...nation };
   updatedNation.resources = updatedNation.resources || {};
 
-  // Update loyalty and remove lost cells.
-  const lostCells = updateLoyalty(updatedNation, gameState);
+  // --- 1. Update Loyalty ---
+  const startLoyalty = process.hrtime();
+  // Use cached connectivity if possible.
+  let connectedCells;
+  if (!nation.territoryDelta.sub.x.length && nation.cachedConnectedCells) {
+    connectedCells = nation.cachedConnectedCells;
+  } else {
+    connectedCells = computeConnectedCells(nation);
+    nation.cachedConnectedCells = connectedCells;
+  }
+  const lostCells = updateLoyalty(updatedNation, gameState, connectedCells);
+  const endLoyalty = process.hrtime(startLoyalty);
+  // --- 2. Regenerate Natural Resources (using cached natural limits) ---
+  const startNaturalResources = process.hrtime();
+  if (updatedNation.cities) {
+    updatedNation.cities.forEach((city) => {
+      // Only resource structures produce resources.
+      if (["capital", "town", "fort"].includes(city.type)) return;
 
-  // Regenerate natural resources.
-  const naturalLimits = calculateNaturalResourceLimits(
-    updatedNation.territory,
-    mapData,
-    updatedNation.cities
-  );
-  const RESOURCE_REGEN_RATE = 0.1;
-  Object.entries(naturalLimits).forEach(([resource, limit]) => {
-    const current = updatedNation.resources[resource] || 0;
-    if (current < limit) {
-      const regen = Math.max(
-        1,
-        Math.floor((limit - current) * RESOURCE_REGEN_RATE)
-      );
-      updatedNation.resources[resource] = current + regen;
-    }
-  });
+      const { x, y } = city;
+      const cell = mapData[y] && mapData[y][x];
+      if (!cell) return;
 
-  // Update expansion target.
+      const baseProduction = {
+        farm: 0.5,
+        "lumber mill": 0.5,
+        mine: 0.5,
+        stable: 0.5,
+      };
+      const productionAmount = baseProduction[city.type] || 0;
+
+      // Add the production to the nation's resources.
+      updatedNation.resources[city.resource] =
+        (updatedNation.resources[city.resource] || 0) + productionAmount;
+    });
+  }
+  const endNaturalResources = process.hrtime(startNaturalResources);
+
+  // --- 3. Update Expansion Target ---
+  const startExpansionTarget = process.hrtime();
   if (
     updatedNation.expansionTarget &&
     updatedNation.expansionTarget.ticksRemaining > 0
@@ -491,51 +664,39 @@ export function updateNation(nation, mapData, gameState) {
   if (updatedNation.expansionTarget?.ticksRemaining === 0) {
     delete updatedNation.expansionTarget;
   }
+  const endExpansionTarget = process.hrtime(startExpansionTarget);
 
-  // Update armies movement.
+  // --- 4. Update Armies Movement ---
+  const startArmies = process.hrtime();
   if (updatedNation.armies && Array.isArray(updatedNation.armies)) {
     const ARMY_STEP = config.armyMovementStep || 0.2;
-    updatedNation.armies = updatedNation.armies.map((army) => {
-      if (army.attackTarget) {
-        const { current, final } = army.attackTarget;
-        const dx = final.x - current.x;
-        const dy = final.y - current.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        if (distance < 0.1) {
-          army.attackTarget = null;
-        } else {
-          const targetAngle = Math.atan2(dy, dx);
-          const maxAngleVariation = Math.PI / 36;
-          const randomVariation = (Math.random() - 0.5) * 2 * maxAngleVariation;
-          const newAngle = targetAngle + randomVariation;
-          const newX = current.x + ARMY_STEP * Math.cos(newAngle);
-          const newY = current.y + ARMY_STEP * Math.sin(newAngle);
-          if (
-            mapData[Math.floor(newY)] &&
-            mapData[Math.floor(newY)][Math.floor(newX)] &&
-            mapData[Math.floor(newY)][Math.floor(newX)].biome !== "OCEAN"
-          ) {
-            army.attackTarget.current = { x: newX, y: newY };
-            army.position = { x: newX, y: newY };
-          }
-        }
-      }
-      return army;
-    });
-  }
 
-  // Update territory expansion and population.
+    updatedNation.armies = updateArmyMovements(
+      updatedNation,
+      mapData,
+      gameState
+    );
+  }
+  const endArmies = process.hrtime(startArmies);
+
+  // --- 5. Update Territory Expansion and Population ---
+  const startTerritoryPopulation = process.hrtime();
   if (updatedNation.status !== "defeated") {
     expandTerritory(updatedNation, mapData, gameState.nations);
     updatePopulation(updatedNation);
   }
+  const endTerritoryPopulation = process.hrtime(startTerritoryPopulation);
+  // console.log(
+  //   `Territory expansion and population update took ${(
+  //     endTerritoryPopulation[0] * 1000 +
+  //     endTerritoryPopulation[1] / 1e6
+  //   ).toFixed(2)} ms`
+  // );
 
-  // Auto‑city spawning.
-  const AUTO_CITY_SPAWN_CHANCE = 0.05;
-  const CITY_BUILD_COST = {
-    stone: 10,
-    "arable land": 20,
-  };
+  // --- 6. Auto‑City Spawning ---
+  // Updated CITY_BUILD_COST: now uses { stone, food } instead of { stone, "arable land" }
+  const startAutoCity = process.hrtime();
+  const CITY_BUILD_COST = { stone: 10, food: 20 };
   if (updatedNation.auto_city) {
     let canBuild = true;
     for (const resource in CITY_BUILD_COST) {
@@ -546,7 +707,7 @@ export function updateNation(nation, mapData, gameState) {
         break;
       }
     }
-    if (canBuild && Math.random() < AUTO_CITY_SPAWN_CHANCE) {
+    if (canBuild && Math.random() < 0.05) {
       const bestLocation = getBestCityLocation(updatedNation, mapData);
       if (bestLocation) {
         for (const resource in CITY_BUILD_COST) {
@@ -562,36 +723,77 @@ export function updateNation(nation, mapData, gameState) {
         };
         if (!updatedNation.cities) updatedNation.cities = [];
         updatedNation.cities.push(newCity);
+        // Territory changed, so invalidate caches.
+        delete updatedNation.cachedNaturalLimits;
+        delete updatedNation.cachedBorderSet;
       }
     }
   }
+  const endAutoCity = process.hrtime(startAutoCity);
 
+  // --- 7. Finalize Territory Delta for Client ---
   if (updatedNation.territoryDelta) {
-    updatedNation.territoryDeltaForClient = updatedNation.territoryDelta;
+    updatedNation.territoryDeltaForClient = {
+      add: {
+        x: [...updatedNation.territoryDelta.add.x],
+        y: [...updatedNation.territoryDelta.add.y],
+      },
+      sub: {
+        x: [...updatedNation.territoryDelta.sub.x],
+        y: [...updatedNation.territoryDelta.sub.y],
+      },
+    };
     updatedNation.territoryDelta = {
       add: { x: [], y: [] },
       sub: { x: [], y: [] },
     };
   }
+  const overallEnd = process.hrtime(overallStart);
+  console.log(
+    `updateNation overall took ${(
+      overallEnd[0] * 1000 +
+      overallEnd[1] / 1e6
+    ).toFixed(2)} ms`
+  );
   return updatedNation;
 }
 
-async function processGameTick(gameRoom) {
-  // Get map data for territory expansion
-  const MapModel = mongoose.model("Map");
-  const MapChunk = mongoose.model("MapChunk");
-  const chunks = await MapChunk.find({ map: gameRoom.map }).lean();
-  const mapData = []; // Build mapData same as before
+function computeConnectedCells(nation) {
+  const connected = new Set();
+  const capital =
+    nation.cities && nation.cities.find((city) => city.type === "capital");
+  if (!capital) return connected;
 
-  // Process each nation
-  if (gameRoom.gameState?.nations) {
-    gameRoom.gameState.nations = gameRoom.gameState.nations.map((nation) =>
-      updateNation(nation, mapData, gameRoom.gameState)
-    );
+  const territorySet = new Set();
+  forEachTerritoryCell(nation.territory, (x, y) => {
+    territorySet.add(`${x},${y}`);
+  });
+
+  const queue = [[capital.x, capital.y]];
+  // Use all eight directions instead of just the four cardinal ones.
+  const directions = [
+    [0, 1],
+    [1, 0],
+    [0, -1],
+    [-1, 0],
+    [1, 1],
+    [1, -1],
+    [-1, 1],
+    [-1, -1],
+  ];
+
+  while (queue.length > 0) {
+    const [x, y] = queue.shift();
+    const key = `${x},${y}`;
+    if (!territorySet.has(key)) continue;
+    if (connected.has(key)) continue;
+    connected.add(key);
+    for (const [dx, dy] of directions) {
+      const neighborKey = `${x + dx},${y + dy}`;
+      if (territorySet.has(neighborKey) && !connected.has(neighborKey)) {
+        queue.push([x + dx, y + dy]);
+      }
+    }
   }
-
-  gameRoom.tickCount += 1;
-  await gameRoom.save();
-
-  return gameRoom;
+  return connected;
 }

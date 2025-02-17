@@ -291,6 +291,20 @@ const Modal = ({
               </div>
             </div>
           )}
+          {actionModal?.type === "defeat" && (
+            <div>
+              <h2 className="text-xl font-bold mb-4">Nation Defeated</h2>
+              <p className="mb-4">{actionModal.message}</p>
+              <div className="flex justify-end">
+                <button
+                  onClick={actionModal.onClose}
+                  className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
+                >
+                  Continue
+                </button>
+              </div>
+            </div>
+          )}
         </ModalWrapper>
       )}
     </>

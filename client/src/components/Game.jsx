@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import GameCanvas from "./GameCanvas";
 import Modal from "./Modal";
-import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
+import { LoadingSpinner } from "./ErrorHandling";
 import { ControlButtons } from "./ControlButtons";
 import StatsBar from "./StatsBar";
 import SettingsModal from "./SettingsModal";
@@ -27,6 +27,8 @@ const Game = () => {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState(null);
+
+  const isFetchingChunk = useRef(false);
 
   // ----------------------------
   // Login and credentials state
@@ -53,6 +55,8 @@ const Game = () => {
   const [actionModal, setActionModal] = useState(null);
   const [foundingNation, setFoundingNation] = useState(false);
   const [buildingStructure, setBuildingStructure] = useState(null);
+  const [isDefeated, setIsDefeated] = useState(false);
+  const [hasFounded, setHasFounded] = useState(false);
 
   const startFoundNation = () => {
     setFoundingNation(true);
@@ -138,6 +142,9 @@ const Game = () => {
   useEffect(() => {
     const loadNextChunk = async () => {
       if (!mapMetadata || error || loadedRows >= mapMetadata.height) return;
+      if (isFetchingChunk.current) return; // Already fetching a chunk, so skip.
+
+      isFetchingChunk.current = true;
       setLoading(true);
       try {
         const nextChunk = await fetchMapChunk(loadedRows);
@@ -152,6 +159,7 @@ const Game = () => {
         setError(err.message);
       } finally {
         setLoading(false);
+        isFetchingChunk.current = false;
       }
     };
     loadNextChunk();
@@ -162,6 +170,7 @@ const Game = () => {
   // ----------------------------
   useEffect(() => {
     if (!userId || !storedPassword) return;
+
     const fetchGameState = async () => {
       try {
         const response = await fetch(
@@ -172,22 +181,22 @@ const Game = () => {
             body: JSON.stringify({ userId, password: storedPassword }),
           }
         );
+
         if (!response.ok) {
           navigate("/rooms");
           return;
         }
+
         const data = await response.json();
 
         // Use previous gameState to preserve the merged territories.
         setGameState((prevState) => {
           const previousNations = prevState?.gameState?.nations || [];
-          // Create a map of previous territory per nation owner.
           const prevTerritories = previousNations.reduce((acc, nation) => {
             acc[nation.owner] = nation.territory || null;
             return acc;
           }, {});
 
-          // Merge the territory delta into the existing territory from the previous state.
           if (data.gameState.nations) {
             data.gameState.nations = data.gameState.nations.map((nation) => {
               const previousTerritory = prevTerritories[nation.owner] || null;
@@ -196,7 +205,6 @@ const Game = () => {
                   previousTerritory,
                   nation.territoryDeltaForClient
                 );
-                // Remove the delta field after processing.
                 delete nation.territoryDeltaForClient;
               }
               return nation;
@@ -211,18 +219,49 @@ const Game = () => {
           };
         });
 
-        // Also update userState if needed.
-        if (data.gameState.nations) {
-          setUserState(data.gameState.nations.find((n) => n.owner === userId));
+        // Check player nation status
+        const playerNation = data.gameState.nations?.find(
+          (n) => n.owner === userId && n.status !== "defeated"
+        );
+
+        if (playerNation) {
+          // If you find an active naion, update the state and clear the defeated flag.
+          setUserState(playerNation);
+          setIsDefeated(false);
+          setHasFounded(true);
+        } else {
+          // No active nation found:
+          if (!isDefeated && hasFounded) {
+            const defeatedNation = data.gameState.nations?.find(
+              (n) => n.owner === userId && n.status === "defeated"
+            );
+            if (defeatedNation) {
+              setIsDefeated(true);
+              setActionModal({
+                type: "defeat",
+                message:
+                  "Your nation has been defeated! You can start over by founding a new nation.",
+                onClose: () => {
+                  setActionModal(null);
+                  setFoundingNation(true);
+                  setHasFounded(false);
+                },
+              });
+            }
+            setUserState(null);
+            setFoundingNation(true);
+            setHasFounded(false);
+          }
         }
       } catch (err) {
         console.error("Error fetching game state:", err);
       }
     };
+
     fetchGameState();
     const interval = setInterval(fetchGameState, 100);
     return () => clearInterval(interval);
-  }, [id, userId, storedPassword, navigate]);
+  }, [id, userId, storedPassword, navigate, isDefeated]);
 
   // Full state polling effect: every 5 seconds, fetch the full state to overwrite local territory.
   useEffect(() => {
@@ -269,7 +308,31 @@ const Game = () => {
 
         // Also update userState if needed.
         if (data.gameState.nations) {
-          setUserState(data.gameState.nations.find((n) => n.owner === userId));
+          // Check player nation status
+          const playerNation = data.gameState.nations?.find(
+            (n) => n.owner === userId && n.status !== "defeated"
+          );
+
+          if (playerNation) {
+            // If you find an active naion, update the state and clear the defeated flag.
+            setUserState(playerNation);
+            setIsDefeated(false);
+            setHasFounded(true);
+          } else {
+            // No active nation found:
+            if (!isDefeated) {
+              const defeatedNation = data.gameState.nations?.find(
+                (n) => n.owner === userId && n.status === "defeated"
+              );
+              if (defeatedNation) {
+                setIsDefeated(true);
+                setHasFounded(false);
+              }
+              setUserState(null);
+              setFoundingNation(true);
+              setHasFounded(false);
+            }
+          }
         }
       } catch (err) {
         console.error("Error fetching full game state:", err);
@@ -384,13 +447,18 @@ const Game = () => {
         throw new Error(errData.error || "Failed to found nation");
       }
 
-      const data = await response.json();
-      console.log("Nation founded:", data);
       setFoundingNation(false);
+      setIsDefeated(false);
+      setActionModal(null);
+      setHasFounded(true);
     } catch (err) {
       setError(err.message);
       setFoundingNation(false);
     }
+  };
+
+  const handleCancelBuild = () => {
+    setBuildingStructure(null);
   };
 
   const handleBuildCity = async (x, y, cityType, cityName) => {
@@ -586,6 +654,30 @@ const Game = () => {
     }
   };
 
+  const handleQuitGame = async () => {
+    try {
+      const response = await fetch(
+        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/quit`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: userId, password: storedPassword }),
+        }
+      );
+      if (!response.ok) {
+        throw new Error("Failed to quit game");
+      }
+      setFoundingNation(true);
+      setHasFounded(false);
+      setActionModal(null);
+      setUserState(null);
+      setGameState(null);
+      navigate("/rooms");
+    } catch (err) {
+      console.error("Error ending game:", err);
+    }
+  };
+
   // ----------------------------
   // Create a flat grid from the loaded map chunks.
   // ----------------------------
@@ -625,16 +717,15 @@ const Game = () => {
     return palette[index % palette.length];
   };
 
+  const isMapLoaded = mapMetadata && loadedRows >= mapMetadata.height;
+
   return (
     <div className="relative h-screen overflow-hidden">
-      {/* New UI Components */}
       <ControlButtons
         onOpenSettings={() => setShowSettings(true)}
         onOpenPlayerList={() => setShowPlayerList(true)}
       />
-
-      <StatsBar gameState={gameState} userId={userId} />
-
+      {!isDefeated && <StatsBar gameState={gameState} userId={userId} />}
       <SettingsModal
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
@@ -644,21 +735,31 @@ const Game = () => {
         onPause={handlePauseGame}
         onUnpause={handleUnPauseGame}
         onEndGame={handleEndGame}
-        onLeaveGame={() => navigate("/rooms")}
+        onLeaveGame={handleQuitGame}
         onBackToGameRooms={() => navigate("/rooms")}
       />
-
       <PlayerListModal
         isOpen={showPlayerList}
         onClose={() => setShowPlayerList(false)}
         gameState={gameState}
         getNationColor={getNationColor}
       />
-
       {/* Main Content Area */}
       <div className="absolute inset-0">
-        {!mapChunks.length && loading ? (
-          <LoadingSpinner />
+        {!isMapLoaded ? (
+          <div className="flex flex-col items-center justify-center h-full bg-gray-800">
+            <LoadingSpinner />
+            {mapMetadata && (
+              <div className="text-white mt-4">
+                Loading map...{" "}
+                {Math.min(
+                  ((loadedRows / mapMetadata.height) * 100).toFixed(0),
+                  100
+                )}
+                %
+              </div>
+            )}
+          </div>
         ) : (
           <GameCanvas
             mapMetadata={mapMetadata}
@@ -670,24 +771,22 @@ const Game = () => {
             foundingNation={foundingNation}
             onFoundNation={handleFoundNation}
             buildingStructure={buildingStructure}
-            p
             onBuildCity={handleBuildCity}
+            onCancelBuild={handleCancelBuild}
           />
         )}
       </div>
-
       <ActionBar
         onBuildCity={handleBuildCity}
-        onSetExpandTarget={handleSetExpandTarget}
         onRaiseArmy={handleRaiseArmy}
-        onFoundNation={startFoundNation} // Pass the start function
+        onFoundNation={startFoundNation}
         config={config}
         userState={userState}
+        hasFounded={hasFounded}
       />
-
-      {/* Keep Login Modal */}
+      {/* The join/login modal now appears only if the map is loaded */}
       <Modal
-        showLoginModal={!userId}
+        showLoginModal={!userId && isMapLoaded}
         onLoginSubmit={handleLoginSubmit}
         loginName={loginName}
         setLoginName={setLoginName}
@@ -704,16 +803,6 @@ const Game = () => {
         userState={userState}
         onRaiseArmy={handleRaiseArmy}
       />
-
-      {/* Error Message Overlay */}
-      {error && (
-        <div className="absolute inset-0 flex items-center justify-center z-50">
-          <ErrorMessage
-            message={error}
-            onRetry={() => window.location.reload()}
-          />
-        </div>
-      )}
     </div>
   );
 };

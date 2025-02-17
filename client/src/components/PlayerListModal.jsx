@@ -7,7 +7,7 @@ const PlayerListModal = ({ isOpen, onClose, gameState, getNationColor }) => {
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-96 max-h-[80vh] overflow-y-auto relative">
+      <div className="bg-gray-900 bg-opacity-75 text-white rounded-lg p-6 w-96 max-h-[80vh] overflow-y-auto relative">
         <div className="relative top-0 right-0">
           <button
             onClick={onClose}
@@ -28,12 +28,11 @@ const PlayerListModal = ({ isOpen, onClose, gameState, getNationColor }) => {
             >
               <div className="flex justify-between items-center mb-2">
                 <span className="font-medium">{nation.owner}</span>
-                <span className="text-sm text-gray-500">
-                  {nation.territory?.length || 0} tiles
-                </span>
               </div>
               <div className="flex gap-4 text-sm text-gray-600">
-                <span>{nation.cities?.length || 0} cities</span>
+                <span className="text-sm text-gray-500">
+                  {nation.territory?.x?.length || 0} tiles
+                </span>
                 <span>{nation.population?.toLocaleString()} pop.</span>
               </div>
             </div>

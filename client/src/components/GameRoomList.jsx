@@ -1,6 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ErrorMessage, LoadingSpinner } from './ErrorHandling';
+import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
+
+const MAP_SIZES = {
+  Small: { width: 150, height: 150, erosion_passes: 3, num_blobs: 5 },
+  Normal: { width: 300, height: 300, erosion_passes: 3, num_blobs: 7 },
+  Large: { width: 500, height: 500, erosion_passes: 3, num_blobs: 9 },
+};
 
 const CreateGameRoomForm = ({
   isOpen,
@@ -10,29 +16,42 @@ const CreateGameRoomForm = ({
   availableMaps,
 }) => {
   const [formData, setFormData] = useState({
-    roomName: '',
-    selectedMapId: '',
+    roomName: "",
+    selectedMapId: "",
     generateNewMap: false,
-    // Map generation options (used when generateNewMap is true)
-    mapName: '',
-    width: 500,
-    height: 500,
-    erosion_passes: 3,
-    num_blobs: 3,
-    // New fields for game room creator credentials
-    creatorName: '',
-    creatorPassword: '',
-    joinCode: '',
+    mapName: "",
+    mapSize: "Normal", // New field for map size selection
+    width: MAP_SIZES.Normal.width,
+    height: MAP_SIZES.Normal.height,
+    erosion_passes: MAP_SIZES.Normal.erosion_passes,
+    num_blobs: MAP_SIZES.Normal.num_blobs,
+    creatorName: "",
+    creatorPassword: "",
+    joinCode: "",
   });
 
   if (!isOpen) return null;
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : value,
-    }));
+
+    if (name === "mapSize") {
+      // When map size changes, update both width and height
+      const selectedSize = MAP_SIZES[value];
+      setFormData((prev) => ({
+        ...prev,
+        mapSize: value,
+        width: selectedSize.width,
+        height: selectedSize.height,
+        erosion_passes: selectedSize.erosion_passes,
+        num_blobs: selectedSize.num_blobs,
+      }));
+    } else {
+      setFormData((prev) => ({
+        ...prev,
+        [name]: type === "checkbox" ? checked : value,
+      }));
+    }
   };
 
   const handleSubmit = (e) => {
@@ -56,20 +75,18 @@ const CreateGameRoomForm = ({
         ></div>
 
         {/* Modal panel */}
-        <div className="inline-block align-bottom bg-white rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full sm:p-6">
+        <div className="inline-block align-bottom bg-gray-900 bg-opacity-75 rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full sm:p-6">
           <div className="sm:flex sm:items-start">
             <div className="mt-3 text-center sm:mt-0 sm:text-left w-full">
-              <h3
-                className="text-lg leading-6 font-medium text-gray-900"
-                id="modal-title"
-              >
+              <h3 className="text-lg leading-6 font-medium " id="modal-title">
                 Create New Game Room
               </h3>
               <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+                {/* Room Name */}
                 <div>
                   <label
                     htmlFor="roomName"
-                    className="block text-sm font-medium text-gray-700"
+                    className="block text-sm font-medium text-gray-500"
                   >
                     Room Name
                   </label>
@@ -79,14 +96,16 @@ const CreateGameRoomForm = ({
                     name="roomName"
                     value={formData.roomName}
                     onChange={handleChange}
-                    className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     required
                   />
                 </div>
+
+                {/* Join Code */}
                 <div>
                   <label
                     htmlFor="joinCode"
-                    className="block text-sm font-medium text-gray-700"
+                    className="block text-sm font-medium text-gray-500"
                   >
                     Join Code
                   </label>
@@ -96,16 +115,16 @@ const CreateGameRoomForm = ({
                     name="joinCode"
                     value={formData.joinCode}
                     onChange={handleChange}
-                    className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     required
                   />
                 </div>
 
-                {/* New creator credentials fields */}
+                {/* Creator Name */}
                 <div>
                   <label
                     htmlFor="creatorName"
-                    className="block text-sm font-medium text-gray-700"
+                    className="block text-sm font-medium text-gray-500"
                   >
                     Creator Name
                   </label>
@@ -115,14 +134,16 @@ const CreateGameRoomForm = ({
                     name="creatorName"
                     value={formData.creatorName}
                     onChange={handleChange}
-                    className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     required
                   />
                 </div>
+
+                {/* Creator Password */}
                 <div>
                   <label
                     htmlFor="creatorPassword"
-                    className="block text-sm font-medium text-gray-700"
+                    className="block text-sm font-medium text-gray-500"
                   >
                     Creator Password
                   </label>
@@ -132,11 +153,12 @@ const CreateGameRoomForm = ({
                     name="creatorPassword"
                     value={formData.creatorPassword}
                     onChange={handleChange}
-                    className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     required
                   />
                 </div>
 
+                {/* Map Generation Options */}
                 <div className="space-y-2">
                   <div className="flex items-center">
                     <input
@@ -149,77 +171,41 @@ const CreateGameRoomForm = ({
                     />
                     <label
                       htmlFor="generateNewMap"
-                      className="ml-2 block text-sm text-gray-900"
+                      className="ml-2 block text-sm "
                     >
                       Generate New Map
                     </label>
                   </div>
 
                   {formData.generateNewMap ? (
-                    // Show map generation options if generating new map
-                    <>
-                      <div>
-                        <label
-                          htmlFor="mapName"
-                          className="block text-sm font-medium text-gray-700"
-                        >
-                          Map Name
-                        </label>
-                        <input
-                          type="text"
-                          id="mapName"
-                          name="mapName"
-                          value={formData.mapName}
-                          onChange={handleChange}
-                          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="width"
-                          className="block text-sm font-medium text-gray-700"
-                        >
-                          Width (pixels)
-                        </label>
-                        <input
-                          type="number"
-                          id="width"
-                          name="width"
-                          min="100"
-                          max="2000"
-                          value={formData.width}
-                          onChange={handleChange}
-                          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="height"
-                          className="block text-sm font-medium text-gray-700"
-                        >
-                          Height (pixels)
-                        </label>
-                        <input
-                          type="number"
-                          id="height"
-                          name="height"
-                          min="100"
-                          max="2000"
-                          value={formData.height}
-                          onChange={handleChange}
-                          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          required
-                        />
-                      </div>
-                    </>
+                    <div>
+                      <label
+                        htmlFor="mapSize"
+                        className="block text-sm font-medium text-gray-500"
+                      >
+                        Map Size
+                      </label>
+                      <select
+                        id="mapSize"
+                        name="mapSize"
+                        value={formData.mapSize}
+                        onChange={handleChange}
+                        className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        required
+                      >
+                        {Object.keys(MAP_SIZES).map((size) => (
+                          <option key={size} value={size}>
+                            {size} ({MAP_SIZES[size].width}x
+                            {MAP_SIZES[size].height})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   ) : (
-                    // Show map selection if using existing map
                     <div>
                       <label
                         htmlFor="selectedMapId"
-                        className="block text-sm font-medium text-gray-700"
+                        className="block text-sm font-medium text-gray-500"
                       >
                         Select Map
                       </label>
@@ -228,7 +214,7 @@ const CreateGameRoomForm = ({
                         name="selectedMapId"
                         value={formData.selectedMapId}
                         onChange={handleChange}
-                        className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                         required
                       >
                         <option value="">Select a map...</option>
@@ -242,11 +228,12 @@ const CreateGameRoomForm = ({
                   )}
                 </div>
 
+                {/* Form Buttons */}
                 <div className="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
                   <button
                     type="submit"
                     disabled={isCreating}
-                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:bg-blue-300"
+                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium  hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:bg-blue-300"
                   >
                     {isCreating ? (
                       <>
@@ -254,13 +241,13 @@ const CreateGameRoomForm = ({
                         Creating...
                       </>
                     ) : (
-                      'Create Game Room'
+                      "Create Game Room"
                     )}
                   </button>
                   <button
                     type="button"
                     onClick={onClose}
-                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:w-auto sm:text-sm"
+                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-gray-900 text-base font-medium text-gray-500 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:w-auto sm:text-sm"
                   >
                     Cancel
                   </button>
@@ -295,13 +282,13 @@ const GameRoomList = () => {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Failed to fetch game rooms');
+        throw new Error(errorData.message || "Failed to fetch game rooms");
       }
 
       const data = await response.json();
 
       if (!Array.isArray(data)) {
-        throw new Error('Invalid data received from server');
+        throw new Error("Invalid data received from server");
       }
 
       setGameRooms(data);
@@ -314,11 +301,9 @@ const GameRoomList = () => {
 
   const fetchAvailableMaps = async () => {
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/maps`
-      );
+      const response = await fetch(`${process.env.REACT_APP_API_URL}/api/maps`);
       if (!response.ok) {
-        throw new Error('Failed to fetch available maps');
+        throw new Error("Failed to fetch available maps");
       }
       const data = await response.json();
       setAvailableMaps(data);
@@ -341,12 +326,12 @@ const GameRoomList = () => {
         const mapResponse = await fetch(
           `${process.env.REACT_APP_API_URL}/api/maps`,
           {
-            method: 'POST',
+            method: "POST",
             headers: {
-              'Content-Type': 'application/json',
+              "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              name: formData.mapName,
+              name: formData.roomName + "-Map",
               width: formData.width,
               height: formData.height,
               erosion_passes: formData.erosion_passes,
@@ -356,7 +341,7 @@ const GameRoomList = () => {
         );
 
         if (!mapResponse.ok) {
-          throw new Error('Failed to generate new map');
+          throw new Error("Failed to generate new map");
         }
 
         const newMap = await mapResponse.json();
@@ -367,9 +352,9 @@ const GameRoomList = () => {
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}/api/gamerooms`,
         {
-          method: 'POST',
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
           body: JSON.stringify({
             mapId,
@@ -383,7 +368,7 @@ const GameRoomList = () => {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Failed to create game room');
+        throw new Error(errorData.message || "Failed to create game room");
       }
 
       const newGameRoom = await response.json();
@@ -412,10 +397,10 @@ const GameRoomList = () => {
   return (
     <div className="max-w-4xl mx-auto p-6">
       <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Open Games</h1>
+        <h1 className="text-3xl font-bold">Open Games</h1>
         <button
           onClick={() => setIsCreateDialogOpen(true)}
-          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300 text-white px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
+          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300  px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
         >
           Create New Game
         </button>
@@ -434,11 +419,13 @@ const GameRoomList = () => {
       {createError && <ErrorMessage message={createError} />}
 
       <div className="space-y-4">
-        {gameRooms.length === 0 && <div>No open games available. Try starting your own!</div>}
+        {gameRooms.length === 0 && (
+          <div>No open games available. Try starting your own!</div>
+        )}
         {gameRooms.map((room) => (
           <div
             key={room._id}
-            className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition-shadow duration-200"
+            className="bg-gray-900 rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition-shadow duration-200"
           >
             <div className="flex justify-between items-center">
               <div>
@@ -458,7 +445,7 @@ const GameRoomList = () => {
               <div className="flex gap-3">
                 <button
                   onClick={() => navigate(`/rooms/${room._id}`)}
-                  className="bg-green-700 hover:bg-green-600 disabled:bg-green-300 text-white px-4 py-2 rounded-md transition-colors duration-200 flex items-center gap-2"
+                  className="bg-green-700 hover:bg-green-600 disabled:bg-green-300  px-4 py-2 rounded-md transition-colors duration-200 flex items-center gap-2"
                 >
                   Join Game
                 </button>
