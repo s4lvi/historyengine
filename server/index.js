@@ -73,15 +73,13 @@ app.use("/api/gamerooms", gameRoutes);
 
 const __dirname = path.dirname(__filename);
 if (process.env.NODE_ENV === "production") {
-  // Serve static files from the React app build folder
-  app.use(express.static(path.join(__dirname, "client", "build")));
+  app.use(express.static(path.join(__dirname, "..", "client", "build")));
 
   // For any routes not matching the API, serve index.html
   app.get("*", (req, res) => {
-    res.sendFile(path.join(__dirname, "client", "build", "index.html"));
+    res.sendFile(path.join(__dirname, "..", "client", "build", "index.html"));
   });
 }
-
 // -------------------------------------------------------------------
 // Global 404 & Error Handling Middleware
 // -------------------------------------------------------------------
