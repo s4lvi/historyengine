@@ -42,6 +42,8 @@ mongoose.connection.on("error", (err) =>
   console.error("MongoDB connection error:", err)
 );
 await mongoose.connection.collection("gamerooms").drop();
+await mongoose.connection.collection("mapchunks").drop();
+await mongoose.connection.collection("maps").drop();
 
 // -------------------------------------------------------------------
 // Function to resume game loops for all open rooms
