@@ -852,6 +852,7 @@ const GameCanvas = ({
         width={cellSize * 2}
         height={cellSize * 2}
         borderColor={borderColor}
+        isSelected={true}
         borderWidth={2}
         alpha={0.5}
         zIndex={300}

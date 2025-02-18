@@ -74,66 +74,6 @@ export function isCellInTerritory(territory, x, y, territorySet = null) {
   return found;
 }
 
-function countAdjacentTerritory(x, y, territory, territorySet = null) {
-  let count = 0;
-  const tSet = territorySet || getTerritorySet(territory);
-  for (let dx = -1; dx <= 1; dx++) {
-    for (let dy = -1; dy <= 1; dy++) {
-      if (dx === 0 && dy === 0) continue;
-      if (tSet.has(`${x + dx},${y + dy}`)) {
-        count++;
-      }
-    }
-  }
-  return count;
-}
-
-export function calculateCellDesirability(
-  cell,
-  x,
-  y,
-  territory,
-  territorySet = null,
-  cities = []
-) {
-  if (!cell || typeof cell !== "object") {
-    console.warn("Invalid cell data received:", cell);
-    return -Infinity;
-  }
-  let score = 0;
-  const biomeScores = config.biomeDesirabilityScores;
-  score += biomeScores[cell.biome] * 5 || 0;
-  score += (Array.isArray(cell.resources) ? cell.resources.length : 0) * 50;
-  if (cell.isRiver) score += 5;
-  if (typeof cell.temperature === "number") {
-    score + (cell.temperature - 0.5) * 100;
-  }
-  const adjacentCount = countAdjacentTerritory(x, y, territory, territorySet);
-  score += adjacentCount * COMPACTNESS_WEIGHT;
-
-  // Factor in the distance to the nearest 'town' or 'capital'
-  if (Array.isArray(cities) && cities.length > 0) {
-    let minDistance = Infinity;
-    cities.forEach((city) => {
-      if (city.type === "town" || city.type === "capital") {
-        // Using distance
-        const distance = Math.sqrt((x - city.x) ** 2 + (y - city.y) ** 2);
-        if (distance < minDistance) {
-          minDistance = distance;
-        }
-      }
-    });
-    const CITY_PROXIMITY_WEIGHT = 5; // Adjust this constant to change the influence.
-    if (minDistance < Infinity) {
-      // Closer cells get a higher bonus.
-      //score += CITY_PROXIMITY_WEIGHT / (minDistance + 1);
-      score -= minDistance * CITY_PROXIMITY_WEIGHT;
-    }
-  }
-
-  return score;
-}
-
 function getBestCityLocation(nation, mapData) {
   let bestScore = -Infinity;
   let bestLocation = null;
@@ -374,19 +314,11 @@ export function expandTerritory(nation, mapData, allNations) {
       if (d < currentMinDistance) currentMinDistance = d;
     });
   }
-
-  const territorySet = getTerritorySet(nation.territory);
+  s;
   const scoredCells = validAdjacentCells
     .map((adj) => {
       if (adj.cell.biome === "OCEAN") return null;
-      let score = calculateCellDesirability(
-        adj.cell,
-        adj.x,
-        adj.y,
-        nation.territory,
-        territorySet,
-        nation.cities.filter((c) => c.type === "town" || c.type === "capital")
-      );
+      let score = 1;
 
       // Add distance-based scoring modifier
       let minCityDistance = Infinity;

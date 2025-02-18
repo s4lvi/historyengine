@@ -36,7 +36,7 @@ const BorderedSprite = ({
         width={width}
         height={height}
         anchor={0.5}
-        filters={filters}
+        filters={isSelected && filters}
         interactive={interactive}
         pointerdown={(e) => {
           e.stopPropagation();
