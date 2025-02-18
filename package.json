@@ -2,8 +2,8 @@
     "name": "annexi",
     "version": "1.0.0",
     "scripts": {
-      "start": "npm install && node server/index.js",
-      "heroku-postbuild": "cd client && npm install && npm run build"
+      "start": "npm install && cd server && npm install && cd .. && node server/index.js",
+  "heroku-postbuild": "cd client && npm install && npm run build"
     },
     "engines": {
       "node": ">=14.x",
