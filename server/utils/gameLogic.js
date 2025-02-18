@@ -9,6 +9,45 @@ const COMPACTNESS_WEIGHT = 10;
 const REINFORCEMENT_RATE = 1;
 const ENEMY_TERRITORY_PENALTY = 1;
 
+export function checkWinCondition(gameState, mapData) {
+  // Compute total claimable cells (cells that are not ocean)
+  let totalClaimable = 0;
+  for (let y = 0; y < mapData.length; y++) {
+    for (let x = 0; x < mapData[0].length; x++) {
+      const cell = mapData[y][x];
+      if (cell && cell.biome !== "OCEAN") {
+        totalClaimable++;
+      }
+    }
+  }
+
+  // Get the win threshold percentage from your config (e.g., 50 means 50%)
+  const winThreshold = config.winConditionPercentage || 50;
+  let winner = null;
+
+  // Update each nation with its territory percentage.
+  gameState.nations.forEach((nation) => {
+    // Assume nation.territory.x is an array of claimed cell x-coordinates
+    const territoryCount =
+      nation.territory && nation.territory.x ? nation.territory.x.length : 0;
+    // Calculate percentage (round to 2 decimals)
+    nation.territoryPercentage = (
+      (territoryCount / totalClaimable) *
+      100
+    ).toFixed(2);
+    if (parseFloat(nation.territoryPercentage) >= winThreshold) {
+      winner = nation.owner;
+    }
+  });
+
+  // If a winner is found, update nation statuses accordingly.
+  if (winner) {
+    gameState.nations.forEach((nation) => {
+      nation.status = nation.owner === winner ? "winner" : "defeated";
+    });
+  }
+}
+
 export function forEachTerritoryCell(territory, callback) {
   if (!territory || !territory.x || !territory.y) return;
   for (let i = 0; i < territory.x.length; i++) {

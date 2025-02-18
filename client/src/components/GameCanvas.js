@@ -1,3 +1,4 @@
+// GameCanvas.jsx
 import React, {
   useState,
   useRef,
@@ -5,20 +6,18 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
-import { Stage, Container, Graphics, Sprite, Text } from "@pixi/react";
-import * as PIXI from "pixi.js";
+import { Stage, Container, Graphics } from "@pixi/react";
 import { string2hex } from "@pixi/utils";
 import BorderedSprite from "./BorderedSprite";
 import { settings } from "@pixi/settings";
 import { SCALE_MODES } from "@pixi/constants";
 import MapTiles from "./MapTiles";
-import MapChunks from "./MapChunks";
 
 settings.SCALE_MODE = SCALE_MODES.NEAREST;
 
-function capitalize(s) {
-  return String(s[0]).toUpperCase() + String(s).slice(1);
-}
+/* -------------------------------------------------------------------------- */
+/*                     Helper Rendering Functions                           */
+/* -------------------------------------------------------------------------- */
 
 const renderResources = (mapGrid, cellSize, scale) => {
   const resources = [];
@@ -34,8 +33,8 @@ const renderResources = (mapGrid, cellSize, scale) => {
           texture={`/${resource}.png`}
           x={centerX}
           y={centerY}
-          width={iconSize * 2}
-          height={iconSize * 2}
+          width={iconSize}
+          height={iconSize}
           borderColor={0x000000}
           borderWidth={1 * Math.sqrt(scale)}
           interactive={true}
@@ -51,6 +50,164 @@ const renderResources = (mapGrid, cellSize, scale) => {
   return resources;
 };
 
+/* -------------------------------------------------------------------------- */
+/*                           Custom Hooks                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * usePanZoom
+ *
+ * Encapsulates the logic for computing cellSize, scale, offset,
+ * and handling wheel zoom events.
+ */
+function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
+  const cellSize = useMemo(
+    () => (mapMetadata ? stageWidth / mapMetadata.width : 1),
+    [mapMetadata, stageWidth]
+  );
+
+  const computedMinScale = useMemo(() => {
+    if (!mapMetadata) return 1;
+    const minScaleWidth = mapMetadata.width / 64;
+    const minScaleHeight =
+      (stageHeight * mapMetadata.width) / (stageWidth * 64);
+    return Math.max(minScaleWidth, minScaleHeight);
+  }, [mapMetadata, stageWidth, stageHeight]);
+
+  const initialScale = computedMinScale > 2 ? computedMinScale : 2;
+
+  const initialOffset = useMemo(() => {
+    if (!mapMetadata) return { x: 0, y: 0 };
+    return {
+      x: (stageWidth * (1 - initialScale)) / 2,
+      y:
+        (stageHeight -
+          (stageWidth * mapMetadata.height * initialScale) /
+            mapMetadata.width) /
+        2,
+    };
+  }, [mapMetadata, stageWidth, stageHeight, initialScale]);
+
+  const [scale, setScale] = useState(initialScale);
+  const [offset, setOffset] = useState(initialOffset);
+
+  const clampOffsetFinal = useCallback(
+    (offset, currentScale) => {
+      const cellSize = stageWidth / mapMetadata.width;
+      const mapWidth = stageWidth * currentScale;
+      const mapHeight = cellSize * mapMetadata.height * currentScale;
+      let minX, maxX, minY, maxY;
+      if (mapWidth <= stageWidth) {
+        minX = maxX = (stageWidth - mapWidth) / 2;
+      } else {
+        minX = stageWidth - mapWidth;
+        maxX = 0;
+      }
+      if (mapHeight <= stageHeight) {
+        minY = maxY = (stageHeight - mapHeight) / 2;
+      } else {
+        minY = stageHeight - mapHeight;
+        maxY = 0;
+      }
+      return {
+        x: Math.min(maxX, Math.max(offset.x, minX)),
+        y: Math.min(maxY, Math.max(offset.y, minY)),
+      };
+    },
+    [stageWidth, stageHeight, mapMetadata]
+  );
+
+  const handleWheel = useCallback(
+    (e) => {
+      let mousePos;
+      if (e.data && e.data.global) {
+        mousePos = e.data.global;
+      } else if (
+        e.clientX !== undefined &&
+        e.clientY !== undefined &&
+        e.target &&
+        e.target.getBoundingClientRect
+      ) {
+        const rect = e.target.getBoundingClientRect();
+        mousePos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      } else {
+        return;
+      }
+      const delta = -(
+        (e.originalEvent && e.originalEvent.deltaY) ||
+        e.deltaY ||
+        0
+      );
+      const zoomFactor = delta > 0 ? 1.1 : 0.9;
+      setScale((prevScale) => {
+        const newScale = Math.min(
+          Math.max(prevScale * zoomFactor, computedMinScale),
+          14
+        );
+        const worldX = (mousePos.x - offset.x) / prevScale;
+        const worldY = (mousePos.y - offset.y) / prevScale;
+        const newOffset = {
+          x: mousePos.x - worldX * newScale,
+          y: mousePos.y - worldY * newScale,
+        };
+        setOffset(clampOffsetFinal(newOffset, newScale));
+        return newScale;
+      });
+    },
+    [offset, computedMinScale, clampOffsetFinal]
+  );
+
+  const getCellCoordinates = useCallback(
+    (screenX, screenY) => {
+      const adjustedX = (screenX - offset.x) / scale;
+      const adjustedY = (screenY - offset.y) / scale;
+      return {
+        x: Math.floor(adjustedX / cellSize),
+        y: Math.floor(adjustedY / cellSize),
+      };
+    },
+    [offset, scale, cellSize]
+  );
+
+  return {
+    cellSize,
+    scale,
+    offset,
+    setOffset,
+    setScale,
+    handleWheel,
+    getCellCoordinates,
+    computedMinScale,
+  };
+}
+
+/**
+ * useSelection
+ *
+ * Encapsulates selection box state management.
+ */
+function useSelection() {
+  const [selectionBox, setSelectionBox] = useState(null);
+
+  const startSelection = useCallback((startPos) => {
+    setSelectionBox({ start: startPos, end: startPos });
+  }, []);
+
+  const updateSelection = useCallback((newPos) => {
+    setSelectionBox((prev) => (prev ? { ...prev, end: newPos } : prev));
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectionBox(null);
+  }, []);
+
+  return { selectionBox, startSelection, updateSelection, clearSelection };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              Main Component                              */
+/* -------------------------------------------------------------------------- */
+
 const GameCanvas = ({
   mapMetadata,
   mapGrid,
@@ -60,28 +217,367 @@ const GameCanvas = ({
   onArmyTargetSelect,
   foundingNation,
   onFoundNation,
-  buildingStructure, // e.g. "farm", "mine", etc.
+  buildingStructure,
   onBuildCity,
   onCancelBuild,
 }) => {
   const stageWidth = window.innerWidth;
   const stageHeight = window.innerHeight;
-  const cellSize = mapMetadata ? stageWidth / mapMetadata.width : 1;
 
-  const [scale, setScale] = useState(2);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const isDragging = useRef(false);
-  const dragStart = useRef({ x: 0, y: 0 });
-  const offsetStart = useRef({
-    x: Math.floor(mapMetadata.width / 2),
-    y: Math.floor(mapMetadata.height / 2),
-  });
-  const lastRenderTime = useRef(0);
+  // Use our custom pan/zoom hook
+  const {
+    cellSize,
+    scale,
+    offset,
+    setOffset,
+    handleWheel,
+    getCellCoordinates,
+  } = usePanZoom({ mapMetadata, stageWidth, stageHeight });
+
+  // Use our selection hook
+  const { selectionBox, startSelection, updateSelection, clearSelection } =
+    useSelection();
+
+  // Local state for unit selections and hovered cell
+  const [selectedArmies, setSelectedArmies] = useState([]);
   const [selectedArmy, setSelectedArmy] = useState(null);
   const [hoveredCell, setHoveredCell] = useState(null);
-  const disableDrag = useRef(false);
 
-  // Helper functions for territory checking (unchanged)
+  /* ----- Middle Mouse Panning State ----- */
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartPosRef = useRef(null);
+  const panStartOffsetRef = useRef(null);
+
+  /* ----- Smoother WASD Panning via Animation Frame ----- */
+  const keysRef = useRef({ w: false, a: false, s: false, d: false });
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const key = e.key.toLowerCase();
+      if (["w", "a", "s", "d"].includes(key)) {
+        keysRef.current[key] = true;
+      }
+    };
+    const handleKeyUp = (e) => {
+      const key = e.key.toLowerCase();
+      if (["w", "a", "s", "d"].includes(key)) {
+        keysRef.current[key] = false;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+
+    let animationFrameId;
+    let lastFrameTime = performance.now();
+    const panSpeed = 0.5; // Adjust speed (pixels per ms)
+
+    const update = () => {
+      const now = performance.now();
+      const deltaTime = now - lastFrameTime;
+      lastFrameTime = now;
+      let dx = 0,
+        dy = 0;
+      if (keysRef.current.w) dy += panSpeed * deltaTime;
+      if (keysRef.current.s) dy -= panSpeed * deltaTime;
+      if (keysRef.current.a) dx += panSpeed * deltaTime;
+      if (keysRef.current.d) dx -= panSpeed * deltaTime;
+      if (dx !== 0 || dy !== 0) {
+        setOffset((prev) => ({
+          x: prev.x + dx,
+          y: prev.y + dy,
+        }));
+      }
+      animationFrameId = requestAnimationFrame(update);
+    };
+    animationFrameId = requestAnimationFrame(update);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [setOffset]);
+
+  /* ----- Pointer Handlers ----- */
+  const handlePointerDown = useCallback(
+    (e) => {
+      let x, y;
+      if (e.data && e.data.global) {
+        ({ x, y } = e.data.global);
+      } else {
+        const rect = e.target.getBoundingClientRect();
+        x = e.nativeEvent.clientX - rect.left;
+        y = e.nativeEvent.clientY - rect.top;
+      }
+      // Check which button is pressed (0: left, 1: middle)
+      const button = e.data?.originalEvent?.button ?? e.nativeEvent?.button;
+      if (button === 1) {
+        // Middle mouse pressed: start panning
+        setIsPanning(true);
+        panStartPosRef.current = { x, y };
+        panStartOffsetRef.current = { ...offset };
+        return;
+      }
+      // If not panning and no special mode active, start selection.
+      if (
+        !foundingNation &&
+        !buildingStructure &&
+        !selectedArmy &&
+        selectedArmies.length === 0
+      ) {
+        startSelection({ x, y });
+      }
+    },
+    [
+      foundingNation,
+      buildingStructure,
+      selectedArmy,
+      selectedArmies,
+      offset,
+      startSelection,
+    ]
+  );
+
+  const handlePointerMove = useCallback(
+    (e) => {
+      let x, y;
+      if (e.data && e.data.global) {
+        ({ x, y } = e.data.global);
+      } else {
+        const rect = e.target.getBoundingClientRect();
+        x = e.nativeEvent.clientX - rect.left;
+        y = e.nativeEvent.clientY - rect.top;
+      }
+      // If middle mouse panning is active, update offset based on pointer movement.
+      if (isPanning) {
+        const deltaX = x - panStartPosRef.current.x;
+        const deltaY = y - panStartPosRef.current.y;
+        const newOffset = {
+          x: panStartOffsetRef.current.x + deltaX,
+          y: panStartOffsetRef.current.y + deltaY,
+        };
+        setOffset(newOffset);
+        return;
+      }
+      // If a selection is active, update the selection box.
+      if (selectionBox) {
+        updateSelection({ x, y });
+      } else {
+        const cell = getCellCoordinates(x, y);
+        if (
+          cell.x >= 0 &&
+          cell.x < mapMetadata.width &&
+          cell.y >= 0 &&
+          cell.y < mapMetadata.height
+        ) {
+          setHoveredCell(cell);
+        } else {
+          setHoveredCell(null);
+        }
+      }
+    },
+    [
+      isPanning,
+      selectionBox,
+      updateSelection,
+      getCellCoordinates,
+      mapMetadata,
+      setOffset,
+    ]
+  );
+
+  const handlePointerUp = useCallback(
+    (e) => {
+      // If we were panning with the middle mouse button, end panning.
+      if (isPanning) {
+        setIsPanning(false);
+        return;
+      }
+      let x, y;
+      if (e.data?.global) {
+        x = e.data.global.x;
+        y = e.data.global.y;
+      } else {
+        const rect = e.target.getBoundingClientRect();
+        x = e.nativeEvent.clientX - rect.left;
+        y = e.nativeEvent.clientY - rect.top;
+      }
+      const cell = getCellCoordinates(x, y);
+      if (
+        cell.x < 0 ||
+        cell.x >= mapMetadata.width ||
+        cell.y < 0 ||
+        cell.y >= mapMetadata.height
+      ) {
+        clearSelection();
+        return;
+      }
+      if (foundingNation) {
+        onFoundNation?.(cell.x, cell.y);
+        return;
+      }
+      if (buildingStructure) {
+        const gridCell = mapGrid.find((c) => c.x === cell.x && c.y === cell.y);
+        const resourceStructureMapping = {
+          farm: "food",
+          "lumber mill": "wood",
+          mine: ["stone", "bronze", "steel"],
+          stable: "horses",
+        };
+        const required = resourceStructureMapping[buildingStructure];
+        const cellResources = gridCell ? gridCell.cell[5] : [];
+        let resourceValid = Array.isArray(required)
+          ? required.some((r) => cellResources.includes(r))
+          : cellResources.includes(required);
+        const userNation = gameState?.gameState?.nations?.find(
+          (n) => n.owner === userId
+        );
+        const territoryValid =
+          userNation &&
+          userNation.territory &&
+          userNation.territory.x &&
+          userNation.territory.y &&
+          userNation.territory.x.includes(cell.x) &&
+          userNation.territory.y.includes(cell.y);
+        resourceValid =
+          resourceValid ||
+          ["town", "capital", "fort"].includes(buildingStructure);
+        if (resourceValid && territoryValid) {
+          onBuildCity?.(cell.x, cell.y, buildingStructure);
+        }
+        onCancelBuild();
+        return;
+      }
+      if (selectionBox) {
+        const adjustedStart = {
+          x: (selectionBox.start.x - offset.x) / scale,
+          y: (selectionBox.start.y - offset.y) / scale,
+        };
+        const adjustedEnd = {
+          x: (selectionBox.end.x - offset.x) / scale,
+          y: (selectionBox.end.y - offset.y) / scale,
+        };
+        const boxMinX = Math.min(adjustedStart.x, adjustedEnd.x);
+        const boxMaxX = Math.max(adjustedStart.x, adjustedEnd.x);
+        const boxMinY = Math.min(adjustedStart.y, adjustedEnd.y);
+        const boxMaxY = Math.max(adjustedStart.y, adjustedEnd.y);
+        const newlySelected = [];
+        if (gameState?.gameState?.nations) {
+          gameState.gameState.nations.forEach((nation) => {
+            nation.armies?.forEach((army) => {
+              const armyCenterX =
+                Math.floor(army.position.x) * cellSize + cellSize / 2;
+              const armyCenterY =
+                Math.floor(army.position.y) * cellSize + cellSize / 2;
+              if (
+                armyCenterX >= boxMinX &&
+                armyCenterX <= boxMaxX &&
+                armyCenterY >= boxMinY &&
+                armyCenterY <= boxMaxY
+              ) {
+                newlySelected.push(army);
+              }
+            });
+          });
+        }
+        setSelectedArmies(newlySelected);
+        clearSelection();
+      } else {
+        if (selectedArmies.length > 0) {
+          selectedArmies.forEach((army) =>
+            onArmyTargetSelect?.(army.id, cell.x, cell.y)
+          );
+          setSelectedArmies([]);
+          return;
+        }
+        let foundArmy = null;
+        if (gameState?.gameState?.nations) {
+          for (const nation of gameState.gameState.nations) {
+            const army = nation.armies?.find((army) => {
+              const armyX = Math.round(army.position.x);
+              const armyY = Math.round(army.position.y);
+              return armyX === cell.x && armyY === cell.y && !army.attackTarget;
+            });
+            if (army) {
+              foundArmy = { army, nation };
+              break;
+            }
+          }
+        }
+        if (foundArmy && foundArmy.nation.owner === userId) {
+          setSelectedArmy(foundArmy.army);
+        } else {
+          setSelectedArmy(null);
+        }
+      }
+    },
+    [
+      getCellCoordinates,
+      mapMetadata,
+      foundingNation,
+      onFoundNation,
+      buildingStructure,
+      onBuildCity,
+      selectionBox,
+      offset,
+      scale,
+      mapGrid,
+      gameState,
+      userId,
+      clearSelection,
+      onCancelBuild,
+      selectedArmies,
+      onArmyTargetSelect,
+      cellSize,
+    ]
+  );
+
+  // Memoize resources rendering
+  const memoizedResources = useMemo(
+    () => renderResources(mapGrid, cellSize, scale),
+    [mapGrid, cellSize, scale]
+  );
+
+  // Prepare textures mapping for MapTiles
+  const textures = useMemo(() => {
+    const result = {};
+    if (mappings && mappings.biomes) {
+      Object.values(mappings.biomes).forEach((biome) => {
+        const key = biome.toLowerCase();
+        result[key] = `/biomes/${key}.png`;
+      });
+    }
+    result["default"] = `/grassland.png`;
+    return result;
+  }, [mappings]);
+
+  /* ----- Render Selection Box ----- */
+  const renderSelectionBox = () => {
+    if (!selectionBox) return null;
+    const { start, end } = selectionBox;
+    const adjustedStart = {
+      x: (start.x - offset.x) / scale,
+      y: (start.y - offset.y) / scale,
+    };
+    const adjustedEnd = {
+      x: (end.x - offset.x) / scale,
+      y: (end.y - offset.y) / scale,
+    };
+    const x = Math.min(adjustedStart.x, adjustedEnd.x);
+    const y = Math.min(adjustedStart.y, adjustedEnd.y);
+    const width = Math.abs(adjustedEnd.x - adjustedStart.x);
+    const height = Math.abs(adjustedEnd.y - adjustedStart.y);
+    return (
+      <Graphics
+        draw={(g) => {
+          g.clear();
+          g.lineStyle(1, 0x00ff00, 1);
+          g.drawRect(x, y, width, height);
+        }}
+        zIndex={10000}
+      />
+    );
+  };
+
+  /* ----- Inline Territory & Overlay Helpers (unchanged) ----- */
   const forEachTerritoryCell = (territory, callback) => {
     if (!territory || !territory.x || !territory.y) return;
     for (let i = 0; i < territory.x.length; i++) {
@@ -92,9 +588,7 @@ const GameCanvas = ({
   const hasCellInTerritory = (territory, x, y) => {
     if (!territory || !territory.x || !territory.y) return false;
     for (let i = 0; i < territory.x.length; i++) {
-      if (territory.x[i] === x && territory.y[i] === y) {
-        return true;
-      }
+      if (territory.x[i] === x && territory.y[i] === y) return true;
     }
     return false;
   };
@@ -135,413 +629,69 @@ const GameCanvas = ({
   };
 
   const isBorderCell = (x, y, territory) => {
-    const adjacentPositions = [
+    const adjacent = [
       { x: x - 1, y: y - 1 },
-      { x: x, y: y - 1 },
+      { x, y: y - 1 },
       { x: x + 1, y: y - 1 },
-      { x: x - 1, y: y },
-      { x: x + 1, y: y },
+      { x: x - 1, y },
+      { x: x + 1, y },
       { x: x - 1, y: y + 1 },
-      { x: x, y: y + 1 },
+      { x, y: y + 1 },
       { x: x + 1, y: y + 1 },
     ];
-    return adjacentPositions.some(
-      (pos) => !hasCellInTerritory(territory, pos.x, pos.y)
-    );
+    return adjacent.some((pos) => !hasCellInTerritory(territory, pos.x, pos.y));
   };
 
-  // Clamping functions (unchanged)
-  const clampOffsetDuringDrag = useCallback(
-    (offset, currentScale) => {
-      const cellSize = stageWidth / mapMetadata.width;
-      const mapWidth = stageWidth * currentScale;
-      const mapHeight = cellSize * mapMetadata.height * currentScale;
-      let minX, maxX, minY, maxY;
-      if (mapWidth <= stageWidth) {
-        minX = maxX = (stageWidth - mapWidth) / 2;
-      } else {
-        minX = stageWidth - mapWidth;
-        maxX = 0;
-      }
-      if (mapHeight <= stageHeight) {
-        minY = maxY = (stageHeight - mapHeight) / 2;
-      } else {
-        minY = stageHeight - mapHeight;
-        maxY = 0;
-      }
-      return {
-        x: Math.min(maxX, Math.max(minX, offset.x)),
-        y: Math.min(maxY, Math.max(minY, offset.y)),
-      };
-    },
-    [stageWidth, stageHeight, mapMetadata]
-  );
-
-  const clampOffsetFinal = useCallback(
-    (offset, currentScale) => {
-      const cellSize = stageWidth / mapMetadata.width;
-      const mapWidth = stageWidth * currentScale;
-      const mapHeight = cellSize * mapMetadata.height * currentScale;
-      let minX, maxX, minY, maxY;
-      if (mapWidth <= stageWidth) {
-        minX = maxX = (stageWidth - mapWidth) / 2;
-      } else {
-        minX = stageWidth - mapWidth;
-        maxX = 0;
-      }
-      if (mapHeight <= stageHeight) {
-        minY = maxY = (stageHeight - mapHeight) / 2;
-      } else {
-        minY = stageHeight - mapHeight;
-        maxY = 0;
-      }
-      return {
-        x: Math.min(maxX, Math.max(offset.x, minX)),
-        y: Math.min(maxY, Math.max(offset.y, minY)),
-      };
-    },
-    [stageWidth, stageHeight, mapMetadata]
-  );
-
-  const isWithinBounds = useCallback(
-    (x, y) => {
-      return (
-        x >= 0 && x < mapMetadata.width && y >= 0 && y < mapMetadata.height
-      );
-    },
-    [mapMetadata]
-  );
-
-  const getCellCoordinates = useCallback(
-    (screenX, screenY) => {
-      const adjustedX = (screenX - offset.x) / scale;
-      const adjustedY = (screenY - offset.y) / scale;
-      return {
-        x: Math.floor(adjustedX / cellSize),
-        y: Math.floor(adjustedY / cellSize),
-      };
-    },
-    [offset, scale, cellSize]
-  );
-
-  const findArmyAtPosition = useCallback(
-    (x, y) => {
-      if (!gameState?.gameState?.nations) return null;
-      for (const nation of gameState.gameState.nations) {
-        const army = nation.armies?.find((army) => {
-          const armyX = Math.round(army.position.x);
-          const armyY = Math.round(army.position.y);
-          return armyX === x && armyY === y;
-        });
-        if (army) {
-          if (army.attackTarget) return null;
-          return { army, nation };
-        }
-      }
-      return null;
-    },
-    [gameState]
-  );
-
-  // --- Build Mode Preview & Pointer Handlers ---
-
-  const resourceStructureMapping = {
-    farm: "food",
-    "lumber mill": "wood",
-    mine: ["stone", "bronze", "steel"],
-    stable: "horses",
-  };
-
-  const textures = useMemo(() => {
-    const result = {};
-    if (mappings && mappings.biomes) {
-      Object.values(mappings.biomes).forEach((biome) => {
-        const key = biome.toLowerCase();
-        result[key] = `/biomes/${key}.png`;
-      });
-    }
-    result["default"] = `/grassland.png`;
-    return result;
-  }, [mappings]);
-
-  let buildPreview = null;
-  if (buildingStructure && hoveredCell) {
-    const gridCell = mapGrid.find(
-      (c) => c.x === hoveredCell.x && c.y === hoveredCell.y
-    );
-    const required = resourceStructureMapping[buildingStructure];
-    const cellResources = gridCell ? gridCell.cell[5] : [];
-    let resourceValid = false;
-
-    if (Array.isArray(required)) {
-      resourceValid = required.some((r) => cellResources.includes(r));
-    } else {
-      resourceValid = cellResources.includes(required);
-    }
-    const userNation = gameState?.gameState?.nations?.find(
-      (n) => n.owner === userId
-    );
-    const territoryValid =
-      userNation &&
-      hasCellInTerritory(userNation.territory, hoveredCell.x, hoveredCell.y);
-    resourceValid =
-      resourceValid ||
-      buildingStructure === "town" ||
-      buildingStructure === "capital" ||
-      buildingStructure === "fort";
-    const valid = resourceValid && territoryValid;
-    const borderColor = valid ? 0x00ff00 : 0xff0000;
-    buildPreview = (
-      <BorderedSprite
-        texture={`/${buildingStructure.toLowerCase().replace(" ", "_")}.png`}
-        x={hoveredCell.x * cellSize + cellSize / 2}
-        y={hoveredCell.y * cellSize + cellSize / 2}
-        width={cellSize * 2}
-        height={cellSize * 2}
-        borderColor={borderColor}
-        borderWidth={2}
-        alpha={0.5}
-        zIndex={300}
-      />
-    );
-  }
-
-  const handleWheel = useCallback(
-    (e) => {
-      let mousePos;
-      if (e.data && e.data.global) {
-        mousePos = e.data.global;
-      } else if (
-        e.clientX !== undefined &&
-        e.clientY !== undefined &&
-        e.target &&
-        e.target.getBoundingClientRect
-      ) {
-        const rect = e.target.getBoundingClientRect();
-        mousePos = {
-          x: e.clientX - rect.left,
-          y: e.clientY - rect.top,
-        };
-      } else {
-        return;
-      }
-      const delta = -(
-        (e.originalEvent && e.originalEvent.deltaY) ||
-        e.deltaY ||
-        0
-      );
-      const zoomFactor = delta > 0 ? 1.1 : 0.9;
-      const minScale = 1;
-      setScale((prevScale) => {
-        const newScale = Math.min(
-          Math.max(prevScale * zoomFactor, minScale),
-          14
-        );
-        const worldX = (mousePos.x - offset.x) / prevScale;
-        const worldY = (mousePos.y - offset.y) / prevScale;
-        const newOffset = {
-          x: mousePos.x - worldX * newScale,
-          y: mousePos.y - worldY * newScale,
-        };
-        setOffset(clampOffsetFinal(newOffset, newScale));
-        return newScale;
-      });
-    },
-    [offset, clampOffsetFinal]
-  );
-
-  const handlePointerDown = useCallback(
-    (e) => {
-      if (disableDrag.current) {
-        return;
-      }
-      let x, y;
-      if (e.data && e.data.global) {
-        ({ x, y } = e.data.global);
-      } else {
-        const rect = e.target.getBoundingClientRect();
-        x = e.nativeEvent.clientX - rect.left;
-        y = e.nativeEvent.clientY - rect.top;
-      }
-      isDragging.current = true;
-      dragStart.current = { x, y };
-      offsetStart.current = { ...offset };
-    },
-    [offset]
-  );
-
-  const handlePointerMove = useCallback(
-    (e) => {
-      if (e.buttons === 0) {
-        isDragging.current = false;
-      }
-      const currentTime = performance.now();
-      if (currentTime - lastRenderTime.current < 16) {
-        return;
-      }
-      lastRenderTime.current = currentTime;
-      if (!isDragging.current) {
-        let x, y;
-        if (e.data && e.data.global) {
-          ({ x, y } = e.data.global);
-        } else {
-          const rect = e.target.getBoundingClientRect();
-          x = e.nativeEvent.clientX - rect.left;
-          y = e.nativeEvent.clientY - rect.top;
-        }
-        const cell = getCellCoordinates(x, y);
-        if (
-          cell.x >= 0 &&
-          cell.x < mapMetadata.width &&
-          cell.y >= 0 &&
-          cell.y < mapMetadata.height
-        ) {
-          setHoveredCell(cell);
-        } else {
-          setHoveredCell(null);
-        }
-      }
-      if (isDragging.current) {
-        let x, y;
-        if (e.data && e.data.global) {
-          ({ x, y } = e.data.global);
-        } else {
-          const rect = e.target.getBoundingClientRect();
-          x = e.nativeEvent.clientX - rect.left;
-          y = e.nativeEvent.clientY - rect.top;
-        }
-        const dx = x - dragStart.current.x;
-        const dy = y - dragStart.current.y;
-        const newOffset = {
-          x: offsetStart.current.x + dx,
-          y: offsetStart.current.y + dy,
-        };
-        setOffset(clampOffsetDuringDrag(newOffset, scale));
-      }
-    },
-    [scale, offset, mapMetadata, getCellCoordinates, clampOffsetDuringDrag]
-  );
-
-  const handlePointerUp = useCallback(
-    (e) => {
-      disableDrag.current = false;
-      let x, y;
-      if (e.data?.global) {
-        x = e.data.global.x;
-        y = e.data.global.y;
-      } else {
-        const rect = e.target.getBoundingClientRect();
-        x = e.nativeEvent.clientX - rect.left;
-        y = e.nativeEvent.clientY - rect.top;
-      }
-      const dx = x - dragStart.current.x;
-      const dy = y - dragStart.current.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      const clickThreshold = 5;
-      if (distance < clickThreshold) {
-        const cell = getCellCoordinates(x, y);
-        if (isWithinBounds(cell.x, cell.y)) {
-          if (foundingNation) {
-            onFoundNation?.(cell.x, cell.y);
-            return;
-          }
-          if (buildingStructure) {
-            const gridCell = mapGrid.find(
-              (c) => c.x === cell.x && c.y === cell.y
-            );
-            const required = resourceStructureMapping[buildingStructure];
-            const cellResources = gridCell ? gridCell.cell[5] : [];
-            let resourceValid = false;
-            if (Array.isArray(required)) {
-              resourceValid = required.some((r) => cellResources.includes(r));
-            } else {
-              resourceValid = cellResources.includes(required);
-            }
-            const userNation = gameState?.gameState?.nations?.find(
-              (n) => n.owner === userId
-            );
-            const territoryValid =
-              userNation &&
-              hasCellInTerritory(userNation.territory, cell.x, cell.y);
-            resourceValid =
-              resourceValid ||
-              buildingStructure === "town" ||
-              buildingStructure === "capital" ||
-              buildingStructure === "fort";
-            if (resourceValid && territoryValid) {
-              onBuildCity?.(hoveredCell.x, hoveredCell.y, buildingStructure);
-            }
-            onCancelBuild();
-            return;
-          }
-          if (selectedArmy) {
-            onArmyTargetSelect?.(selectedArmy.id, cell.x, cell.y);
-            setSelectedArmy(null);
-            return;
-          }
-          const armyAtPosition = findArmyAtPosition(
-            Math.round(cell.x),
-            Math.round(cell.y)
-          );
-          if (armyAtPosition && armyAtPosition.nation.owner === userId) {
-            setSelectedArmy(armyAtPosition.army);
-          } else {
-            setSelectedArmy(null);
-          }
-        }
-      }
-      isDragging.current = false;
-    },
-    [
-      getCellCoordinates,
-      isWithinBounds,
-      foundingNation,
-      onFoundNation,
-      buildingStructure,
-      onBuildCity,
-      selectedArmy,
-      onArmyTargetSelect,
-      findArmyAtPosition,
-      userId,
-      mapGrid,
-      gameState,
-    ]
-  );
-
-  // ******************************************************************
-  // Compute the "visible" grid based on the current offset and scale.
-  // This filters out cells that are outside of the viewport.
-  // ******************************************************************
-  const visibleMapGrid = useMemo(() => {
-    if (!mapMetadata) return [];
-    const visibleCells = [];
-    // Calculate viewport boundaries in world coordinates.
-    const visibleLeft = -offset.x / scale;
-    const visibleTop = -offset.y / scale;
-    const visibleRight = visibleLeft + stageWidth / scale;
-    const visibleBottom = visibleTop + stageHeight / scale;
-
-    mapGrid.forEach(({ cell, x, y }) => {
-      const cellLeft = x * cellSize;
-      const cellTop = y * cellSize;
-      const cellRight = cellLeft + cellSize;
-      const cellBottom = cellTop + cellSize;
-      if (
-        cellRight >= visibleLeft &&
-        cellLeft <= visibleRight &&
-        cellBottom >= visibleTop &&
-        cellTop <= visibleBottom
-      ) {
-        visibleCells.push({ cell, x, y });
-      }
+  // Helper: Given an array of points, compute a smoothed polygon using Catmull–Rom interpolation.
+  function computeSmoothPolygon(borderPoints, numOfSegments = 8) {
+    // First, compute the centroid to sort points in order.
+    let cx = 0,
+      cy = 0;
+    borderPoints.forEach((pt) => {
+      cx += pt.x;
+      cy += pt.y;
     });
-    return visibleCells;
-  }, [mapGrid, offset, scale, stageWidth, stageHeight, cellSize]);
+    cx /= borderPoints.length;
+    cy /= borderPoints.length;
 
-  const memoizedResources = useMemo(
-    () => renderResources(mapGrid, cellSize, scale),
-    [mapGrid, cellSize, scale]
-  );
+    // Sort points by angle relative to the centroid.
+    borderPoints.sort((a, b) => {
+      return Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx);
+    });
+
+    // Catmull–Rom interpolation function.
+    const catmullRom = (p0, p1, p2, p3, t) => {
+      const t2 = t * t;
+      const t3 = t2 * t;
+      return (
+        0.5 *
+        (2 * p1 +
+          (-p0 + p2) * t +
+          (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+          (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+      );
+    };
+
+    // Generate smoothed points.
+    const smoothPoints = [];
+    const pts = borderPoints;
+    const n = pts.length;
+    // Loop over each point in the ordered list.
+    for (let i = 0; i < n; i++) {
+      const p0 = pts[(i - 1 + n) % n];
+      const p1 = pts[i];
+      const p2 = pts[(i + 1) % n];
+      const p3 = pts[(i + 2) % n];
+      // Interpolate between p1 and p2.
+      for (let j = 0; j < numOfSegments; j++) {
+        const t = j / numOfSegments;
+        const x = catmullRom(p0.x, p1.x, p2.x, p3.x, t);
+        const y = catmullRom(p0.y, p1.y, p2.y, p3.y, t);
+        smoothPoints.push(x, y);
+      }
+    }
+    return smoothPoints;
+  }
 
   const renderNationOverlays = () => {
     const overlays = [];
@@ -598,8 +748,8 @@ const GameCanvas = ({
             texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
             x={centerX}
             y={centerY}
-            width={iconSize * 2}
-            height={iconSize * 2}
+            width={iconSize}
+            height={iconSize}
             borderColor={baseColor}
             borderWidth={2 * Math.sqrt(scale)}
             interactive={true}
@@ -621,15 +771,14 @@ const GameCanvas = ({
             texture={`/${army.type.toLowerCase().replace(" ", "_")}.png`}
             x={centerX}
             y={centerY}
-            width={iconSize * 2}
-            height={iconSize * 2}
+            width={iconSize}
+            height={iconSize}
             borderColor={baseColor}
             borderWidth={2 * Math.sqrt(scale)}
             interactive={true}
-            isSelected={selectedArmy && selectedArmy.id === army.id}
+            isSelected={selectedArmies.some((sel) => sel.id === army.id)}
             pointerdown={(e) => {
               e.stopPropagation();
-              disableDrag.current = true;
               console.log("Army clicked:", army);
               setSelectedArmy(army);
             }}
@@ -641,6 +790,74 @@ const GameCanvas = ({
     });
     return overlays;
   };
+
+  // Compute the visible portion of the map for performance.
+  const visibleMapGrid = useMemo(() => {
+    if (!mapMetadata) return [];
+    const visibleCells = [];
+    const visibleLeft = -offset.x / scale;
+    const visibleTop = -offset.y / scale;
+    const visibleRight = visibleLeft + stageWidth / scale;
+    const visibleBottom = visibleTop + stageHeight / scale;
+    mapGrid.forEach(({ cell, x, y }) => {
+      const cellLeft = x * cellSize;
+      const cellTop = y * cellSize;
+      const cellRight = cellLeft + cellSize;
+      const cellBottom = cellTop + cellSize;
+      if (
+        cellRight >= visibleLeft &&
+        cellLeft <= visibleRight &&
+        cellBottom >= visibleTop &&
+        cellTop <= visibleTop + stageHeight / scale
+      ) {
+        visibleCells.push({ cell, x, y });
+      }
+    });
+    return visibleCells;
+  }, [mapGrid, offset, scale, stageWidth, stageHeight, cellSize]);
+
+  // Build mode preview for structures
+  let buildPreview = null;
+  if (buildingStructure && hoveredCell) {
+    const gridCell = mapGrid.find(
+      (c) => c.x === hoveredCell.x && c.y === hoveredCell.y
+    );
+    const resourceStructureMapping = {
+      farm: "food",
+      "lumber mill": "wood",
+      mine: ["stone", "bronze", "steel"],
+      stable: "horses",
+    };
+    const required = resourceStructureMapping[buildingStructure];
+    const cellResources = gridCell ? gridCell.cell[5] : [];
+    let resourceValid = Array.isArray(required)
+      ? required.some((r) => cellResources.includes(r))
+      : cellResources.includes(required);
+    const userNation = gameState?.gameState?.nations?.find(
+      (n) => n.owner === userId
+    );
+    const territoryValid =
+      userNation &&
+      userNation.territory &&
+      hasCellInTerritory(userNation.territory, hoveredCell.x, hoveredCell.y);
+    resourceValid =
+      resourceValid || ["town", "capital", "fort"].includes(buildingStructure);
+    const valid = resourceValid && territoryValid;
+    const borderColor = valid ? 0x00ff00 : 0xff0000;
+    buildPreview = (
+      <BorderedSprite
+        texture={`/${buildingStructure.toLowerCase().replace(" ", "_")}.png`}
+        x={hoveredCell.x * cellSize + cellSize / 2}
+        y={hoveredCell.y * cellSize + cellSize / 2}
+        width={cellSize * 2}
+        height={cellSize * 2}
+        borderColor={borderColor}
+        borderWidth={2}
+        alpha={0.5}
+        zIndex={300}
+      />
+    );
+  }
 
   return (
     <Stage
@@ -672,7 +889,6 @@ const GameCanvas = ({
         scale={scale}
         sortableChildren={true}
       >
-        {/* Pass the filtered grid (only visible cells) to MapTiles */}
         <MapTiles
           mapGrid={visibleMapGrid}
           cellSize={cellSize}
@@ -682,6 +898,7 @@ const GameCanvas = ({
         {memoizedResources}
         {renderNationOverlays()}
         {buildPreview}
+        {renderSelectionBox()}
       </Container>
     </Stage>
   );

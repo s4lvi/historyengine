@@ -3,9 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
 
 const MAP_SIZES = {
-  Small: { width: 150, height: 150, erosion_passes: 3, num_blobs: 5 },
-  Normal: { width: 300, height: 300, erosion_passes: 3, num_blobs: 7 },
-  Large: { width: 500, height: 500, erosion_passes: 3, num_blobs: 9 },
+  Small: { width: 100, height: 100, erosion_passes: 3, num_blobs: 7 },
+  Normal: { width: 150, height: 150, erosion_passes: 3, num_blobs: 9 },
+  Large: { width: 250, height: 250, erosion_passes: 3, num_blobs: 10 },
 };
 
 const CreateGameRoomForm = ({
@@ -18,7 +18,7 @@ const CreateGameRoomForm = ({
   const [formData, setFormData] = useState({
     roomName: "",
     selectedMapId: "",
-    generateNewMap: false,
+    generateNewMap: true,
     mapName: "",
     mapSize: "Normal", // New field for map size selection
     width: MAP_SIZES.Normal.width,
@@ -160,72 +160,29 @@ const CreateGameRoomForm = ({
 
                 {/* Map Generation Options */}
                 <div className="space-y-2">
-                  <div className="flex items-center">
-                    <input
-                      type="checkbox"
-                      id="generateNewMap"
-                      name="generateNewMap"
-                      checked={formData.generateNewMap}
-                      onChange={handleChange}
-                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                    />
+                  <div>
                     <label
-                      htmlFor="generateNewMap"
-                      className="ml-2 block text-sm "
+                      htmlFor="mapSize"
+                      className="block text-sm font-medium text-gray-500"
                     >
-                      Generate New Map
+                      Map Size
                     </label>
+                    <select
+                      id="mapSize"
+                      name="mapSize"
+                      value={formData.mapSize}
+                      onChange={handleChange}
+                      className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      required
+                    >
+                      {Object.keys(MAP_SIZES).map((size) => (
+                        <option key={size} value={size}>
+                          {size} ({MAP_SIZES[size].width}x
+                          {MAP_SIZES[size].height})
+                        </option>
+                      ))}
+                    </select>
                   </div>
-
-                  {formData.generateNewMap ? (
-                    <div>
-                      <label
-                        htmlFor="mapSize"
-                        className="block text-sm font-medium text-gray-500"
-                      >
-                        Map Size
-                      </label>
-                      <select
-                        id="mapSize"
-                        name="mapSize"
-                        value={formData.mapSize}
-                        onChange={handleChange}
-                        className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        required
-                      >
-                        {Object.keys(MAP_SIZES).map((size) => (
-                          <option key={size} value={size}>
-                            {size} ({MAP_SIZES[size].width}x
-                            {MAP_SIZES[size].height})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : (
-                    <div>
-                      <label
-                        htmlFor="selectedMapId"
-                        className="block text-sm font-medium text-gray-500"
-                      >
-                        Select Map
-                      </label>
-                      <select
-                        id="selectedMapId"
-                        name="selectedMapId"
-                        value={formData.selectedMapId}
-                        onChange={handleChange}
-                        className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        required
-                      >
-                        <option value="">Select a map...</option>
-                        {availableMaps.map((map) => (
-                          <option key={map._id} value={map._id}>
-                            {map.name} ({map.width}x{map.height})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
                 </div>
 
                 {/* Form Buttons */}
@@ -429,7 +386,7 @@ const GameRoomList = () => {
           >
             <div className="flex justify-between items-center">
               <div>
-                <h2 className="text-xl font-semibold text-gray-800">
+                <h2 className="text-xl font-semibold text-gray-100">
                   {room.roomName}
                 </h2>
                 <p className="text-gray-500 text-sm mt-1">

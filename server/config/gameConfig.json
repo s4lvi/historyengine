@@ -1,4 +1,4 @@
-{
+{ "winConditionPercentage": 75,
   "buildCosts": {
     "structures": {
       "town": { "wood": 200, "stone": 100, "food": 500 },

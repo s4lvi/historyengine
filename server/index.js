@@ -15,8 +15,12 @@ app.use(express.json());
 // -------------------------------------------------------------------
 // Connect to MongoDB
 // -------------------------------------------------------------------
+
+const MONGO_URI =
+  process.env.MONGO_URI || "mongodb://localhost:27017/fantasy-maps";
+
 mongoose
-  .connect("mongodb://localhost:27017/fantasy-maps", {
+  .connect(MONGO_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
   })
@@ -58,6 +62,20 @@ async function resumeActiveGameLoops() {
 // -------------------------------------------------------------------
 app.use("/api/maps", mapRoutes);
 app.use("/api/gamerooms", gameRoutes);
+
+// -------------------------------------------------------------------
+// Serve static files from the React app in production
+// -------------------------------------------------------------------
+const __dirname = path.resolve();
+if (process.env.NODE_ENV === "production") {
+  // Serve static files from the React app build folder
+  app.use(express.static(path.join(__dirname, "client", "build")));
+
+  // For any routes not matching the API, serve index.html
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(__dirname, "client", "build", "index.html"));
+  });
+}
 
 // -------------------------------------------------------------------
 // Global 404 & Error Handling Middleware

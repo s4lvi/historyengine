@@ -1,6 +1,6 @@
 // gameLoop.js
 import mongoose from "mongoose";
-import { updateNation } from "../utils/gameLogic.js";
+import { updateNation, checkWinCondition } from "../utils/gameLogic.js";
 import { assignResourcesToMap } from "../utils/resourceManagement.js";
 
 class GameLoop {
@@ -121,6 +121,8 @@ class GameLoop {
       });
 
       gameRoom.gameState.nations = updatedNations;
+
+      checkWinCondition(gameRoom.gameState, mapData);
       gameRoom.tickCount += 1;
       gameRoom.markModified("gameState.nations");
       await gameRoom.save();

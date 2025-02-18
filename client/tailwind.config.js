@@ -4,6 +4,7 @@ module.exports = {
     extend: {
       fontFamily: {
         estonia: ["Estonia", "cursive"],
+        metamorphous: ["Metamorphous", "serif"],
       },
     },
   },

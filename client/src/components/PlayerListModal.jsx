@@ -33,7 +33,7 @@ const PlayerListModal = ({ isOpen, onClose, gameState, getNationColor }) => {
                 <span className="text-sm text-gray-500">
                   {nation.territory?.x?.length || 0} tiles
                 </span>
-                <span>{nation.population?.toLocaleString()} pop.</span>
+                <span>{nation.territoryPercentage?.toLocaleString()}%.</span>
               </div>
             </div>
           ))}

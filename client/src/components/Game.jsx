@@ -168,6 +168,7 @@ const Game = () => {
   // ----------------------------
   // Poll game state (every 200ms)
   // ----------------------------
+  // In your useEffect that polls game state:
   useEffect(() => {
     if (!userId || !storedPassword) return;
 
@@ -189,7 +190,7 @@ const Game = () => {
 
         const data = await response.json();
 
-        // Use previous gameState to preserve the merged territories.
+        // Update territories using your merge function, etc.
         setGameState((prevState) => {
           const previousNations = prevState?.gameState?.nations || [];
           const prevTerritories = previousNations.reduce((acc, nation) => {
@@ -219,38 +220,69 @@ const Game = () => {
           };
         });
 
-        // Check player nation status
-        const playerNation = data.gameState.nations?.find(
-          (n) => n.owner === userId && n.status !== "defeated"
+        // Check for win condition
+        const winningNation = data.gameState.nations?.find(
+          (n) => n.status === "winner"
         );
-
-        if (playerNation) {
-          // If you find an active naion, update the state and clear the defeated flag.
-          setUserState(playerNation);
-          setIsDefeated(false);
-          setHasFounded(true);
-        } else {
-          // No active nation found:
-          if (!isDefeated && hasFounded) {
-            const defeatedNation = data.gameState.nations?.find(
-              (n) => n.owner === userId && n.status === "defeated"
-            );
-            if (defeatedNation) {
-              setIsDefeated(true);
+        if (winningNation) {
+          if (winningNation.owner === userId) {
+            // Your nation is the winner!
+            if (!actionModal || actionModal.type !== "win") {
+              setActionModal({
+                type: "win",
+                message: "Congratulations! Your nation has won the game!",
+                onClose: () => {
+                  handleEndGame();
+                },
+              });
+            }
+            setUserState(winningNation);
+          } else {
+            // Another nation won—treat it similar to defeat.
+            if (!actionModal || actionModal.type !== "defeat") {
               setActionModal({
                 type: "defeat",
-                message:
-                  "Your nation has been defeated! You can start over by founding a new nation.",
+                message: `${winningNation.owner} has won the game. Your nation has been defeated.`,
                 onClose: () => {
-                  setActionModal(null);
-                  setFoundingNation(true);
-                  setHasFounded(false);
+                  navigate("/");
                 },
               });
             }
             setUserState(null);
             setFoundingNation(true);
             setHasFounded(false);
+          }
+        } else {
+          // No win condition—proceed with existing logic.
+          const playerNation = data.gameState.nations?.find(
+            (n) => n.owner === userId && n.status !== "defeated"
+          );
+          if (playerNation) {
+            setUserState(playerNation);
+            setIsDefeated(false);
+            setHasFounded(true);
+          } else {
+            if (!isDefeated && hasFounded) {
+              const defeatedNation = data.gameState.nations?.find(
+                (n) => n.owner === userId && n.status === "defeated"
+              );
+              if (defeatedNation) {
+                setIsDefeated(true);
+                setActionModal({
+                  type: "defeat",
+                  message:
+                    "Your nation has been defeated! You can start over by founding a new nation.",
+                  onClose: () => {
+                    setActionModal(null);
+                    setFoundingNation(true);
+                    setHasFounded(false);
+                  },
+                });
+              }
+              setUserState(null);
+              setFoundingNation(true);
+              setHasFounded(false);
+            }
           }
         }
       } catch (err) {
@@ -266,7 +298,11 @@ const Game = () => {
   // Full state polling effect: every 5 seconds, fetch the full state to overwrite local territory.
   useEffect(() => {
     if (!userId || !storedPassword) return;
+
     const fetchFullState = async () => {
+      // If an action modal is active (win/defeat popup), skip full state update.
+      if (actionModal) return;
+
       try {
         const response = await fetch(
           `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/state`,
@@ -289,12 +325,10 @@ const Game = () => {
         // Overwrite local state with the full state from the backend.
         if (data.gameState.nations) {
           data.gameState.nations = data.gameState.nations.map((nation) => {
-            // The full territory is provided from the backend.
-            // In case a delta exists, we ignore it by deleting.
+            // Remove any delta properties if present.
             if (nation.territoryDeltaForClient) {
               delete nation.territoryDeltaForClient;
             }
-            // The backend should provide nation.territory as the full territory.
             return nation;
           });
         }
@@ -308,20 +342,16 @@ const Game = () => {
 
         // Also update userState if needed.
         if (data.gameState.nations) {
-          // Check player nation status
-          const playerNation = data.gameState.nations?.find(
+          const playerNation = data.gameState.nations.find(
             (n) => n.owner === userId && n.status !== "defeated"
           );
-
           if (playerNation) {
-            // If you find an active naion, update the state and clear the defeated flag.
             setUserState(playerNation);
             setIsDefeated(false);
             setHasFounded(true);
           } else {
-            // No active nation found:
-            if (!isDefeated) {
-              const defeatedNation = data.gameState.nations?.find(
+            if (!isDefeated && hasFounded) {
+              const defeatedNation = data.gameState.nations.find(
                 (n) => n.owner === userId && n.status === "defeated"
               );
               if (defeatedNation) {
@@ -338,12 +368,13 @@ const Game = () => {
         console.error("Error fetching full game state:", err);
       }
     };
+
     // Immediately fetch full state on mounting
     fetchFullState();
-    // Then set interval for rectification (every 5 seconds; adjust to 10 if desired)
+    // Then set interval for rectification every 5 seconds
     const interval = setInterval(fetchFullState, 5000);
     return () => clearInterval(interval);
-  }, [id, userId, storedPassword, navigate]);
+  }, [id, userId, storedPassword, navigate, actionModal]);
 
   // ----------------------------
   // Handle login form submission

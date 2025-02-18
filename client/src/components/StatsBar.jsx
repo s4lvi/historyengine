@@ -31,6 +31,10 @@ const StatsBar = ({ gameState, userId }) => {
             <span className="text-sm opacity-80">Territory</span>
             <div className="font-medium">{territoryLength} tiles</div>
           </div>
+          <div>
+            <span className="text-sm opacity-80">Controlled</span>
+            <div className="font-medium">{userNation.territoryPercentage}%</div>
+          </div>
         </div>
 
         {/* Divider */}
