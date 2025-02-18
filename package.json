@@ -7,11 +7,7 @@
   "heroku-postbuild": "cd client && npm install && npm run build"
     },
     "engines": {
-      "node": ">=14.x",
-    "cors": "^2.8.5",
-    "express": "^4.21.2",
-    "lodash": "^4.17.21",
-    "mongoose": "^8.10.0"
+      "node": ">=14.x"
     }
   }
   
