@@ -7,6 +7,10 @@ import mapRoutes from "./routes/mapRoutes.js";
 import gameRoutes from "./routes/gameRoutes.js";
 import { gameLoop } from "./workers/gameLoop.js";
 import GameRoom from "./models/GameRoom.js";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
 
 const app = express();
 app.use(cors());
@@ -66,7 +70,8 @@ app.use("/api/gamerooms", gameRoutes);
 // -------------------------------------------------------------------
 // Serve static files from the React app in production
 // -------------------------------------------------------------------
-const __dirname = path.resolve();
+
+const __dirname = path.dirname(__filename);
 if (process.env.NODE_ENV === "production") {
   // Serve static files from the React app build folder
   app.use(express.static(path.join(__dirname, "client", "build")));
