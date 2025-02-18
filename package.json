@@ -1,6 +1,7 @@
 {
     "name": "annexi",
     "version": "1.0.0",
+    "type": "module",
     "scripts": {
       "start": "npm install && cd server && npm install && cd .. && node server/index.js",
   "heroku-postbuild": "cd client && npm install && npm run build"
