@@ -540,9 +540,9 @@ router.post("/:id/foundNation", async (req, res, next) => {
       population: 100,
       nationalWill: 50,
       resources: {
-        food: 300,
-        wood: 200,
-        stone: 200,
+        food: 1000,
+        wood: 500,
+        stone: 300,
         bronze: 0,
         steel: 0,
         horses: 0,

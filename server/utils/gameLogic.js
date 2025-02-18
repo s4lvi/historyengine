@@ -324,7 +324,7 @@ export function expandTerritory(nation, mapData, allNations) {
   if (supportCities.length === 0) return; // No valid cities to support expansion
 
   // Define maximum expansion distance from cities
-  const MAX_EXPANSION_DISTANCE = 10; // Maximum tiles away from a city
+  const MAX_EXPANSION_DISTANCE = 14; // Maximum tiles away from a city
 
   // Filter cells based on distance from supporting cities
   const validDistanceCells = adjacentCells.filter((adj) => {
@@ -603,18 +603,6 @@ export function updateArmyMovements(updatedNation, mapData, gameState) {
     .filter((army) => army !== null);
 
   return updatedNation.armies;
-}
-
-// Helper function to check if a position is within map bounds
-function isInBounds(x, y, mapData) {
-  return (
-    mapData &&
-    Array.isArray(mapData) &&
-    y >= 0 &&
-    y < mapData.length &&
-    x >= 0 &&
-    x < mapData[0].length
-  );
 }
 
 export function updateNation(nation, mapData, gameState) {
