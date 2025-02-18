@@ -1,22 +1,23 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ErrorMessage, LoadingSpinner } from './ErrorHandling';
+import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
 
 const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
   const [formData, setFormData] = useState({
-    name: '',
+    name: "",
     width: 500,
     height: 500,
     erosion_passes: 3,
-    num_blobs: 3
+    num_blobs: 3,
   });
 
   if (!isOpen) return null;
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    const numValue = name === 'width' || name === 'height' ? parseInt(value, 10) : value;
-    setFormData(prev => ({ ...prev, [name]: numValue }));
+    const numValue =
+      name === "width" || name === "height" ? parseInt(value, 10) : value;
+    setFormData((prev) => ({ ...prev, [name]: numValue }));
   };
 
   const handleSubmit = (e) => {
@@ -25,21 +26,36 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto"
+      aria-labelledby="modal-title"
+      role="dialog"
+      aria-modal="true"
+    >
       <div className="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
         {/* Background overlay */}
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true" onClick={onClose}></div>
+        <div
+          className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+          aria-hidden="true"
+          onClick={onClose}
+        ></div>
 
         {/* Modal panel */}
         <div className="inline-block align-bottom bg-white rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full sm:p-6">
           <div className="sm:flex sm:items-start">
             <div className="mt-3 text-center sm:mt-0 sm:text-left w-full">
-              <h3 className="text-lg leading-6 font-medium text-gray-900" id="modal-title">
+              <h3
+                className="text-lg leading-6 font-medium text-gray-900"
+                id="modal-title"
+              >
                 Create New Map
               </h3>
               <form onSubmit={handleSubmit} className="mt-4 space-y-4">
                 <div>
-                  <label htmlFor="name" className="block text-sm font-medium text-gray-700">
+                  <label
+                    htmlFor="name"
+                    className="block text-sm font-medium text-gray-700"
+                  >
                     Map Name
                   </label>
                   <input
@@ -53,7 +69,10 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   />
                 </div>
                 <div>
-                  <label htmlFor="width" className="block text-sm font-medium text-gray-700">
+                  <label
+                    htmlFor="width"
+                    className="block text-sm font-medium text-gray-700"
+                  >
                     Width (pixels)
                   </label>
                   <input
@@ -69,7 +88,10 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   />
                 </div>
                 <div>
-                  <label htmlFor="height" className="block text-sm font-medium text-gray-700">
+                  <label
+                    htmlFor="height"
+                    className="block text-sm font-medium text-gray-700"
+                  >
                     Height (pixels)
                   </label>
                   <input
@@ -85,7 +107,10 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   />
                 </div>
                 <div>
-                  <label htmlFor="erosion_passes" className="block text-sm font-medium text-gray-700">
+                  <label
+                    htmlFor="erosion_passes"
+                    className="block text-sm font-medium text-gray-700"
+                  >
                     Erosion
                   </label>
                   <input
@@ -100,7 +125,10 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   />
                 </div>
                 <div>
-                  <label htmlFor="num_blobs" className="block text-sm font-medium text-gray-700">
+                  <label
+                    htmlFor="num_blobs"
+                    className="block text-sm font-medium text-gray-700"
+                  >
                     Number of Landmasses
                   </label>
                   <input
@@ -115,7 +143,10 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   />
                 </div>
                 <div>
-                  <label htmlFor="seed" className="block text-sm font-medium text-gray-700">
+                  <label
+                    htmlFor="seed"
+                    className="block text-sm font-medium text-gray-700"
+                  >
                     Random Seed
                   </label>
                   <input
@@ -127,7 +158,7 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
-                
+
                 <div className="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
                   <button
                     type="submit"
@@ -140,7 +171,7 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                         Creating...
                       </>
                     ) : (
-                      'Create Map'
+                      "Create Map"
                     )}
                   </button>
                   <button
@@ -175,20 +206,20 @@ const MapList = () => {
     try {
       setIsLoading(true);
       setError(null);
-      
-      const response = await fetch(`${process.env.REACT_APP_API_URL}/api/maps`);
-      
+
+      const response = await fetch(`${process.env.REACT_APP_API_URL}api/maps`);
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Failed to fetch maps');
+        throw new Error(errorData.message || "Failed to fetch maps");
       }
-      
+
       const data = await response.json();
-      
+
       if (!Array.isArray(data)) {
-        throw new Error('Invalid data received from server');
+        throw new Error("Invalid data received from server");
       }
-      
+
       setMaps(data);
     } catch (err) {
       setError(err.message);
@@ -199,30 +230,30 @@ const MapList = () => {
 
   const handleCreateMap = async (formData) => {
     if (isCreating) return;
-    
+
     try {
       setIsCreating(true);
       setCreateError(null);
-      
-      const response = await fetch(`${process.env.REACT_APP_API_URL}/api/maps`, {
-        method: 'POST',
+
+      const response = await fetch(`${process.env.REACT_APP_API_URL}api/maps`, {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify(formData),
       });
-      
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Failed to create map');
+        throw new Error(errorData.message || "Failed to create map");
       }
-      
+
       const newMap = await response.json();
-      
+
       if (!newMap._id) {
-        throw new Error('Invalid response from server');
+        throw new Error("Invalid response from server");
       }
-      
+
       setIsCreateDialogOpen(false);
       navigate(`/map/${newMap._id}`);
     } catch (err) {
@@ -233,21 +264,24 @@ const MapList = () => {
   };
 
   const handleDeleteMap = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this map?')) return;
-    
+    if (!window.confirm("Are you sure you want to delete this map?")) return;
+
     try {
       setIsDeleting(true);
       setDeleteError(null);
-      
-      const response = await fetch(`${process.env.REACT_APP_API_URL}/api/maps/${id}`, {
-        method: 'DELETE',
-      });
-      
+
+      const response = await fetch(
+        `${process.env.REACT_APP_API_URL}api/maps/${id}`,
+        {
+          method: "DELETE",
+        }
+      );
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Failed to delete map');
+        throw new Error(errorData.message || "Failed to delete map");
       }
-      
+
       await fetchMaps();
     } catch (err) {
       setDeleteError(`Failed to delete map: ${err.message}`);
@@ -261,7 +295,7 @@ const MapList = () => {
   }, []);
 
   if (isLoading && maps.length === 0) return <LoadingSpinner />;
-  console.log(maps)
+  console.log(maps);
   return (
     <div className="max-w-4xl mx-auto p-6">
       <div className="flex justify-between items-center mb-8">
@@ -283,25 +317,12 @@ const MapList = () => {
         isCreating={isCreating}
       />
 
-      {error && (
-        <ErrorMessage 
-          message={error}
-          onRetry={fetchMaps}
-        />
-      )}
+      {error && <ErrorMessage message={error} onRetry={fetchMaps} />}
 
-      {createError && (
-        <ErrorMessage 
-          message={createError}
-        />
-      )}
+      {createError && <ErrorMessage message={createError} />}
 
-      {deleteError && (
-        <ErrorMessage 
-          message={deleteError}
-        />
-      )}
-      
+      {deleteError && <ErrorMessage message={deleteError} />}
+
       <div className="space-y-4">
         {maps.map((map) => (
           <div
@@ -311,7 +332,9 @@ const MapList = () => {
           >
             <div className="flex justify-between items-center">
               <div>
-                <h2 className="text-xl font-semibold text-gray-800">{map.name}</h2>
+                <h2 className="text-xl font-semibold text-gray-800">
+                  {map.name}
+                </h2>
                 <p className="text-gray-500 text-sm mt-1">
                   Created: {new Date(map.createdAt).toLocaleDateString()}
                 </p>
@@ -341,14 +364,14 @@ const MapList = () => {
                       <span>Deleting...</span>
                     </>
                   ) : (
-                    'Delete'
+                    "Delete"
                   )}
                 </button>
               </div>
             </div>
           </div>
         ))}
-        
+
         {maps.length === 0 && !isLoading && !error && (
           <div className="text-center py-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-200">
             <p className="text-gray-500 text-lg mb-4">

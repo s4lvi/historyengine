@@ -234,7 +234,7 @@ const GameRoomList = () => {
       setError(null);
 
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms`
+        `${process.env.REACT_APP_API_URL}api/gamerooms`
       );
 
       if (!response.ok) {
@@ -258,7 +258,7 @@ const GameRoomList = () => {
 
   const fetchAvailableMaps = async () => {
     try {
-      const response = await fetch(`${process.env.REACT_APP_API_URL}/api/maps`);
+      const response = await fetch(`${process.env.REACT_APP_API_URL}api/maps`);
       if (!response.ok) {
         throw new Error("Failed to fetch available maps");
       }
@@ -281,7 +281,7 @@ const GameRoomList = () => {
       // If generating a new map, create it first
       if (formData.generateNewMap) {
         const mapResponse = await fetch(
-          `${process.env.REACT_APP_API_URL}/api/maps`,
+          `${process.env.REACT_APP_API_URL}api/maps`,
           {
             method: "POST",
             headers: {
@@ -307,7 +307,7 @@ const GameRoomList = () => {
 
       // Create the game room with the map and the creator's credentials
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms`,
         {
           method: "POST",
           headers: {

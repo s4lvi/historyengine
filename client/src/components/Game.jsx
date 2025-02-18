@@ -68,7 +68,7 @@ const Game = () => {
   const fetchMapMetadata = async () => {
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/metadata`
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/metadata`
       );
       if (!response.ok) throw new Error("Failed to fetch map metadata");
       const data = await response.json();
@@ -84,7 +84,7 @@ const Game = () => {
     try {
       const endRow = startRow + CHUNK_SIZE;
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/data?startRow=${startRow}&endRow=${endRow}`
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/data?startRow=${startRow}&endRow=${endRow}`
       );
       if (!response.ok) throw new Error("Failed to fetch map chunk");
       const data = await response.json();
@@ -175,7 +175,7 @@ const Game = () => {
     const fetchGameState = async () => {
       try {
         const response = await fetch(
-          `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/state`,
+          `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -305,7 +305,7 @@ const Game = () => {
 
       try {
         const response = await fetch(
-          `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/state`,
+          `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -384,7 +384,7 @@ const Game = () => {
     setLoginError("");
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/join`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/join`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -412,7 +412,7 @@ const Game = () => {
         // Immediately fetch the full state so the new player gets all territories.
         try {
           const fullResp = await fetch(
-            `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/state`,
+            `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -465,7 +465,7 @@ const Game = () => {
 
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/foundNation`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/foundNation`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -505,7 +505,7 @@ const Game = () => {
 
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/buildCity`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/buildCity`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -533,7 +533,7 @@ const Game = () => {
     if (!userId || !storedPassword) return;
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/raiseArmy`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/raiseArmy`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -556,7 +556,7 @@ const Game = () => {
     if (!userId || !storedPassword) return;
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/setAttackTarget`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/setAttackTarget`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -600,7 +600,7 @@ const Game = () => {
 
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/setExpansionTarget`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/setExpansionTarget`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -624,7 +624,7 @@ const Game = () => {
   const handlePauseGame = async () => {
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/pause`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/pause`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -645,7 +645,7 @@ const Game = () => {
   const handleUnPauseGame = async () => {
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/unpause`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/unpause`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -666,7 +666,7 @@ const Game = () => {
   const handleEndGame = async () => {
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/end`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/end`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -688,7 +688,7 @@ const Game = () => {
   const handleQuitGame = async () => {
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/gamerooms/${id}/quit`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/quit`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

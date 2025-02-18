@@ -1,6 +1,12 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { ErrorMessage, LoadingSpinner } from './ErrorHandling';
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
 
 const CHUNK_SIZE = 10;
 
@@ -27,15 +33,15 @@ const WorldMap = () => {
 
   // *** NEW: Render mode state ***
   // 'biome' for biome rendering, 'heightmap' for grayscale heightmap rendering.
-  const [renderMode, setRenderMode] = useState('biome');
+  const [renderMode, setRenderMode] = useState("biome");
 
   // Fetch metadata
   const fetchMapMetadata = async () => {
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/maps/${id}/metadata`
+        `${process.env.REACT_APP_API_URL}api/maps/${id}/metadata`
       );
-      if (!response.ok) throw new Error('Failed to fetch map metadata');
+      if (!response.ok) throw new Error("Failed to fetch map metadata");
       const data = await response.json();
       setMapMetadata(data);
     } catch (err) {
@@ -48,9 +54,9 @@ const WorldMap = () => {
     try {
       const endRow = startRow + CHUNK_SIZE;
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/maps/${id}/data?startRow=${startRow}&endRow=${endRow}`
+        `${process.env.REACT_APP_API_URL}api/maps/${id}/data?startRow=${startRow}&endRow=${endRow}`
       );
-      if (!response.ok) throw new Error('Failed to fetch map chunk');
+      if (!response.ok) throw new Error("Failed to fetch map chunk");
       const data = await response.json();
       // Set mappings only once.
       if (data.mappings && !mappings) {
@@ -189,7 +195,8 @@ const WorldMap = () => {
     const canvas = canvasRef.current;
     // Natural width always equals the canvas width.
     const naturalWidth = canvas.width;
-    const naturalHeight = canvas.width * (mapMetadata.height / mapMetadata.width);
+    const naturalHeight =
+      canvas.width * (mapMetadata.height / mapMetadata.width);
     // When the map is tall the height may be larger than the canvas height.
     // Compute the scale needed so that the full height just fits.
     const scaleForHeight = canvas.height / naturalHeight;
@@ -237,29 +244,31 @@ const WorldMap = () => {
     setOffset((current) => clampOffset(current, scale));
   }, [scale, mapMetadata, clampOffset]);
 
-
   const adjustColorByElevation = (hexColor, elevation) => {
     let hex = hexColor.replace("#", "");
     if (hex.length === 3) {
-      hex = hex.split("").map((c) => c + c).join("");
+      hex = hex
+        .split("")
+        .map((c) => c + c)
+        .join("");
     }
     let r = parseInt(hex.substring(0, 2), 16);
     let g = parseInt(hex.substring(2, 4), 16);
     let b = parseInt(hex.substring(4, 6), 16);
-  
+
     // Define a brightness factor based on elevation.
     // For instance, if elevation is 0, brightness is 0.9 (a bit darker),
     // and if elevation is 1, brightness is 1.1 (a bit lighter).
-    const brightnessFactor = 0.6 + 0.3 * (elevation*2.5);
-  
+    const brightnessFactor = 0.6 + 0.3 * (elevation * 2.5);
+
     // Adjust the color channels.
     r = Math.min(255, Math.floor(r * brightnessFactor));
     g = Math.min(255, Math.floor(g * brightnessFactor));
     b = Math.min(255, Math.floor(b * brightnessFactor));
-  
+
     return `rgb(${r}, ${g}, ${b})`;
   };
-  
+
   // ── DRAWING THE MAP ─────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -281,8 +290,8 @@ const WorldMap = () => {
     ctx.setTransform(scale, 0, 0, scale, offset.x, offset.y);
 
     // Calculate visible area.
-    const visibleLeft = Math.max(0, Math.floor((-offset.x / scale) / cellSize));
-    const visibleTop = Math.max(0, Math.floor((-offset.y / scale) / cellSize));
+    const visibleLeft = Math.max(0, Math.floor(-offset.x / scale / cellSize));
+    const visibleTop = Math.max(0, Math.floor(-offset.y / scale / cellSize));
     const visibleRight = Math.min(
       cols,
       Math.ceil((canvas.width / scale - offset.x / scale) / cellSize)
@@ -312,17 +321,17 @@ const WorldMap = () => {
           color = `rgb(${intensity}, ${intensity}, ${intensity})`;
         } else if (renderMode === "temperature") {
           const temp = cell[2];
-          
+
           // Normalize temperature from -20 to 100 range to 0-1 range
-          const normalizedTemp = (temp - (-20)) / (100 - (-20));
+          const normalizedTemp = (temp - -20) / (100 - -20);
           const clampedTemp = Math.min(Math.max(normalizedTemp, 0), 1);
-          
+
           // Create a smooth transition through the RGB spectrum
           let red, green, blue;
-          
+
           if (clampedTemp < 0.5) {
             // Cold (blue) to neutral (purple)
-            red = Math.floor((clampedTemp * 2) * 255);
+            red = Math.floor(clampedTemp * 2 * 255);
             blue = 255;
           } else {
             // Neutral (purple) to hot (red)
@@ -331,7 +340,7 @@ const WorldMap = () => {
           }
           // Keep green at 0 for more vibrant colors
           green = 0;
-          
+
           color = `rgb(${red}, ${green}, ${blue})`;
         }
 
@@ -437,7 +446,6 @@ const WorldMap = () => {
     offsetStart.current = { ...offset };
   };
 
-
   const handleMouseMove = (e) => {
     const canvas = canvasRef.current;
     if (!canvas || !mapMetadata) return;
@@ -458,7 +466,7 @@ const WorldMap = () => {
     isDragging.current = false;
     const canvas = canvasRef.current;
     if (!canvas || !mapMetadata) return;
-    if( dragStart.current.x == e.clientX && dragStart.current.y == e.clientY) {
+    if (dragStart.current.x == e.clientX && dragStart.current.y == e.clientY) {
       // For hover: convert mouse coordinates into canvas cell coordinates.
       const { x: mouseX, y: mouseY } = getCanvasMousePos(e);
       const adjustedX = (mouseX - offset.x) / scale;
@@ -484,8 +492,8 @@ const WorldMap = () => {
           setSelectedRegion(null);
         }
       }
-    } 
-  }
+    }
+  };
 
   const handleMouseLeave = () => {
     isDragging.current = false;
@@ -499,42 +507,42 @@ const WorldMap = () => {
     <div className="max-w-6xl mx-auto p-6 space-y-6">
       {/* Header with Back button and Render Mode toggle */}
       <div className="flex justify-between items-center mb-4">
-      <div className="flex gap-2">
-  <button
-    onClick={() => navigate('/')}
-    className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg"
-  >
-    ← Back to Maps
-  </button>
-  <button
-    onClick={() =>
-      setRenderMode((prev) => {
-        switch(prev) {
-          case "biome":
-            return "heightmap";
-          case "heightmap":
-            return "temperature";
-          default:
-            return "biome";
-        }
-      })
-    }
-    className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg"
-  >
-    {renderMode === "biome"
-      ? "Switch to Heightmap"
-      : renderMode === "heightmap"
-      ? "Switch to Temperature"
-      : "Switch to Biome"}
-  </button>
-  {/* New Button to Switch to the 3D View */}
-  <button
-    onClick={() => navigate(`/map/${id}/3d`)}
-    className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg"
-  >
-    Switch to 3D View
-  </button>
-</div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => navigate("/")}
+            className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg"
+          >
+            ← Back to Maps
+          </button>
+          <button
+            onClick={() =>
+              setRenderMode((prev) => {
+                switch (prev) {
+                  case "biome":
+                    return "heightmap";
+                  case "heightmap":
+                    return "temperature";
+                  default:
+                    return "biome";
+                }
+              })
+            }
+            className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg"
+          >
+            {renderMode === "biome"
+              ? "Switch to Heightmap"
+              : renderMode === "heightmap"
+              ? "Switch to Temperature"
+              : "Switch to Biome"}
+          </button>
+          {/* New Button to Switch to the 3D View */}
+          <button
+            onClick={() => navigate(`/map/${id}/3d`)}
+            className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg"
+          >
+            Switch to 3D View
+          </button>
+        </div>
         {loading && (
           <div className="flex items-center gap-2">
             <div className="h-2 w-24 bg-gray-200 rounded-full overflow-hidden">
@@ -557,7 +565,7 @@ const WorldMap = () => {
         />
       )}
 
-      {(!mapChunks.length && loading) ? (
+      {!mapChunks.length && loading ? (
         <LoadingSpinner />
       ) : (
         // Container for the canvas and region details.
@@ -590,8 +598,8 @@ const WorldMap = () => {
             <div
               style={{
                 position: "absolute",
-                ...(mousePosition.y > 0.6 
-                  ? { top: "10px" } 
+                ...(mousePosition.y > 0.6
+                  ? { top: "10px" }
                   : { bottom: "10px" }),
                 right: "10px",
                 width: "180px",
@@ -624,12 +632,10 @@ const WorldMap = () => {
                 {selectedRegion.elevation.toFixed(2)}
               </p>
               <p style={{ margin: "2px 0" }}>
-                <strong>Moisture:</strong>{" "}
-                {selectedRegion.moisture.toFixed(2)}
+                <strong>Moisture:</strong> {selectedRegion.moisture.toFixed(2)}
               </p>
               <p style={{ margin: "2px 0" }}>
-                <strong>Temp:</strong>{" "}
-                {selectedRegion.temperature.toFixed(1)}°C
+                <strong>Temp:</strong> {selectedRegion.temperature.toFixed(1)}°C
               </p>
               <p style={{ margin: "2px 0" }}>
                 <strong>Features:</strong>{" "}
@@ -644,9 +650,7 @@ const WorldMap = () => {
                   : "None"}
               </p>
               {selectedRegion.isRiver && (
-                <p style={{ margin: "2px 0", color: "blue" }}>
-                  Contains River
-                </p>
+                <p style={{ margin: "2px 0", color: "blue" }}>Contains River</p>
               )}
             </div>
           )}

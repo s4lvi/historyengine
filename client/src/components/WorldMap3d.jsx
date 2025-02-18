@@ -22,7 +22,7 @@ const WorldMap3D = () => {
   const fetchMapMetadata = async () => {
     try {
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/maps/${id}/metadata`
+        `${process.env.REACT_APP_API_URL}api/maps/${id}/metadata`
       );
       if (!response.ok) throw new Error("Failed to fetch map metadata");
       const data = await response.json();
@@ -37,7 +37,7 @@ const WorldMap3D = () => {
     try {
       const endRow = startRow + CHUNK_SIZE;
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}/api/maps/${id}/data?startRow=${startRow}&endRow=${endRow}`
+        `${process.env.REACT_APP_API_URL}api/maps/${id}/data?startRow=${startRow}&endRow=${endRow}`
       );
       if (!response.ok) throw new Error("Failed to fetch map chunk");
       const data = await response.json();
