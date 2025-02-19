@@ -57,7 +57,7 @@ class GameLoop {
       // Schedule next tick
       this.intervalIds.set(
         roomId,
-        setTimeout(() => this.runLoop(roomId), 10)
+        setTimeout(() => this.runLoop(roomId), 100)
       );
     } catch (error) {
       console.error(`Error in game loop for room ${roomId}:`, error);
