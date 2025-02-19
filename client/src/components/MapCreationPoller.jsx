@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 
 const MapCreationPoller = ({
-  mapId,
+  gameRoomId,
   onMapReady,
   onError,
   formData,
@@ -23,28 +23,27 @@ const MapCreationPoller = ({
 
     const checkMapStatus = async () => {
       try {
-        // Don't proceed if we've already completed
         if (hasCompletedRef.current || !mounted) return;
 
         const response = await fetch(
-          `${process.env.REACT_APP_API_URL}api/maps/${mapId}/status`
+          `${process.env.REACT_APP_API_URL}api/gamerooms/${gameRoomId}/status`
         );
 
         if (!mounted) return;
 
         if (!response.ok) {
-          throw new Error("Failed to fetch map status");
+          throw new Error("Failed to fetch game room status");
         }
 
         const data = await response.json();
-        setStatus(data.status);
+        setStatus(data.mapStatus);
 
-        if (data.status === "error") {
+        if (data.mapStatus === "error") {
           onError(new Error("Map generation failed"));
           return;
         }
 
-        if (data.ready === false) {
+        if (!data.ready) {
           setAttempts((prev) => {
             if (prev >= maxAttempts) {
               onError(new Error("Map generation timed out after 2 minutes"));
@@ -78,7 +77,7 @@ const MapCreationPoller = ({
         clearTimeout(timeoutId);
       }
     };
-  }, [mapId, onError, pollingInterval, maxAttempts]);
+  }, [gameRoomId, onError, pollingInterval, maxAttempts]);
 
   const getStatusMessage = () => {
     switch (status) {

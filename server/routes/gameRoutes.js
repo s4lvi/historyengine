@@ -1,6 +1,7 @@
 // gameRoutes.js
 import express from "express";
 import mongoose from "mongoose";
+import { Worker } from "worker_threads";
 import { gameLoop } from "../workers/gameLoop.js";
 import { setExpansionTarget } from "../utils/gameLogic.js";
 import config from "../config/config.js";
@@ -9,6 +10,183 @@ import { LOYALTY } from "../utils/loyaltySystem.js";
 const router = express.Router();
 
 import GameRoom from "../models/GameRoom.js";
+
+router.post("/init", async (req, res, next) => {
+  try {
+    const {
+      roomName,
+      joinCode,
+      creatorName,
+      creatorPassword,
+      mapName,
+      width,
+      height,
+      erosion_passes,
+      num_blobs,
+      seed,
+    } = req.body;
+
+    if (!width || !height) {
+      const error = new Error("Width and height must be provided");
+      error.status = 400;
+      throw error;
+    }
+    const w = Number(width);
+    const h = Number(height);
+    if (isNaN(w) || isNaN(h) || w <= 0 || h <= 0) {
+      const error = new Error("Width and height must be positive numbers");
+      error.status = 400;
+      throw error;
+    }
+
+    // Create new Map document with status "generating"
+    const Map = mongoose.model("Map");
+    const newMap = new Map({
+      name: mapName || "Untitled Map",
+      width: w,
+      height: h,
+      status: "generating",
+    });
+    await newMap.save();
+
+    // Generate join code if not provided:
+    const generatedJoinCode =
+      joinCode || Math.random().toString(36).substring(2, 8).toUpperCase();
+
+    // Create the game room document referencing the new map
+    const gameRoomData = {
+      map: newMap._id,
+      roomName: roomName || "Game Room",
+      joinCode: generatedJoinCode,
+      status: "initializing", // initial status while map is generating
+      creator: { userId: creatorName, password: creatorPassword },
+      players: [
+        { userId: creatorName, password: creatorPassword, userState: {} },
+      ],
+      gameState: { nations: [] },
+      tickCount: 0,
+    };
+    const gameRoom = new GameRoom(gameRoomData);
+    await gameRoom.save();
+
+    // Respond immediately with the game room ID and join code
+    res
+      .status(201)
+      .json({ gameRoomId: gameRoom._id, joinCode: generatedJoinCode });
+
+    // ─── Helper: Run Map Generation Worker ─────────────────────────────────
+    function runMapGenerationWorker(workerData) {
+      return new Promise((resolve, reject) => {
+        const worker = new Worker(
+          new URL("../workers/mapWorker.js", import.meta.url),
+          { workerData }
+        );
+        worker.on("message", resolve);
+        worker.on("error", reject);
+        worker.on("exit", (code) => {
+          if (code !== 0)
+            reject(new Error(`Worker stopped with exit code ${code}`));
+        });
+      });
+    }
+
+    // Set defaults if not provided
+    const erosionPasses = erosion_passes || 4;
+    const numBlobs = num_blobs || 3;
+    const mapSeed = seed || Math.random();
+
+    // Run map generation asynchronously
+    (async () => {
+      try {
+        console.log(
+          "Starting asynchronous map generation for game room:",
+          gameRoom._id
+        );
+        const mapData = await runMapGenerationWorker({
+          width: w,
+          height: h,
+          erosion_passes: erosionPasses,
+          num_blobs: numBlobs,
+          seed: mapSeed,
+        });
+        console.log("Map generation completed for game room:", gameRoom._id);
+
+        // Save map chunks
+        const MapChunk = mongoose.model("MapChunk");
+        const CHUNK_SIZE = 50;
+        const chunks = [];
+        for (let i = 0; i < mapData.length; i += CHUNK_SIZE) {
+          const chunkRows = mapData.slice(i, i + CHUNK_SIZE);
+          chunks.push({
+            map: newMap._id,
+            startRow: i,
+            endRow: i + chunkRows.length - 1,
+            rows: chunkRows,
+          });
+        }
+        console.log(
+          `Saving ${chunks.length} map chunks for game room:`,
+          gameRoom._id
+        );
+        await MapChunk.insertMany(chunks);
+        console.log("Map chunks saved for game room:", gameRoom._id);
+
+        // Update map status to "ready"
+        await Map.findByIdAndUpdate(newMap._id, { status: "ready" });
+        console.log(
+          "Map status updated to 'ready' for game room:",
+          gameRoom._id
+        );
+
+        // Update game room status to "open"
+        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
+        console.log("Game room status updated to 'open':", gameRoom._id);
+
+        // Start the game loop for the room
+        await gameLoop.startRoom(gameRoom._id);
+        console.log("Game loop started for room:", gameRoom._id);
+      } catch (err) {
+        console.error(
+          "Error in asynchronous map generation for game room:",
+          gameRoom._id,
+          err
+        );
+        const Map = mongoose.model("Map");
+        await Map.findByIdAndUpdate(newMap._id, { status: "error" });
+        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "error" });
+      }
+    })();
+  } catch (error) {
+    console.error("Error in POST /api/gamerooms/init:", error);
+    next(error);
+  }
+});
+
+// ─── NEW: Status endpoint to poll game room and map readiness ───────────────
+router.get("/:id/status", async (req, res, next) => {
+  try {
+    const gameRoom = await GameRoom.findById(req.params.id).lean();
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
+    }
+    const Map = mongoose.model("Map");
+    const map = await Map.findById(gameRoom.map)
+      .select("status width height")
+      .lean();
+    if (!map) {
+      return res.status(404).json({ error: "Associated map not found" });
+    }
+    res.json({
+      gameRoomStatus: gameRoom.status,
+      mapStatus: map.status,
+      width: map.width,
+      height: map.height,
+      ready: map.status === "ready",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // -------------------------------------------------------------------
 // POST /api/gamerooms - Create a game room (with a map copy)

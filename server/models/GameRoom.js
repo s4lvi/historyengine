@@ -5,7 +5,11 @@ const gameRoomSchema = new mongoose.Schema({
   map: { type: mongoose.Schema.Types.ObjectId, ref: "Map", required: true },
   roomName: { type: String, default: "Game Room" },
   joinCode: { type: String, required: true },
-  status: { type: String, enum: ["open", "ended"], default: "open" },
+  status: {
+    type: String,
+    enum: ["open", "ended", "initializing"],
+    default: "open",
+  },
   creator: {
     userId: { type: String, required: true },
     password: { type: String, required: true },

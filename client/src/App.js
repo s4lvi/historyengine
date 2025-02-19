@@ -8,6 +8,7 @@ import {
 import Game from "./components/Game";
 import GameRoomList from "./components/GameRoomList";
 import { ErrorBoundary } from "./components/ErrorHandling";
+import { FaDiscord } from "react-icons/fa";
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -36,8 +37,15 @@ const LandingPage = () => {
         </div>
       </main>
 
-      <footer className="w-full bg-gray-900 text-center p-4 text-white flex flex-row justify-between px-12">
-        <p>&copy; 2025 annexi.io</p>{" "}
+      <footer className="w-full bg-gray-900 text-center p-4 text-white flex flex-row justify-between items-center px-12">
+        <p>&copy; 2025 annexi.io</p>
+
+        <a
+          className="cursor-pointer hover:text-gray-300"
+          href="https://discord.gg/6YRU8YP5q7"
+        >
+          <FaDiscord />
+        </a>
         <p
           className="cursor-pointer hover:text-gray-300"
           onClick={() => navigate("/how-to-play")}
@@ -74,7 +82,13 @@ const HowToPlay = () => {
       </main>
 
       <footer className="w-full bg-gray-900 text-center p-4 text-white flex flex-row justify-between px-12">
-        <p>&copy; 2025 annexi.io</p>{" "}
+        <p>&copy; 2025 annexi.io</p>
+        <p
+          className="cursor-pointer hover:text-gray-300"
+          onClick={() => window.location("https://discord.gg/6YRU8YP5q7")}
+        >
+          <FaDiscord />
+        </p>
         <p
           className="cursor-pointer hover:text-gray-300"
           onClick={() => navigate("/how-to-play")}
