@@ -19,20 +19,27 @@ const MapCreationPoller = ({
           `${process.env.REACT_APP_API_URL}api/maps/${mapId}/metadata`
         );
 
+        if (response.status === 404) {
+          // Map not ready yet, continue polling
+          setAttempts((prev) => {
+            if (prev >= maxAttempts) {
+              onError(new Error("Map generation timed out after 2 minutes"));
+              return prev;
+            }
+            timeoutId = setTimeout(checkMapStatus, pollingInterval);
+            return prev + 1;
+          });
+          return;
+        }
+
         if (response.ok) {
           const mapData = await response.json();
           onMapReady(mapData);
           return;
         }
 
-        setAttempts((prev) => {
-          if (prev >= maxAttempts) {
-            onError(new Error("Map generation timed out after 2 minutes"));
-            return prev;
-          }
-          timeoutId = setTimeout(checkMapStatus, pollingInterval);
-          return prev + 1;
-        });
+        // If we get here, it's an unexpected error
+        throw new Error("Unexpected error checking map status");
       } catch (error) {
         onError(error);
       }

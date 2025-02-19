@@ -9,13 +9,7 @@ const MAP_SIZES = {
   Large: { width: 250, height: 250, erosion_passes: 3, num_blobs: 10 },
 };
 
-const CreateGameRoomForm = ({
-  isOpen,
-  onClose,
-  onSubmit,
-  isCreating,
-  availableMaps,
-}) => {
+const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
   const [formData, setFormData] = useState({
     roomName: "",
     selectedMapId: "",
@@ -270,7 +264,7 @@ const GameRoomList = () => {
       setIsCreating(true);
       setCreateError(null);
 
-      // Start map generation
+      // Create the map first using the maps endpoint
       const mapResponse = await fetch(
         `${process.env.REACT_APP_API_URL}api/maps`,
         {
@@ -279,7 +273,7 @@ const GameRoomList = () => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            name: formData.roomName + "-Map",
+            name: `Room:${formData.creatorName}`,
             width: formData.width,
             height: formData.height,
             erosion_passes: formData.erosion_passes,
@@ -289,17 +283,19 @@ const GameRoomList = () => {
       );
 
       if (!mapResponse.ok) {
-        throw new Error("Failed to start map generation");
+        throw new Error("Failed to create map");
       }
 
       const newMap = await mapResponse.json();
 
-      // Start polling for map completion
+      // Set polling state to wait for map creation
       setMapGenerationState({
         isPolling: true,
         mapId: newMap._id,
-        formData,
+        formData: formData,
       });
+
+      setIsCreateDialogOpen(false);
     } catch (err) {
       setCreateError(err.message);
       setIsCreating(false);
@@ -308,7 +304,7 @@ const GameRoomList = () => {
 
   const handleMapReady = async (mapData) => {
     try {
-      // Create the game room with the completed map
+      // Create the game room now that the map is ready
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}api/gamerooms`,
         {
@@ -333,7 +329,7 @@ const GameRoomList = () => {
 
       const newGameRoom = await response.json();
 
-      // Store credentials and navigate
+      // Store credentials
       const roomKey = `gameRoom-${newGameRoom._id}-userId`;
       localStorage.setItem(
         `${roomKey}-userId`,
@@ -349,11 +345,10 @@ const GameRoomList = () => {
       );
 
       // Reset states
-      setIsCreateDialogOpen(false);
       setIsCreating(false);
       setMapGenerationState({ isPolling: false, mapId: null, formData: null });
 
-      // Navigate to the new room
+      // Navigate to new room
       navigate(`/rooms/${newGameRoom._id}`);
     } catch (err) {
       setCreateError(err.message);
@@ -387,13 +382,15 @@ const GameRoomList = () => {
         </button>
       </div>
 
-      <CreateGameRoomForm
-        isOpen={isCreateDialogOpen}
-        onClose={() => setIsCreateDialogOpen(false)}
-        onSubmit={handleCreateGameRoom}
-        isCreating={isCreating}
-        availableMaps={availableMaps}
-      />
+      {!mapGenerationState.isPolling && (
+        <CreateGameRoomForm
+          isOpen={isCreateDialogOpen}
+          onClose={() => setIsCreateDialogOpen(false)}
+          onSubmit={handleCreateGameRoom}
+          isCreating={isCreating}
+          availableMaps={availableMaps}
+        />
+      )}
       {mapGenerationState.isPolling && (
         <MapCreationPoller
           mapId={mapGenerationState.mapId}
