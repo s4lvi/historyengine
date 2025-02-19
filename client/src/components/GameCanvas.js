@@ -205,6 +205,156 @@ function useSelection() {
 }
 
 /* -------------------------------------------------------------------------- */
+/*                         Helper: Territory Merging                        */
+/* -------------------------------------------------------------------------- */
+
+const getMergedTerritory = (nation) => {
+  let territory = { x: [], y: [] };
+  if (nation.territory && nation.territory.x && nation.territory.y) {
+    territory = {
+      x: [...nation.territory.x],
+      y: [...nation.territory.y],
+    };
+  } else if (
+    nation.territoryDeltaForClient &&
+    nation.territoryDeltaForClient.add
+  ) {
+    territory = {
+      x: [...(nation.territoryDeltaForClient.add.x || [])],
+      y: [...(nation.territoryDeltaForClient.add.y || [])],
+    };
+  }
+  if (nation.territoryDeltaForClient && nation.territoryDeltaForClient.sub) {
+    const subSet = new Set(
+      nation.territoryDeltaForClient.sub.x.map(
+        (x, i) => `${x},${nation.territoryDeltaForClient.sub.y[i]}`
+      )
+    );
+    const merged = { x: [], y: [] };
+    for (let i = 0; i < territory.x.length; i++) {
+      const key = `${territory.x[i]},${territory.y[i]}`;
+      if (!subSet.has(key)) {
+        merged.x.push(territory.x[i]);
+        merged.y.push(territory.y[i]);
+      }
+    }
+    territory = merged;
+  }
+  return territory;
+};
+
+/* -------------------------------------------------------------------------- */
+/*                    New Component: NationOverlay                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * NationOverlay
+ *
+ * This component renders a nation’s territory, cities, and armies.
+ * It memoizes the territory lookup set and border cells so that border
+ * detection only happens when the territory actually changes.
+ */
+const NationOverlay = ({
+  nation,
+  nationIndex,
+  cellSize,
+  scale,
+  selectedArmies,
+  userId,
+  setSelectedArmy,
+}) => {
+  const palette = [
+    "#FF5733",
+    "#33FF57",
+    "#3357FF",
+    "#FF33A8",
+    "#A833FF",
+    "#33FFF0",
+    "#FFC133",
+    "#FF3333",
+    "#33FF33",
+    "#3333FF",
+  ];
+  const nationColor =
+    nation.owner === userId ? "#FFFF00" : palette[nationIndex % palette.length];
+  const baseColor = string2hex(nationColor);
+
+  // Compute the merged territory for this nation.
+  const territory = useMemo(() => getMergedTerritory(nation), [nation]);
+
+  return (
+    <>
+      <Graphics
+        key={`territory-${nation.owner}`}
+        zIndex={100}
+        draw={(g) => {
+          g.clear();
+          // Draw non-border cells with lower opacity.
+          g.beginFill(baseColor, 0.5);
+          for (let i = 0; i < territory.x.length; i++) {
+            const x = territory.x[i];
+            const y = territory.y[i];
+            const key = `${x},${y}`;
+            g.drawRect(x * cellSize, y * cellSize, cellSize, cellSize);
+          }
+          g.endFill();
+        }}
+      />
+      {(nation.cities || []).map((city, idx) => {
+        const iconSize = cellSize;
+        const centerX = city.x * cellSize + cellSize / 2;
+        const centerY = city.y * cellSize + cellSize / 2;
+        return (
+          <BorderedSprite
+            key={`city-${nation.owner}-${idx}`}
+            texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
+            x={centerX}
+            y={centerY}
+            width={iconSize}
+            height={iconSize}
+            borderColor={baseColor}
+            borderWidth={2 * Math.sqrt(scale)}
+            interactive={true}
+            pointerdown={(e) => {
+              e.stopPropagation();
+              console.log("City clicked:", city);
+            }}
+            baseZ={150 + centerY}
+          />
+        );
+      })}
+      {(nation.armies || []).map((army, idx) => {
+        const iconSize = cellSize;
+        const centerX = Math.floor(army.position.x) * cellSize + cellSize / 2;
+        const centerY = Math.floor(army.position.y) * cellSize + cellSize / 2;
+        const isSelected = selectedArmies.some((sel) => sel.id === army.id);
+        return (
+          <BorderedSprite
+            key={`army-${nation.owner}-${idx}`}
+            texture={`/${army.type.toLowerCase().replace(" ", "_")}.png`}
+            x={centerX}
+            y={centerY}
+            width={iconSize}
+            height={iconSize}
+            borderColor={isSelected ? "0x00ff00" : baseColor}
+            borderWidth={2 * Math.sqrt(scale)}
+            interactive={true}
+            isSelected={isSelected}
+            pointerdown={(e) => {
+              e.stopPropagation();
+              console.log("Army clicked:", army);
+              setSelectedArmy(army);
+            }}
+            baseZ={500 + centerY}
+            text={`${army.currentPower}`}
+          />
+        );
+      })}
+    </>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
 /*                              Main Component                              */
 /* -------------------------------------------------------------------------- */
 
@@ -232,6 +382,7 @@ const GameCanvas = ({
     setOffset,
     handleWheel,
     getCellCoordinates,
+    computedMinScale,
   } = usePanZoom({ mapMetadata, stageWidth, stageHeight });
 
   // Use our selection hook
@@ -577,220 +728,26 @@ const GameCanvas = ({
     );
   };
 
-  /* ----- Inline Territory & Overlay Helpers (unchanged) ----- */
-  const forEachTerritoryCell = (territory, callback) => {
-    if (!territory || !territory.x || !territory.y) return;
-    for (let i = 0; i < territory.x.length; i++) {
-      callback(territory.x[i], territory.y[i], i);
-    }
-  };
-
-  const hasCellInTerritory = (territory, x, y) => {
-    if (!territory || !territory.x || !territory.y) return false;
-    for (let i = 0; i < territory.x.length; i++) {
-      if (territory.x[i] === x && territory.y[i] === y) return true;
-    }
-    return false;
-  };
-
-  const getMergedTerritory = (nation) => {
-    let territory = { x: [], y: [] };
-    if (nation.territory && nation.territory.x && nation.territory.y) {
-      territory = {
-        x: [...nation.territory.x],
-        y: [...nation.territory.y],
-      };
-    } else if (
-      nation.territoryDeltaForClient &&
-      nation.territoryDeltaForClient.add
-    ) {
-      territory = {
-        x: [...(nation.territoryDeltaForClient.add.x || [])],
-        y: [...(nation.territoryDeltaForClient.add.y || [])],
-      };
-    }
-    if (nation.territoryDeltaForClient && nation.territoryDeltaForClient.sub) {
-      const subSet = new Set(
-        nation.territoryDeltaForClient.sub.x.map(
-          (x, i) => `${x},${nation.territoryDeltaForClient.sub.y[i]}`
-        )
-      );
-      const merged = { x: [], y: [] };
-      for (let i = 0; i < territory.x.length; i++) {
-        const key = `${territory.x[i]},${territory.y[i]}`;
-        if (!subSet.has(key)) {
-          merged.x.push(territory.x[i]);
-          merged.y.push(territory.y[i]);
-        }
-      }
-      territory = merged;
-    }
-    return territory;
-  };
-
-  const isBorderCell = (x, y, territory) => {
-    const adjacent = [
-      { x: x - 1, y: y - 1 },
-      { x, y: y - 1 },
-      { x: x + 1, y: y - 1 },
-      { x: x - 1, y },
-      { x: x + 1, y },
-      { x: x - 1, y: y + 1 },
-      { x, y: y + 1 },
-      { x: x + 1, y: y + 1 },
-    ];
-    return adjacent.some((pos) => !hasCellInTerritory(territory, pos.x, pos.y));
-  };
-
-  // Helper: Given an array of points, compute a smoothed polygon using Catmull–Rom interpolation.
-  function computeSmoothPolygon(borderPoints, numOfSegments = 8) {
-    // First, compute the centroid to sort points in order.
-    let cx = 0,
-      cy = 0;
-    borderPoints.forEach((pt) => {
-      cx += pt.x;
-      cy += pt.y;
-    });
-    cx /= borderPoints.length;
-    cy /= borderPoints.length;
-
-    // Sort points by angle relative to the centroid.
-    borderPoints.sort((a, b) => {
-      return Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx);
-    });
-
-    // Catmull–Rom interpolation function.
-    const catmullRom = (p0, p1, p2, p3, t) => {
-      const t2 = t * t;
-      const t3 = t2 * t;
-      return (
-        0.5 *
-        (2 * p1 +
-          (-p0 + p2) * t +
-          (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
-          (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
-      );
-    };
-
-    // Generate smoothed points.
-    const smoothPoints = [];
-    const pts = borderPoints;
-    const n = pts.length;
-    // Loop over each point in the ordered list.
-    for (let i = 0; i < n; i++) {
-      const p0 = pts[(i - 1 + n) % n];
-      const p1 = pts[i];
-      const p2 = pts[(i + 1) % n];
-      const p3 = pts[(i + 2) % n];
-      // Interpolate between p1 and p2.
-      for (let j = 0; j < numOfSegments; j++) {
-        const t = j / numOfSegments;
-        const x = catmullRom(p0.x, p1.x, p2.x, p3.x, t);
-        const y = catmullRom(p0.y, p1.y, p2.y, p3.y, t);
-        smoothPoints.push(x, y);
-      }
-    }
-    return smoothPoints;
-  }
-
-  const renderNationOverlays = () => {
+  /* ----- Render Nation Overlays using NationOverlay ----- */
+  const renderNationOverlays = useMemo(() => {
     const overlays = [];
     if (!gameState?.gameState?.nations) return overlays;
     gameState.gameState.nations.forEach((nation, nationIndex) => {
-      const palette = [
-        "#FF5733",
-        "#33FF57",
-        "#3357FF",
-        "#FF33A8",
-        "#A833FF",
-        "#33FFF0",
-        "#FFC133",
-        "#FF3333",
-        "#33FF33",
-        "#3333FF",
-      ];
-      const nationColor =
-        nation.owner === userId
-          ? "#FFFF00"
-          : palette[nationIndex % palette.length];
-      const baseColor = string2hex(nationColor);
-      const territory = getMergedTerritory(nation);
       overlays.push(
-        <Graphics
-          key={`territory-${nation.owner}`}
-          zIndex={100}
-          draw={(g) => {
-            g.clear();
-            g.beginFill(baseColor, 0.375);
-            forEachTerritoryCell(territory, (x, y) => {
-              if (!isBorderCell(x, y, territory)) {
-                g.drawRect(x * cellSize, y * cellSize, cellSize, cellSize);
-              }
-            });
-            g.endFill();
-            g.beginFill(baseColor, 0.75);
-            forEachTerritoryCell(territory, (x, y) => {
-              if (isBorderCell(x, y, territory)) {
-                g.drawRect(x * cellSize, y * cellSize, cellSize, cellSize);
-              }
-            });
-            g.endFill();
-          }}
+        <NationOverlay
+          key={`nation-${nation.owner}`}
+          nation={nation}
+          nationIndex={nationIndex}
+          cellSize={cellSize}
+          scale={scale}
+          selectedArmies={selectedArmies}
+          userId={userId}
+          setSelectedArmy={setSelectedArmy}
         />
       );
-      (nation.cities || []).forEach((city, idx) => {
-        const iconSize = cellSize;
-        const centerX = city.x * cellSize + cellSize / 2;
-        const centerY = city.y * cellSize + cellSize / 2;
-        overlays.push(
-          <BorderedSprite
-            key={`city-${nation.owner}-${idx}`}
-            texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
-            x={centerX}
-            y={centerY}
-            width={iconSize}
-            height={iconSize}
-            borderColor={baseColor}
-            borderWidth={2 * Math.sqrt(scale)}
-            interactive={true}
-            pointerdown={(e) => {
-              e.stopPropagation();
-              console.log("City clicked:", city);
-            }}
-            baseZ={150 + centerY}
-          />
-        );
-      });
-      (nation.armies || []).forEach((army, idx) => {
-        const iconSize = cellSize;
-        const centerX = Math.floor(army.position.x) * cellSize + cellSize / 2;
-        const centerY = Math.floor(army.position.y) * cellSize + cellSize / 2;
-        const isSelected = selectedArmies.some((sel) => sel.id === army.id);
-        overlays.push(
-          <BorderedSprite
-            key={`army-${nation.owner}-${idx}`}
-            texture={`/${army.type.toLowerCase().replace(" ", "_")}.png`}
-            x={centerX}
-            y={centerY}
-            width={iconSize}
-            height={iconSize}
-            borderColor={isSelected ? "0x00ff00" : baseColor}
-            borderWidth={2 * Math.sqrt(scale)}
-            interactive={true}
-            isSelected={isSelected}
-            pointerdown={(e) => {
-              e.stopPropagation();
-              console.log("Army clicked:", army);
-              setSelectedArmy(army);
-            }}
-            baseZ={500 + centerY}
-            text={`${army.currentPower}`}
-          />
-        );
-      });
     });
     return overlays;
-  };
+  }, [gameState.gameState.nations]);
 
   // Compute the visible portion of the map for performance.
   const visibleMapGrid = useMemo(() => {
@@ -837,10 +794,14 @@ const GameCanvas = ({
     const userNation = gameState?.gameState?.nations?.find(
       (n) => n.owner === userId
     );
+    // (Using the old hasCellInTerritory logic here – if needed, this can be optimized similarly.)
     const territoryValid =
       userNation &&
       userNation.territory &&
-      hasCellInTerritory(userNation.territory, hoveredCell.x, hoveredCell.y);
+      userNation.territory.x &&
+      userNation.territory.y &&
+      userNation.territory.x.includes(hoveredCell.x) &&
+      userNation.territory.y.includes(hoveredCell.y);
     resourceValid =
       resourceValid || ["town", "capital", "fort"].includes(buildingStructure);
     const valid = resourceValid && territoryValid;
@@ -898,7 +859,7 @@ const GameCanvas = ({
           textures={textures}
         />
         {memoizedResources}
-        {renderNationOverlays()}
+        {renderNationOverlays}
         {buildPreview}
         {renderSelectionBox()}
       </Container>
