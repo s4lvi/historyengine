@@ -393,58 +393,32 @@ export const calculateTemperature = (
 // Resource generation
 export const generateResources = (biome, elevation, moisture, temperature) => {
   try {
-    const resources = new Set();
-    const random = Math.random();
-    if (elevation > 0.8) {
-      if (random < 0.3) resources.add("iron ore");
-      if (random < 0.2) resources.add("precious metals");
-      if (random < 0.15) resources.add("gems");
-    } else if (elevation > 0.6) {
-      if (random < 0.2) resources.add("stone");
-      if (random < 0.15) resources.add("copper ore");
+    const resources = [];
+
+    // In grassland or savanna, assign food and a chance for horses
+    if (biome === "GRASSLAND" || biome === "SAVANNA") {
+      if (Math.random() < 0.004) resources.push("food");
+      if (Math.random() < 0.0008) resources.push("horses");
     }
-    if (moisture > 0.6) {
-      resources.add("fresh water");
-      if (random < 0.3) resources.add("fish");
+
+    // In woodlands or forests, assign wood
+    if (
+      biome === "WOODLAND" ||
+      biome === "FOREST" ||
+      biome === "TROPICAL_FOREST" ||
+      biome === "RAINFOREST"
+    ) {
+      if (Math.random() < 0.008) resources.push("wood");
     }
-    switch (biome) {
-      case "FOREST":
-      case "TROPICAL_FOREST":
-      case "RAINFOREST":
-        resources.add("timber");
-        if (random < 0.4) resources.add("medicinal plants");
-        if (random < 0.3) resources.add("wild fruits");
-        if (random < 0.5) resources.add("game animals");
-        break;
-      case "GRASSLAND":
-      case "SAVANNA":
-        resources.add("arable land");
-        resources.add("pastures");
-        if (random < 0.4) resources.add("grazing animals");
-        break;
-      case "WOODLAND":
-        resources.add("timber");
-        resources.add("arable land");
-        if (random < 0.3) resources.add("wild fruits");
-        if (random < 0.4) resources.add("game animals");
-        break;
-      case "DESERT":
-        if (random < 0.1) resources.add("salt");
-        if (moisture > 0.2) resources.add("date palms");
-        break;
-      case "TUNDRA":
-        if (random < 0.3) resources.add("fur animals");
-        break;
-      case "TAIGA":
-        resources.add("timber");
-        if (random < 0.4) resources.add("fur animals");
-        break;
+
+    // In mountains, assign stone and, at higher elevations, bronze or steel
+    if (biome === "MOUNTAIN") {
+      if (Math.random() < 0.015) resources.push("stone");
+      if (elevation > 0.7 && Math.random() < 0.005) resources.push("bronze");
+      if (elevation > 0.85 && Math.random() < 0.0005) resources.push("steel");
     }
-    if (temperature > 15 && temperature < 30 && moisture > 0.4) {
-      resources.add("fertile soil");
-      if (random < 0.3) resources.add("herbs");
-    }
-    return Array.from(resources);
+
+    return resources;
   } catch (error) {
     console.error("Error in generateResources:", error, {
       biome,

@@ -342,7 +342,7 @@ const GameRoomList = () => {
   }, []);
 
   if (isLoading && gameRooms.length === 0) return <LoadingSpinner />;
-
+  console.log("gameRooms", gameRooms);
   return (
     <div className="max-w-4xl mx-auto p-6">
       <div className="flex justify-between items-center mb-8">
@@ -395,18 +395,15 @@ const GameRoomList = () => {
                   Created: {new Date(room.createdAt).toLocaleDateString()}
                 </p>
                 <p className="text-gray-500 text-sm">
-                  Map: {room.map.name} ({room.map.width}x{room.map.height})
-                </p>
-                <p className="text-gray-500 text-sm">
                   Players: {room.players?.length + 1 || 1}
                 </p>
               </div>
               <div className="flex gap-3">
                 <button
                   onClick={() => navigate(`/rooms/${room._id}`)}
-                  className="bg-green-700 hover:bg-green-600 disabled:bg-green-300  px-4 py-2 rounded-md transition-colors duration-200 flex items-center gap-2"
+                  className={`px-4 py-2 rounded-md transition-colors duration-200 flex items-center gap-2 bg-green-700 hover:bg-green-600"`}
                 >
-                  Join Game
+                  {"Join Game"}
                 </button>
               </div>
             </div>

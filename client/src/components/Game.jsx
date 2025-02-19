@@ -577,50 +577,6 @@ const Game = () => {
     }
   };
 
-  const handleSetExpandTarget = async (x, y) => {
-    if (!userId || !storedPassword) return;
-
-    // Check if nation has enough resources before making API call
-    const userNation = gameState?.gameState?.nations?.find(
-      (n) => n.owner === userId
-    );
-    const canExpand =
-      userNation &&
-      userNation.resources &&
-      userNation.resources.gold >= (config?.expansionCost?.gold || 0) &&
-      userNation.resources.food >= (config?.expansionCost?.food || 0);
-
-    if (!canExpand) {
-      setError(
-        `Not enough resources. Expansion requires ${config?.expansionCost?.gold} gold and ${config?.expansionCost?.food} food.`
-      );
-      setTimeout(() => setError(null), 3000); // Clear error after 3 seconds
-      return;
-    }
-
-    try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/setExpansionTarget`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password: storedPassword,
-            target: { x, y },
-          }),
-        }
-      );
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Failed to set expand target");
-      }
-    } catch (err) {
-      setError(err.message);
-      setTimeout(() => setError(null), 3000); // Clear error after 3 seconds
-    }
-  };
-
   const handlePauseGame = async () => {
     try {
       const response = await fetch(
@@ -752,88 +708,105 @@ const Game = () => {
 
   return (
     <div className="relative h-screen overflow-hidden">
-      <ControlButtons
-        onOpenSettings={() => setShowSettings(true)}
-        onOpenPlayerList={() => setShowPlayerList(true)}
-      />
-      {!isDefeated && <StatsBar gameState={gameState} userId={userId} />}
-      <SettingsModal
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-        gameState={gameState}
-        userId={userId}
-        paused={paused}
-        onPause={handlePauseGame}
-        onUnpause={handleUnPauseGame}
-        onEndGame={handleEndGame}
-        onLeaveGame={handleQuitGame}
-        onBackToGameRooms={() => navigate("/rooms")}
-      />
-      <PlayerListModal
-        isOpen={showPlayerList}
-        onClose={() => setShowPlayerList(false)}
-        gameState={gameState}
-        getNationColor={getNationColor}
-      />
-      {/* Main Content Area */}
-      <div className="absolute inset-0">
-        {!isMapLoaded ? (
-          <div className="flex flex-col items-center justify-center h-full bg-gray-800">
-            <LoadingSpinner />
-            {mapMetadata && (
-              <div className="text-white mt-4">
-                Loading map...{" "}
-                {Math.min(
-                  ((loadedRows / mapMetadata.height) * 100).toFixed(0),
-                  100
-                )}
-                %
-              </div>
-            )}
+      {!isMapLoaded || !gameState ? (
+        // Loading screen that covers game content but not modals
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-800">
+          <LoadingSpinner />
+          {mapMetadata && (
+            <div className="text-white mt-4">
+              Loading map...{" "}
+              {Math.min(
+                ((loadedRows / mapMetadata.height) * 100).toFixed(0),
+                100
+              )}
+              %
+            </div>
+          )}
+
+          {/* Modals - These stay outside the loading condition */}
+          <Modal
+            showLoginModal={!userId}
+            onLoginSubmit={handleLoginSubmit}
+            loginName={loginName}
+            setLoginName={setLoginName}
+            loginPassword={loginPassword}
+            setLoginPassword={setLoginPassword}
+            joinCode={joinCode}
+            setJoinCode={setJoinCode}
+            loginError={loginError}
+          />
+        </div>
+      ) : (
+        // Main game content
+        <>
+          <ControlButtons
+            onOpenSettings={() => setShowSettings(true)}
+            onOpenPlayerList={() => setShowPlayerList(true)}
+          />
+          {!isDefeated && <StatsBar gameState={gameState} userId={userId} />}
+
+          {/* Main Content Area */}
+          <div className="absolute inset-0">
+            <GameCanvas
+              mapMetadata={mapMetadata}
+              mapGrid={mapGrid}
+              mappings={mappings}
+              gameState={gameState}
+              userId={userId}
+              onArmyTargetSelect={handleSetArmyAttackTarget}
+              foundingNation={foundingNation}
+              onFoundNation={handleFoundNation}
+              buildingStructure={buildingStructure}
+              onBuildCity={handleBuildCity}
+              onCancelBuild={handleCancelBuild}
+            />
           </div>
-        ) : (
-          <GameCanvas
-            mapMetadata={mapMetadata}
-            mapGrid={mapGrid}
-            mappings={mappings}
+
+          <ActionBar
+            onBuildCity={handleBuildCity}
+            onRaiseArmy={handleRaiseArmy}
+            onFoundNation={startFoundNation}
+            config={config}
+            userState={userState}
+            hasFounded={hasFounded}
+          />
+          <SettingsModal
+            isOpen={showSettings}
+            onClose={() => setShowSettings(false)}
             gameState={gameState}
             userId={userId}
-            onArmyTargetSelect={handleSetArmyAttackTarget}
-            foundingNation={foundingNation}
-            onFoundNation={handleFoundNation}
-            buildingStructure={buildingStructure}
-            onBuildCity={handleBuildCity}
-            onCancelBuild={handleCancelBuild}
+            paused={paused}
+            onPause={handlePauseGame}
+            onUnpause={handleUnPauseGame}
+            onEndGame={handleEndGame}
+            onLeaveGame={handleQuitGame}
+            onBackToGameRooms={() => navigate("/rooms")}
           />
-        )}
-      </div>
-      <ActionBar
-        onBuildCity={handleBuildCity}
-        onRaiseArmy={handleRaiseArmy}
-        onFoundNation={startFoundNation}
-        config={config}
-        userState={userState}
-        hasFounded={hasFounded}
-      />
-      {/* The join/login modal now appears only if the map is loaded */}
-      <Modal
-        showLoginModal={!userId && isMapLoaded}
-        onLoginSubmit={handleLoginSubmit}
-        loginName={loginName}
-        setLoginName={setLoginName}
-        loginPassword={loginPassword}
-        setLoginPassword={setLoginPassword}
-        joinCode={joinCode}
-        setJoinCode={setJoinCode}
-        loginError={loginError}
-        actionModal={actionModal}
-        setActionModal={setActionModal}
-        onBuildCity={handleBuildCity}
-        onSetExpandTarget={handleSetExpandTarget}
-        config={config}
-        userState={userState}
-        onRaiseArmy={handleRaiseArmy}
-      />
+          <PlayerListModal
+            isOpen={showPlayerList}
+            onClose={() => setShowPlayerList(false)}
+            gameState={gameState}
+            getNationColor={getNationColor}
+          />
+          <Modal
+            showLoginModal={!userId}
+            onLoginSubmit={handleLoginSubmit}
+            loginName={loginName}
+            setLoginName={setLoginName}
+            loginPassword={loginPassword}
+            setLoginPassword={setLoginPassword}
+            joinCode={joinCode}
+            setJoinCode={setJoinCode}
+            loginError={loginError}
+            actionModal={actionModal}
+            setActionModal={setActionModal}
+            onBuildCity={handleBuildCity}
+            config={config}
+            userState={userState}
+            onRaiseArmy={handleRaiseArmy}
+          />
+        </>
+      )}
     </div>
   );
 };

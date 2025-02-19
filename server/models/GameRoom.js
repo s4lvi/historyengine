@@ -2,13 +2,12 @@
 import mongoose from "mongoose";
 
 const gameRoomSchema = new mongoose.Schema({
-  map: { type: mongoose.Schema.Types.ObjectId, ref: "Map", required: true },
   roomName: { type: String, default: "Game Room" },
   joinCode: { type: String, required: true },
   status: {
     type: String,
     enum: ["open", "ended", "initializing"],
-    default: "open",
+    default: "initializing",
   },
   creator: {
     userId: { type: String, required: true },
@@ -18,13 +17,11 @@ const gameRoomSchema = new mongoose.Schema({
     {
       userId: { type: String, required: true },
       password: { type: String, required: true },
-      userState: { type: mongoose.Schema.Types.Mixed, default: {} },
     },
   ],
-  gameState: { type: mongoose.Schema.Types.Mixed, default: {} },
-  tickCount: { type: Number, default: 0 },
+  width: { type: Number, required: true },
+  height: { type: Number, required: true },
   createdAt: { type: Date, default: Date.now },
 });
 
-// Register and export the model.
 export default mongoose.model("GameRoom", gameRoomSchema);

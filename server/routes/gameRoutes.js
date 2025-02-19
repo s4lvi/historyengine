@@ -2,15 +2,31 @@
 import express from "express";
 import mongoose from "mongoose";
 import { Worker } from "worker_threads";
-import { gameLoop } from "../workers/gameLoop.js";
-import { setExpansionTarget } from "../utils/gameLogic.js";
+import { gameLoop } from "../services/gameLoop.js";
 import config from "../config/config.js";
 import { LOYALTY } from "../utils/loyaltySystem.js";
+import { gameStateManager } from "../services/GameStateManager.js";
 
 const router = express.Router();
 
 import GameRoom from "../models/GameRoom.js";
 
+function runMapGenerationWorker(workerData) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(
+      new URL("../services/mapWorker.js", import.meta.url),
+      { workerData }
+    );
+    worker.on("message", resolve);
+    worker.on("error", reject);
+    worker.on("exit", (code) => {
+      if (code !== 0)
+        reject(new Error(`Worker stopped with exit code ${code}`));
+    });
+  });
+}
+
+// POST /api/gamerooms/init
 router.post("/init", async (req, res, next) => {
   try {
     const {
@@ -18,170 +34,108 @@ router.post("/init", async (req, res, next) => {
       joinCode,
       creatorName,
       creatorPassword,
-      mapName,
       width,
       height,
-      erosion_passes,
-      num_blobs,
-      seed,
+      erosion_passes = 4,
+      num_blobs = 3,
+      seed = Math.random(),
     } = req.body;
 
-    if (!width || !height) {
-      const error = new Error("Width and height must be provided");
-      error.status = 400;
-      throw error;
-    }
-    const w = Number(width);
-    const h = Number(height);
-    if (isNaN(w) || isNaN(h) || w <= 0 || h <= 0) {
-      const error = new Error("Width and height must be positive numbers");
-      error.status = 400;
-      throw error;
+    // Input validation
+    if (!width || !height || width <= 0 || height <= 0) {
+      return res
+        .status(400)
+        .json({ error: "Valid width and height are required" });
     }
 
-    // Create new Map document with status "generating"
-    const Map = mongoose.model("Map");
-    const newMap = new Map({
-      name: mapName || "Untitled Map",
-      width: w,
-      height: h,
-      status: "generating",
-    });
-    await newMap.save();
-
-    // Generate join code if not provided:
+    // Generate join code if not provided
     const generatedJoinCode =
       joinCode || Math.random().toString(36).substring(2, 8).toUpperCase();
 
-    // Create the game room document referencing the new map
-    const gameRoomData = {
-      map: newMap._id,
+    // Create minimal game room record in MongoDB
+    const gameRoom = new GameRoom({
       roomName: roomName || "Game Room",
       joinCode: generatedJoinCode,
-      status: "initializing", // initial status while map is generating
+      status: "initializing",
       creator: { userId: creatorName, password: creatorPassword },
-      players: [
-        { userId: creatorName, password: creatorPassword, userState: {} },
-      ],
-      gameState: { nations: [] },
-      tickCount: 0,
-    };
-    const gameRoom = new GameRoom(gameRoomData);
+      players: [{ userId: creatorName, password: creatorPassword }],
+      width,
+      height,
+    });
     await gameRoom.save();
 
-    // Respond immediately with the game room ID and join code
-    res
-      .status(201)
-      .json({ gameRoomId: gameRoom._id, joinCode: generatedJoinCode });
+    // Initialize in-memory game state
+    gameStateManager.addRoom(gameRoom._id.toString(), {
+      tickCount: 0,
+      lastActivity: Date.now(),
+      width,
+      height,
+      gameState: {
+        nations: [],
+        players: [{ userId: creatorName, password: creatorPassword }],
+        creator: { userId: creatorName, password: creatorPassword },
+      },
+    });
 
-    // ─── Helper: Run Map Generation Worker ─────────────────────────────────
-    function runMapGenerationWorker(workerData) {
-      return new Promise((resolve, reject) => {
-        const worker = new Worker(
-          new URL("../workers/mapWorker.js", import.meta.url),
-          { workerData }
-        );
-        worker.on("message", resolve);
-        worker.on("error", reject);
-        worker.on("exit", (code) => {
-          if (code !== 0)
-            reject(new Error(`Worker stopped with exit code ${code}`));
-        });
-      });
-    }
+    // Respond immediately with room details
+    res.status(201).json({
+      gameRoomId: gameRoom._id,
+      joinCode: generatedJoinCode,
+    });
 
-    // Set defaults if not provided
-    const erosionPasses = erosion_passes || 4;
-    const numBlobs = num_blobs || 3;
-    const mapSeed = seed || Math.random();
-
-    // Run map generation asynchronously
+    // Generate map asynchronously
     (async () => {
       try {
-        console.log(
-          "Starting asynchronous map generation for game room:",
-          gameRoom._id
-        );
+        // Generate map data
         const mapData = await runMapGenerationWorker({
-          width: w,
-          height: h,
-          erosion_passes: erosionPasses,
-          num_blobs: numBlobs,
-          seed: mapSeed,
+          width,
+          height,
+          erosion_passes,
+          num_blobs,
+          seed,
         });
-        console.log("Map generation completed for game room:", gameRoom._id);
 
-        // Save map chunks
-        const MapChunk = mongoose.model("MapChunk");
-        const CHUNK_SIZE = 50;
-        const chunks = [];
-        for (let i = 0; i < mapData.length; i += CHUNK_SIZE) {
-          const chunkRows = mapData.slice(i, i + CHUNK_SIZE);
-          chunks.push({
-            map: newMap._id,
-            startRow: i,
-            endRow: i + chunkRows.length - 1,
-            rows: chunkRows,
-          });
-        }
-        console.log(
-          `Saving ${chunks.length} map chunks for game room:`,
-          gameRoom._id
-        );
-        await MapChunk.insertMany(chunks);
-        console.log("Map chunks saved for game room:", gameRoom._id);
+        // Store map data in memory
+        gameStateManager.setMapData(gameRoom._id.toString(), mapData);
 
-        // Update map status to "ready"
-        await Map.findByIdAndUpdate(newMap._id, { status: "ready" });
-        console.log(
-          "Map status updated to 'ready' for game room:",
-          gameRoom._id
-        );
-
-        // Update game room status to "open"
+        // Update game room status
         await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
-        console.log("Game room status updated to 'open':", gameRoom._id);
 
-        // Start the game loop for the room
-        await gameLoop.startRoom(gameRoom._id);
-        console.log("Game loop started for room:", gameRoom._id);
-      } catch (err) {
-        console.error(
-          "Error in asynchronous map generation for game room:",
-          gameRoom._id,
-          err
-        );
-        const Map = mongoose.model("Map");
-        await Map.findByIdAndUpdate(newMap._id, { status: "error" });
+        // Start game loop
+        await gameLoop.startRoom(gameRoom._id.toString());
+
+        console.log(`Game room ${gameRoom._id} initialized successfully`);
+      } catch (error) {
+        console.error("Error in map generation:", error);
         await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "error" });
+        gameStateManager.removeRoom(gameRoom._id.toString());
       }
     })();
   } catch (error) {
-    console.error("Error in POST /api/gamerooms/init:", error);
     next(error);
   }
 });
 
-// ─── NEW: Status endpoint to poll game room and map readiness ───────────────
+// -------------------------------------------------------------------
+// Get game room status
+// -------------------------------------------------------------------
 router.get("/:id/status", async (req, res, next) => {
   try {
     const gameRoom = await GameRoom.findById(req.params.id).lean();
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
-    const Map = mongoose.model("Map");
-    const map = await Map.findById(gameRoom.map)
-      .select("status width height")
-      .lean();
-    if (!map) {
-      return res.status(404).json({ error: "Associated map not found" });
+
+    const gameState = gameStateManager.getRoom(req.params.id);
+    if (!gameState) {
+      return res.status(404).json({ error: "Game state not found" });
     }
+
     res.json({
       gameRoomStatus: gameRoom.status,
-      mapStatus: map.status,
-      width: map.width,
-      height: map.height,
-      ready: map.status === "ready",
+      width: gameState.width,
+      height: gameState.height,
+      ready: gameRoom.status === "open",
     });
   } catch (error) {
     next(error);
@@ -189,133 +143,95 @@ router.get("/:id/status", async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms - Create a game room (with a map copy)
-// -------------------------------------------------------------------
-router.post("/", async (req, res, next) => {
-  try {
-    const { mapId, roomName, joinCode, creatorName, creatorPassword } =
-      req.body;
-    if (!mapId) return res.status(400).json({ error: "mapId is required" });
-    if (!creatorName || !creatorPassword) {
-      return res
-        .status(400)
-        .json({ error: "Room creator name and password are required" });
-    }
-    const Map = mongoose.model("Map");
-    const originalMap = await Map.findById(mapId).lean();
-    if (!originalMap)
-      return res.status(404).json({ error: "Original map not found" });
-    const mapCopyData = {
-      name: "Room:" + creatorName,
-      width: originalMap.width,
-      height: originalMap.height,
-    };
-    const gameMap = new Map(mapCopyData);
-    await gameMap.save();
-    const MapChunk = mongoose.model("MapChunk");
-    const originalChunks = await MapChunk.find({ map: originalMap._id }).lean();
-    const newChunks = originalChunks.map((chunk) => ({
-      map: gameMap._id,
-      startRow: chunk.startRow,
-      endRow: chunk.endRow,
-      rows: chunk.rows,
-    }));
-    if (newChunks.length > 0) {
-      await MapChunk.insertMany(newChunks);
-    }
-    const generatedJoinCode =
-      joinCode || Math.random().toString(36).substring(2, 8).toUpperCase();
-    const gameRoom = new GameRoom({
-      map: gameMap._id,
-      roomName: roomName || "Game Room",
-      joinCode: generatedJoinCode,
-      status: "open",
-      creator: {
-        userId: creatorName,
-        password: creatorPassword,
-      },
-      players: [
-        {
-          userId: creatorName,
-          password: creatorPassword,
-          userState: {},
-        },
-      ],
-      gameState: {
-        nations: [], // Nations will be added when players found their nation.
-      },
-      tickCount: 0,
-    });
-    await gameRoom.save();
-    await gameLoop.startRoom(gameRoom._id);
-    res.status(201).json(gameRoom);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// -------------------------------------------------------------------
-// GET /api/gamerooms - List open game rooms
+// List open game rooms
 // -------------------------------------------------------------------
 router.get("/", async (req, res, next) => {
   try {
     const gameRooms = await GameRoom.find({ status: "open" })
-      .select("roomName joinCode map createdAt tickCount")
-      .populate("map", "name width height");
-    res.json(gameRooms);
+      .select("roomName creator players createdAt map")
+      .lean();
+
+    // Enhance with essential in-memory state and format the response
+    const enhancedRooms = gameRooms.map((room) => {
+      const gameState = gameStateManager.getRoom(room._id.toString());
+      return {
+        _id: room._id,
+        roomName: room.roomName,
+        creator: room.creator,
+        players: room.players || [],
+        createdAt: room.createdAt,
+        map: room.map
+          ? {
+              name: room.map.name,
+              width: room.map.width,
+              height: room.map.height,
+            }
+          : null,
+        playerCount: (room.players?.length || 0) + 1, // +1 for creator
+        status: gameState ? "active" : "initializing",
+      };
+    });
+
+    res.json(enhancedRooms);
   } catch (error) {
     next(error);
   }
 });
 
+// In gameRoutes.js, update these endpoints:
+
+// -------------------------------------------------------------------
+// Get game room metadata
+// -------------------------------------------------------------------
 router.get("/:id/metadata", async (req, res, next) => {
-  console.log("[ROUTE] Game room metadata request:", req.params.id);
   try {
-    const gameRoom = await GameRoom.findById(req.params.id).populate(
-      "map",
-      "name width height"
-    );
-    if (!gameRoom)
+    // Get metadata from both MongoDB and memory
+    const gameRoom = await GameRoom.findById(req.params.id)
+      .select("width height status")
+      .lean();
+
+    if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
-    res.json({ map: gameRoom.map, config: config });
+    }
+
+    // Get game state for additional data
+    const state = gameStateManager.getRoom(req.params.id);
+    if (!state) {
+      return res.status(404).json({ error: "Game state not found" });
+    }
+
+    res.json({
+      map: {
+        width: gameRoom.width,
+        height: gameRoom.height,
+        status: gameRoom.status,
+      },
+      config,
+    });
   } catch (error) {
     next(error);
   }
 });
 
+// -------------------------------------------------------------------
+// Get map data chunks
+// -------------------------------------------------------------------
 router.get("/:id/data", async (req, res, next) => {
   try {
     const { startRow, endRow } = req.query;
     const start = parseInt(startRow, 10) || 0;
     const end = parseInt(endRow, 10) || start + 50;
 
-    console.log(`Fetching map data for room: ${req.params.id}`);
-
-    // Get the cached mapData
-    const mapData = await gameLoop.getMapData(req.params.id);
+    // Get map data from memory
+    const mapData = gameStateManager.getMapData(req.params.id);
     if (!mapData) {
-      console.error(`Failed to get map data for room ${req.params.id}`);
-      return res
-        .status(404)
-        .json({ error: "Map data not found or failed to initialize" });
+      return res.status(404).json({ error: "Map data not found" });
     }
 
-    // Convert object rows to arrays if necessary
-    const rows = mapData
-      .slice(start, Math.min(end, mapData.length))
-      .map((row) => {
-        // Check if row is an object with numbered keys
-        if (row && typeof row === "object" && !Array.isArray(row)) {
-          // Convert object to array by sorting keys numerically
-          return Object.keys(row)
-            .filter((key) => !isNaN(key)) // Filter out non-numeric keys
-            .sort((a, b) => parseInt(a) - parseInt(b))
-            .map((key) => row[key]);
-        }
-        return row;
-      });
+    // Get the requested chunk
+    const chunk = mapData.slice(start, Math.min(end, mapData.length));
 
-    // Define the biomes enum (unchanged)
+    // Define the enums (these should match your client-side expectations)
     const BIOMES = {
       OCEAN: 0,
       COASTAL: 1,
@@ -332,7 +248,6 @@ router.get("/:id/data", async (req, res, next) => {
       RIVER: 12,
     };
 
-    // Define the resources enum
     const RESOURCES = {
       food: 0,
       wood: 1,
@@ -342,59 +257,204 @@ router.get("/:id/data", async (req, res, next) => {
       horses: 5,
     };
 
-    // Create reverse mapping for resources
-    const REVERSE_RESOURCES = Object.fromEntries(
-      Object.entries(RESOURCES).map(([k, v]) => [v, k])
+    // Convert chunk to the optimized format the client expects
+    const optimizedChunk = chunk.map((row) =>
+      row.map((cell) => [
+        cell.elevation,
+        cell.moisture,
+        cell.temperature,
+        BIOMES[cell.biome] || 0,
+        cell.isRiver ? 1 : 0,
+        Array.isArray(cell.resources) ? cell.resources : [],
+      ])
     );
 
-    // Convert the rows to the optimized format
-    const optimizedChunk = rows.map((row) => {
-      if (!Array.isArray(row)) {
-        console.error("Invalid row format:", row);
-        return [];
-      }
-      return row.map((cell) => {
-        if (!cell) {
-          console.error("Invalid cell:", cell);
-          return [0, 0, 0, 0, 0, []];
-        }
-        return [
-          cell.elevation,
-          cell.moisture,
-          cell.temperature,
-          BIOMES[cell.biome] || 0,
-          cell.isRiver ? 1 : 0,
-          Array.isArray(cell.resources) ? cell.resources : [],
-        ];
-      });
-    });
-
-    // Include reverse mappings (only on the first request chunk)
-    const mappings =
-      start === 0
-        ? {
-            biomes: Object.fromEntries(
-              Object.entries(BIOMES).map(([k, v]) => [v, k])
-            ),
-            resources: REVERSE_RESOURCES,
-          }
-        : undefined;
-
-    console.log(
-      `Successfully prepared map data chunk for room ${
-        req.params.id
-      }: rows ${start}-${Math.min(end, mapData.length)}`
-    );
-
+    // Send response
     res.json({
       totalRows: mapData.length,
       startRow: start,
       endRow: Math.min(end, mapData.length),
       chunk: optimizedChunk,
-      mappings,
+      mappings:
+        start === 0
+          ? {
+              biomes: Object.fromEntries(
+                Object.entries(BIOMES).map(([k, v]) => [v, k])
+              ),
+              resources: Object.fromEntries(
+                Object.entries(RESOURCES).map(([k, v]) => [v, k])
+              ),
+            }
+          : undefined,
     });
   } catch (error) {
-    console.error(`Error fetching map data for room ${req.params.id}:`, error);
+    console.error(`Error fetching map data:`, error);
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// Get game state
+// -------------------------------------------------------------------
+router.post("/:id/state", async (req, res, next) => {
+  try {
+    const { userId, password, full } = req.body;
+    if (!userId || !password) {
+      return res
+        .status(400)
+        .json({ error: "userId and password are required" });
+    }
+
+    // Verify credentials in MongoDB
+    const gameRoom = await GameRoom.findById(req.params.id)
+      .select("players creator")
+      .lean();
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
+    }
+
+    const player = gameRoom.players.find(
+      (p) => p.userId === userId && p.password === password
+    );
+    if (!player) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+
+    // Get game state from memory
+    const gameState = gameStateManager.getRoom(req.params.id);
+    if (!gameState) {
+      return res.status(404).json({ error: "Game state not found" });
+    }
+
+    // Filter nation data
+    const filterNation = (nation) => {
+      if (nation.status === "defeated") {
+        return { owner: nation.owner, status: "defeated" };
+      }
+
+      if (full) {
+        return {
+          ...nation,
+          territoryLoyalty: nation.territoryLoyalty || {},
+          territoryDeltaForClient: {
+            add: { x: [], y: [] },
+            sub: { x: [], y: [] },
+          },
+        };
+      }
+
+      const { territory, territoryLoyalty, ...rest } = nation;
+      return {
+        ...rest,
+        territoryDeltaForClient: nation.territoryDeltaForClient || {
+          add: { x: [], y: [] },
+          sub: { x: [], y: [] },
+        },
+      };
+    };
+
+    const filteredGameState = {
+      ...gameState.gameState,
+      nations: (gameState.gameState.nations || []).map(filterNation),
+    };
+
+    res.json({
+      tickCount: gameState.tickCount,
+      roomName: gameRoom.roomName,
+      roomCreator: gameRoom.creator.userId,
+      gameState: filteredGameState,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// Found a nation
+// -------------------------------------------------------------------
+router.post("/:id/foundNation", async (req, res, next) => {
+  try {
+    const { userId, password, x, y } = req.body;
+
+    // Verify credentials in MongoDB
+    const gameRoom = await GameRoom.findById(req.params.id)
+      .select("players")
+      .lean();
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
+    }
+
+    const player = gameRoom.players.find(
+      (p) => p.userId === userId && p.password === password
+    );
+    if (!player) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+
+    // Get and update game state in memory
+    const updated = gameStateManager.updateGameState(req.params.id, (state) => {
+      if (!state.gameState.nations) {
+        state.gameState.nations = [];
+      }
+
+      // Filter out defeated nations
+      state.gameState.nations = state.gameState.nations.filter(
+        (nation) => nation.owner !== userId || nation.status !== "defeated"
+      );
+
+      // Check for existing nation
+      if (state.gameState.nations.some((n) => n.owner === userId)) {
+        throw new Error("Nation already exists for this user");
+      }
+
+      // Create new nation
+      const newNation = {
+        owner: userId,
+        status: "active",
+        startingCell: { x, y },
+        territory: { x: [x], y: [y] },
+        territoryLoyalty: { [`${x},${y}`]: LOYALTY.INITIAL },
+        population: 100,
+        nationalWill: 50,
+        resources: {
+          food: 1000,
+          wood: 500,
+          stone: 300,
+          bronze: 0,
+          steel: 0,
+          horses: 0,
+        },
+        cities: [
+          {
+            name: "Capital",
+            x,
+            y,
+            population: 50,
+            type: "capital",
+          },
+        ],
+        structures: [],
+        auto_city: false,
+        expansionTarget: null,
+        attackTarget: null,
+      };
+
+      state.gameState.nations.push(newNation);
+      return state;
+    });
+
+    if (!updated) {
+      return res.status(400).json({ error: "Failed to update game state" });
+    }
+
+    res.status(201).json({
+      message: "Nation founded successfully",
+      nation: updated.gameState.nations.find((n) => n.owner === userId),
+    });
+  } catch (error) {
+    if (error.message === "Nation already exists for this user") {
+      return res.status(400).json({ error: error.message });
+    }
     next(error);
   }
 });
@@ -410,9 +470,12 @@ router.delete("/:id", async (req, res, next) => {
         .status(400)
         .json({ error: "userName and password are required" });
     }
+
     const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
+    if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
+    }
+
     if (
       !gameRoom.creator ||
       gameRoom.creator.userId !== userName ||
@@ -422,14 +485,15 @@ router.delete("/:id", async (req, res, next) => {
         .status(403)
         .json({ error: "Invalid room creator credentials" });
     }
-    const MapModel = mongoose.model("Map");
-    const MapChunk = mongoose.model("MapChunk");
-    await MapChunk.deleteMany({ map: gameRoom.map });
-    await MapModel.findByIdAndDelete(gameRoom.map);
+
+    // Stop game loop and remove from memory
+    await gameLoop.stopRoom(gameRoom._id.toString());
+    gameStateManager.removeRoom(gameRoom._id.toString());
+
+    // Remove from database
     await GameRoom.findByIdAndDelete(req.params.id);
-    res.json({
-      message: "Game room and associated map data deleted successfully",
-    });
+
+    res.json({ message: "Game room deleted successfully" });
   } catch (error) {
     next(error);
   }
@@ -441,33 +505,39 @@ router.delete("/:id", async (req, res, next) => {
 router.post("/:id/end", async (req, res, next) => {
   try {
     const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
+    if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
+    }
 
-    // Stop the game loop first
+    // Stop game loop and remove from memory
     await gameLoop.stopRoom(gameRoom._id.toString());
+    gameStateManager.removeRoom(gameRoom._id.toString());
 
-    // Now delete associated map data and the game room itself
-    const MapModel = mongoose.model("Map");
-    const MapChunk = mongoose.model("MapChunk");
-    await MapChunk.deleteMany({ map: gameRoom.map });
-    await MapModel.findByIdAndDelete(gameRoom.map);
+    // Remove from database
     await GameRoom.findByIdAndDelete(req.params.id);
 
-    res.json({
-      message: "Game session ended and all related data deleted successfully",
-    });
+    res.json({ message: "Game session ended successfully" });
   } catch (error) {
     next(error);
   }
 });
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms/:id/pause - Pause a game session (stops updates and ticks)
+// POST /api/gamerooms/:id/pause - Pause a game session
 // -------------------------------------------------------------------
 router.post("/:id/pause", async (req, res, next) => {
   try {
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
+    }
+
+    // Pause game loop
+    await gameLoop.pauseRoom(gameRoom._id.toString());
+
+    // Update status in database
     await GameRoom.findByIdAndUpdate(req.params.id, { status: "paused" });
+
     res.json({ message: "Game session paused successfully" });
   } catch (error) {
     next(error);
@@ -475,20 +545,27 @@ router.post("/:id/pause", async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms/:id/unpause - Unpause a game session (resume updates and ticks)
+// POST /api/gamerooms/:id/unpause - Unpause a game session
 // -------------------------------------------------------------------
 router.post("/:id/unpause", async (req, res, next) => {
   try {
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
+    }
+
+    // Resume game loop
+    await gameLoop.startRoom(gameRoom._id.toString());
+
+    // Update status in database
     await GameRoom.findByIdAndUpdate(req.params.id, { status: "open" });
+
     res.json({ message: "Game session unpaused successfully" });
   } catch (error) {
     next(error);
   }
 });
 
-// -------------------------------------------------------------------
-// POST /api/gamerooms/:id/quit - Quit a match and remove player's nation
-// -------------------------------------------------------------------
 // -------------------------------------------------------------------
 // POST /api/gamerooms/:id/quit - Quit a match and remove player's nation
 // -------------------------------------------------------------------
@@ -501,13 +578,12 @@ router.post("/:id/quit", async (req, res, next) => {
         .json({ error: "userId and password are required" });
     }
 
-    // First, verify the game room exists
+    // Verify credentials in MongoDB
     const gameRoom = await GameRoom.findById(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
 
-    // Verify player credentials
     const player = gameRoom.players.find(
       (p) => p.userId === userId && p.password === password
     );
@@ -515,30 +591,34 @@ router.post("/:id/quit", async (req, res, next) => {
       return res.status(403).json({ error: "Invalid credentials" });
     }
 
-    // Remove the nation and player in a single update operation
-    const result = await GameRoom.findOneAndUpdate(
-      { _id: req.params.id },
-      {
-        // Pull the nation from the nations array where owner matches userId
-        $pull: {
-          "gameState.nations": { owner: userId },
-        },
-      },
-      { new: true } // Return the updated document
-    );
+    // Update game state in memory
+    const updated = gameStateManager.updateGameState(req.params.id, (state) => {
+      if (!state.gameState.nations) return state;
 
-    if (!result) {
-      return res.status(404).json({ error: "Failed to update game room" });
+      // Remove the nation
+      state.gameState.nations = state.gameState.nations.filter(
+        (nation) => nation.owner !== userId
+      );
+
+      // Update remaining players count
+      state.gameState.remainingPlayers = state.gameState.nations.length;
+
+      return state;
+    });
+
+    if (!updated) {
+      return res.status(400).json({ error: "Failed to update game state" });
     }
 
     res.json({
       message: "Successfully quit the match",
-      remainingPlayers: result.players.length,
+      remainingPlayers: updated.gameState.remainingPlayers,
     });
   } catch (error) {
     next(error);
   }
 });
+
 // -------------------------------------------------------------------
 // POST /api/gamerooms/:id/join - Join a game room
 // -------------------------------------------------------------------
@@ -550,13 +630,22 @@ router.post("/:id/join", async (req, res, next) => {
         .status(400)
         .json({ error: "userName and password are required" });
     }
+
+    // Verify game room in MongoDB
     const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
+    if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
-    if (gameRoom.status !== "open")
+    }
+
+    if (gameRoom.status !== "open") {
       return res.status(400).json({ error: "Game room is not open" });
-    if (gameRoom.joinCode !== joinCode)
+    }
+
+    if (gameRoom.joinCode !== joinCode) {
       return res.status(403).json({ error: "Invalid join code" });
+    }
+
+    // Check existing player
     let player = gameRoom.players.find((p) => p.userId === userName);
     if (player) {
       if (player.password !== password) {
@@ -564,15 +653,29 @@ router.post("/:id/join", async (req, res, next) => {
           .status(403)
           .json({ error: "Invalid password for existing user" });
       }
+
       res.json({
         message: "Rejoined game room successfully",
         userId: player.userId,
-        config: config,
+        config,
       });
     } else {
+      // Add new player
       player = { userId: userName, password, userState: {} };
+
+      // Update in MongoDB
       gameRoom.players.push(player);
       await gameRoom.save();
+
+      // Update in memory
+      gameStateManager.updateGameState(req.params.id, (state) => {
+        if (!state.gameState.players) {
+          state.gameState.players = [];
+        }
+        state.gameState.players.push(player);
+        return state;
+      });
+
       res.json({
         message: "Joined game room successfully",
         userId: player.userId,
@@ -584,522 +687,283 @@ router.post("/:id/join", async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms/:id/state - Get the latest game state
-// -------------------------------------------------------------------
-// In gameRoutes.js
-router.post("/:id/state", async (req, res, next) => {
-  try {
-    const { userId, password, full } = req.body;
-    if (!userId || !password) {
-      return res
-        .status(400)
-        .json({ error: "userId and password are required" });
-    }
-
-    const gameRoom = await GameRoom.findById(req.params.id).lean();
-    if (!gameRoom) {
-      return res.status(404).json({ error: "Game room not found" });
-    }
-
-    const player = gameRoom.players.find(
-      (p) => p.userId === userId && p.password === password
-    );
-    if (!player) {
-      return res.status(403).json({ error: "Invalid credentials" });
-    }
-
-    // Modified filterNation to handle loyalty and defeated status
-    const filterNation = (nation) => {
-      // If nation is defeated, only send minimal info
-      if (nation.status === "defeated") {
-        return {
-          owner: nation.owner,
-          status: "defeated",
-        };
-      }
-
-      if (full) {
-        // When full is true, return the complete nation data including territory and loyalty
-        return {
-          ...nation,
-          territoryLoyalty: nation.territoryLoyalty || {},
-          // Clear the delta since we're sending full data
-          territoryDeltaForClient: {
-            add: { x: [], y: [] },
-            sub: { x: [], y: [] },
-          },
-          cachedBorderSet: null,
-        };
-      } else {
-        // When not full, remove full territory and send only delta
-        const { territory, territoryLoyalty, ...rest } = nation;
-
-        // For the owner of the nation, include loyalty data for their territory
-        const shouldIncludeLoyalty = false; //nation.owner === userId;
-
-        return {
-          ...rest,
-          cachedBorderSet: null,
-          territoryDeltaForClient: nation.territoryDeltaForClient || {
-            add: { x: [], y: [] },
-            sub: { x: [], y: [] },
-          },
-          // Only include loyalty data if this is the nation owner
-          ...(shouldIncludeLoyalty
-            ? { territoryLoyalty: nation.territoryLoyalty || {} }
-            : {}),
-        };
-      }
-    };
-
-    const filteredGameState = {
-      ...gameRoom.gameState,
-      nations: (gameRoom.gameState.nations || []).map(filterNation),
-    };
-
-    res.json({
-      tickCount: gameRoom.tickCount,
-      roomName: gameRoom.roomName,
-      roomCreator: gameRoom.creator.userId,
-      gameState: filteredGameState,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// -------------------------------------------------------------------
-// POST /api/gamerooms/:id/foundNation - Found a nation for a player
-// (Automatically builds a capital city on the founding cell)
-// -------------------------------------------------------------------
-router.post("/:id/foundNation", async (req, res, next) => {
-  try {
-    const { userId, password, x, y } = req.body;
-    console.log("[FOUND] Attempt:", { userId, x, y });
-
-    // 1. Load current state
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom) {
-      return res.status(404).json({ error: "Game room not found" });
-    }
-
-    // 2. Validate
-    const player = gameRoom.players.find(
-      (p) => p.userId === userId && p.password === password
-    );
-    if (!player) {
-      return res.status(403).json({ error: "Invalid credentials" });
-    }
-
-    // Initialize gameState if needed
-    if (!gameRoom.gameState) {
-      gameRoom.gameState = { nations: [] };
-    }
-
-    // 3. Check for existing nation
-
-    gameRoom.gameState.nations = gameRoom.gameState.nations.filter(
-      (nation) => nation.owner !== userId || nation.status !== "defeated"
-    );
-
-    if (gameRoom.gameState.nations.some((n) => n.owner === userId)) {
-      return res
-        .status(400)
-        .json({ error: "Nation already exists for this user" });
-    }
-
-    // 4. Create new nation
-    const newNation = {
-      owner: userId,
-      status: "active",
-      startingCell: { x, y },
-      territory: { x: [x], y: [y] },
-      territoryLoyalty: { [`${x},${y}`]: LOYALTY.INITIAL },
-      population: 100,
-      nationalWill: 50,
-      resources: {
-        food: 1000,
-        wood: 500,
-        stone: 300,
-        bronze: 0,
-        steel: 0,
-        horses: 0,
-      },
-      cities: [
-        {
-          name: "Capital",
-          x,
-          y,
-          population: 50,
-          type: "capital",
-        },
-      ],
-      structures: [],
-      auto_city: false,
-      expansionTarget: null,
-      attackTarget: null,
-    };
-
-    // 5. Save directly to DB
-    await GameRoom.findByIdAndUpdate(req.params.id, {
-      $push: { "gameState.nations": newNation },
-    });
-
-    res
-      .status(201)
-      .json({ message: "Nation founded successfully", nation: newNation });
-  } catch (error) {
-    console.error("[FOUND] Error:", error);
-    next(error);
-  }
-});
-
-// -------------------------------------------------------------------
 // POST /api/gamerooms/:id/buildCity - Build a new city for a nation
 // -------------------------------------------------------------------
 router.post("/:id/buildCity", async (req, res, next) => {
-  console.log("[ROUTE] Build city request:", req.body);
   try {
     const { userId, password, x, y, cityType, cityName } = req.body;
     if (!userId || !password || x == null || y == null || !cityType) {
-      return res
-        .status(400)
-        .json({ error: "userId, password, x, y, and cityType are required" });
+      return res.status(400).json({
+        error: "userId, password, x, y, and cityType are required",
+      });
     }
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
+
+    // Verify credentials in MongoDB
+    const gameRoom = await GameRoom.findById(req.params.id)
+      .select("players")
+      .lean();
+    if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
+    }
 
-    // Find the player's nation.
-    const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
-    if (!nation)
-      return res.status(404).json({ error: "Nation not found for this user" });
+    const player = gameRoom.players.find(
+      (p) => p.userId === userId && p.password === password
+    );
+    if (!player) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
 
-    // Check that the new city's cell is within the nation's territory.
-    let inTerritory = false;
-    if (nation.territory && nation.territory.x && nation.territory.y) {
-      for (let i = 0; i < nation.territory.x.length; i++) {
-        if (nation.territory.x[i] === x && nation.territory.y[i] === y) {
-          inTerritory = true;
-          break;
+    // Update game state in memory
+    const updated = gameStateManager.updateGameState(req.params.id, (state) => {
+      const mapData = gameStateManager.getMapData(req.params.id);
+      const nation = state.gameState.nations.find((n) => n.owner === userId);
+
+      if (!nation) {
+        throw new Error("Nation not found for this user");
+      }
+
+      // Check territory ownership
+      const inTerritory = nation.territory.x.some(
+        (tx, i) => tx === x && nation.territory.y[i] === y
+      );
+      if (!inTerritory) {
+        throw new Error("Selected cell is not within your territory");
+      }
+
+      // Check city distance
+      const tooClose = nation.cities?.some(
+        (city) => Math.abs(city.x - x) + Math.abs(city.y - y) < 5
+      );
+      if (
+        (tooClose && cityType === "town") ||
+        cityType === "capital" ||
+        cityType === "fort"
+      ) {
+        throw new Error("Cannot build city within 5 cells of an existing city");
+      }
+
+      // Check resource requirements
+      const resourceStructureMapping = {
+        farm: "food",
+        "lumber mill": "wood",
+        mine: ["stone", "bronze", "steel"],
+        stable: "horses",
+      };
+
+      let producedResource = null;
+      if (resourceStructureMapping[cityType]) {
+        const cell = mapData[y]?.[x];
+        if (!cell) {
+          throw new Error("Invalid map cell");
+        }
+
+        const required = resourceStructureMapping[cityType];
+        const validResource = Array.isArray(required)
+          ? cell.resources.some((r) => required.includes(r))
+          : cell.resources.includes(required);
+
+        if (!validResource) {
+          throw new Error(
+            `Cannot build ${cityType} on this tile. Required resource not found.`
+          );
+        }
+
+        producedResource = cell.resources[0];
+
+        const alreadyBuilt = nation.cities?.some(
+          (city) =>
+            city.x === x && city.y === y && resourceStructureMapping[city.type]
+        );
+        if (alreadyBuilt) {
+          throw new Error("A resource structure is already built on this tile");
         }
       }
-    }
-    if (!inTerritory) {
-      return res
-        .status(400)
-        .json({ error: "Selected cell is not within your territory" });
-    }
 
-    // Ensure no city exists within 5 cells (Manhattan distance).
-    const tooClose = nation.cities?.some(
-      (city) => Math.abs(city.x - x) + Math.abs(city.y - y) < 5
-    );
-    if (
-      (tooClose && cityType === "town") ||
-      cityType === "capital" ||
-      cityType === "fort"
-    )
-      return res.status(400).json({
-        error: "Cannot build city within 5 cells of an existing city",
-      });
-
-    /* ---------------------------------------------
-       New Resource Structure Placement Checks
-       ---------------------------------------------
-       Only allow resource structures (i.e. types other than capital, town, fort)
-       to be built on a tile that has the required resource.
-    */
-    // Define which structure types are resource structures and their required resource(s)
-    const resourceStructureMapping = {
-      farm: "food",
-      "lumber mill": "wood",
-      mine: ["stone", "bronze", "steel"],
-      stable: "horses",
-    };
-    let producedResource = null;
-    if (resourceStructureMapping[cityType]) {
-      const mapData = await gameLoop.getMapData(req.params.id);
-      const cell = mapData[y] && mapData[y][x];
-      if (!cell) {
-        return res.status(400).json({ error: "Invalid map cell" });
+      // Check build costs
+      const cost = config.buildCosts.structures[cityType];
+      if (!cost) {
+        throw new Error("Invalid city type specified");
       }
 
-      // Determine the required resource(s) for this structure.
-      const required = resourceStructureMapping[cityType];
-      let validResource = false;
-      if (Array.isArray(required)) {
-        // For example, a mine is allowed on stone, bronze, or steel tiles.
-        validResource = cell.resources.some((r) => required.includes(r));
-      } else {
-        validResource = cell.resources.includes(required);
+      for (const resource in cost) {
+        if ((nation.resources[resource] || 0) < cost[resource]) {
+          throw new Error("Insufficient resources to build this city");
+        }
       }
-      if (!validResource) {
-        return res.status(400).json({
-          error: `Cannot build ${cityType} on this tile. Required resource not found.`,
-        });
+
+      // Deduct resources
+      for (const resource in cost) {
+        nation.resources[resource] -= cost[resource];
       }
-      producedResource = cell.resources[0];
-      // Ensure that there is not already a resource structure built on this tile.
-      const alreadyBuilt = nation.cities?.some(
-        (city) =>
-          city.x === x && city.y === y && resourceStructureMapping[city.type] // true if this city is a resource structure
-      );
-      if (alreadyBuilt) {
-        return res.status(400).json({
-          error: `A resource structure is already built on this tile.`,
-        });
-      }
+
+      // Create new city
+      const newCity = {
+        name:
+          cityName ||
+          `${cityType.charAt(0).toUpperCase() + cityType.slice(1)} ${
+            nation.cities.length + 1
+          }`,
+        x,
+        y,
+        population: 50,
+        type: cityType,
+        resource: producedResource,
+      };
+
+      if (!nation.cities) nation.cities = [];
+      nation.cities.push(newCity);
+
+      return state;
+    });
+
+    if (!updated) {
+      return res.status(400).json({ error: "Failed to update game state" });
     }
 
-    // -------------------------------------------------
-    // Continue with the normal build cost checks and deduction.
-    // Get city build cost from config.
-    const CITY_BUILD_COSTS = config.buildCosts.structures;
-    const cost = CITY_BUILD_COSTS[cityType];
-    if (!cost)
-      return res.status(400).json({ error: "Invalid city type specified" });
+    const nation = updated.gameState.nations.find((n) => n.owner === userId);
+    const newCity = nation.cities[nation.cities.length - 1];
 
-    // Check if the nation has enough resources.
-    let canBuild = true;
-    for (const resource in cost) {
-      if ((nation.resources[resource] || 0) < cost[resource]) {
-        canBuild = false;
-        break;
-      }
-    }
-    if (!canBuild)
-      return res
-        .status(400)
-        .json({ error: "Insufficient resources to build this city" });
-
-    // Deduct the resource costs.
-    for (const resource in cost) {
-      nation.resources[resource] -= cost[resource];
-    }
-    console.log("city build with resource ", producedResource);
-    // Create the new city/structure.
-    const newCity = {
-      name:
-        cityName ||
-        `${cityType.charAt(0).toUpperCase() + cityType.slice(1)} ${
-          nation.cities.length + 1
-        }`,
-      x,
-      y,
-      population: 50, // Default starting population; adjust if needed.
-      type: cityType,
-      resource: producedResource,
-    };
-    nation.cities.push(newCity);
-
-    // Save updated game state.
-    await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $push: { "gameState.nations.$.cities": newCity },
-        $set: { "gameState.nations.$.resources": nation.resources },
-      }
-    );
-
-    res.status(201).json({ message: "City built successfully", city: newCity });
-  } catch (error) {
-    next(error);
-  }
-});
-// -------------------------------------------------------------------
-// POST /api/gamerooms/:id/setExpansionTarget - Set an expansion target for a nation
-// -------------------------------------------------------------------
-router.post("/:id/setExpansionTarget", async (req, res, next) => {
-  try {
-    const { userId, password, target } = req.body;
-    if (
-      !userId ||
-      !password ||
-      !target ||
-      target.x == null ||
-      target.y == null
-    ) {
-      return res.status(400).json({
-        error: "userId, password, and target (with x and y) are required",
-      });
-    }
-
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-
-    const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
-    if (!nation)
-      return res.status(404).json({ error: "Nation not found for this user" });
-
-    // Retrieve the map and its chunks to build the map data array
-    const MapModel = mongoose.model("Map");
-    const map = await MapModel.findById(gameRoom.map).lean();
-    if (!map)
-      return res
-        .status(404)
-        .json({ error: "Map not found for this game room" });
-
-    const MapChunk = mongoose.model("MapChunk");
-    const chunks = await MapChunk.find({ map: map._id }).lean();
-
-    // Build the mapData 2D array from the chunks.
-    // (Assumes that map.height and map.width are defined)
-    const mapData = Array.from({ length: map.height }, () =>
-      new Array(map.width).fill(null)
-    );
-    for (const chunk of chunks) {
-      const startRow = chunk.startRow;
-      chunk.rows.forEach((row, index) => {
-        // Place each row at the correct global row index.
-        mapData[startRow + index] = row;
-      });
-    }
-
-    // Now pass mapData as the third argument.
-    const result = setExpansionTarget(nation, target, mapData);
-    if (!result.success) {
-      return res.status(400).json({ error: result.message });
-    }
-
-    // Save updated game state.
-    await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $set: { "gameState.nations.$.expansionTarget": nation.expansionTarget },
-      }
-    );
-
-    res.json({
-      message: "Expansion target set successfully",
-      expansionTarget: nation.expansionTarget,
+    res.status(201).json({
+      message: "City built successfully",
+      city: newCity,
     });
   } catch (error) {
+    if (
+      error.message.includes("Cannot build") ||
+      error.message.includes("Insufficient") ||
+      error.message.includes("Invalid") ||
+      error.message.includes("within")
+    ) {
+      return res.status(400).json({ error: error.message });
+    }
     next(error);
   }
 });
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms/:id/raiseArmy - Raise an army by recruiting men.
+// POST /api/gamerooms/:id/raiseArmy - Raise an army
 // -------------------------------------------------------------------
 router.post("/:id/raiseArmy", async (req, res, next) => {
   try {
     const { userId, password, type } = req.body;
     if (!userId || !password || !type) {
-      return res
-        .status(400)
-        .json({ error: "userId, password, and type are required" });
-    }
-
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-
-    // Find the player's nation
-    const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
-    if (!nation)
-      return res.status(404).json({ error: "Nation not found for this user" });
-
-    // Retrieve the army stats from config using the provided type.
-    const armyStats = config.armies.stats[type];
-    if (!armyStats) {
-      return res
-        .status(400)
-        .json({ error: `Army type '${type}' is not supported` });
-    }
-
-    // Check if the nation has enough population.
-    // Use armyStats.populationCost if provided, otherwise default to 1000.
-    const requiredPopulation = armyStats.populationCost || 1000;
-    if (nation.population < requiredPopulation) {
       return res.status(400).json({
-        error: `Not enough population to raise an army of type '${type}'. Required population: ${requiredPopulation}`,
+        error: "userId, password, and type are required",
       });
     }
 
-    // Check if the nation has enough resources.
-    // armyStats.cost is expected to be an object like { gold: 2, iron: 1 }
-    const armyCost = config.buildCosts.armies[type];
-    for (const resource in armyCost) {
-      const requiredAmount = armyCost[resource];
-      if ((nation.resources[resource] || 0) < requiredAmount) {
-        return res.status(400).json({
-          error: `Insufficient ${resource} to raise army of type '${type}'`,
-        });
-      }
+    // Verify credentials in MongoDB
+    const gameRoom = await GameRoom.findById(req.params.id)
+      .select("players")
+      .lean();
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
     }
 
-    // Deduct the resource costs and subtract the required population from the nation.
-    for (const resource in armyCost) {
-      const requiredAmount = armyCost[resource];
-      nation.resources[resource] -= requiredAmount;
-    }
-    nation.population -= requiredPopulation;
-
-    // Determine the starting position for the army.
-    let startPos = null;
-    if (nation.cities && nation.cities.length > 0) {
-      const capital =
-        nation.cities.find((city) => city.type === "capital") ||
-        nation.cities[0];
-      startPos = { x: capital.x, y: capital.y };
-    } else if (nation.startingCell) {
-      startPos = { ...nation.startingCell };
-    } else {
-      return res
-        .status(400)
-        .json({ error: "No valid starting position for the army" });
-    }
-
-    // Create the new army object using the stats from the config.
-    const newArmy = {
-      id: new mongoose.Types.ObjectId().toString(), // unique identifier for the army
-      type,
-      speed: armyStats.speed,
-      power: armyStats.power,
-      position: startPos,
-      attackTarget: null, // will be set later via setAttackTarget
-    };
-
-    // Ensure the nation has an armies array, then add the new army.
-    if (!nation.armies) {
-      nation.armies = [];
-    }
-    nation.armies.push(newArmy);
-
-    // Mark gameState as modified and update the worker state.
-    await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $push: { "gameState.nations.$.armies": newArmy },
-        $set: {
-          "gameState.nations.$.resources": nation.resources,
-          "gameState.nations.$.population": nation.population,
-        },
-      }
+    const player = gameRoom.players.find(
+      (p) => p.userId === userId && p.password === password
     );
+    if (!player) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+
+    // Update game state in memory
+    const updated = gameStateManager.updateGameState(req.params.id, (state) => {
+      const nation = state.gameState.nations.find((n) => n.owner === userId);
+      if (!nation) {
+        throw new Error("Nation not found for this user");
+      }
+
+      // Validate army type and stats
+      const armyStats = config.armies.stats[type];
+      if (!armyStats) {
+        throw new Error(`Army type '${type}' is not supported`);
+      }
+
+      // Check population requirement
+      const requiredPopulation = armyStats.populationCost || 1000;
+      if (nation.population < requiredPopulation) {
+        throw new Error(
+          `Not enough population to raise an army of type '${type}'. ` +
+            `Required population: ${requiredPopulation}`
+        );
+      }
+
+      // Check resource costs
+      const armyCost = config.buildCosts.armies[type];
+      for (const resource in armyCost) {
+        const requiredAmount = armyCost[resource];
+        if ((nation.resources[resource] || 0) < requiredAmount) {
+          throw new Error(
+            `Insufficient ${resource} to raise army of type '${type}'`
+          );
+        }
+      }
+
+      // Deduct costs
+      for (const resource in armyCost) {
+        nation.resources[resource] -= armyCost[resource];
+      }
+      nation.population -= requiredPopulation;
+
+      // Determine starting position
+      let startPos = null;
+      if (nation.cities?.length > 0) {
+        const capital =
+          nation.cities.find((city) => city.type === "capital") ||
+          nation.cities[0];
+        startPos = { x: capital.x, y: capital.y };
+      } else if (nation.startingCell) {
+        startPos = { ...nation.startingCell };
+      } else {
+        throw new Error("No valid starting position for the army");
+      }
+
+      // Create new army
+      const newArmy = {
+        id: new mongoose.Types.ObjectId().toString(),
+        type,
+        speed: armyStats.speed,
+        power: armyStats.power,
+        position: startPos,
+        attackTarget: null,
+      };
+
+      // Add to nation's armies
+      if (!nation.armies) {
+        nation.armies = [];
+      }
+      nation.armies.push(newArmy);
+
+      return state;
+    });
+
+    if (!updated) {
+      return res.status(400).json({ error: "Failed to update game state" });
+    }
+
+    const nation = updated.gameState.nations.find((n) => n.owner === userId);
+    const newArmy = nation.armies[nation.armies.length - 1];
 
     res.status(201).json({
       message: "Army raised successfully",
       army: newArmy,
     });
   } catch (error) {
+    if (
+      error.message.includes("Insufficient") ||
+      error.message.includes("Not enough") ||
+      error.message.includes("No valid") ||
+      error.message.includes("not supported")
+    ) {
+      return res.status(400).json({ error: error.message });
+    }
     next(error);
   }
 });
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms/:id/setAttackTarget - Set an attack target for a specific army.
+// POST /api/gamerooms/:id/setAttackTarget - Set army attack target
 // -------------------------------------------------------------------
 router.post("/:id/setAttackTarget", async (req, res, next) => {
   try {
@@ -1110,55 +974,63 @@ router.post("/:id/setAttackTarget", async (req, res, next) => {
           "userId, password, armyId, and target (with x and y) are required",
       });
     }
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
 
-    // Find the player's nation
-    const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
-    if (!nation)
-      return res.status(404).json({ error: "Nation not found for this user" });
-
-    // Ensure that the nation has armies and find the specific army by its id.
-    if (!nation.armies || nation.armies.length === 0) {
-      return res.status(400).json({ error: "No armies found for this nation" });
+    // Verify coordinates
+    if (target.x == null || target.y == null) {
+      return res.status(400).json({
+        error: "Invalid target coordinates provided",
+      });
     }
-    // Compare army ids as strings.
+
+    // Verify credentials in MongoDB
+    const gameRoom = await GameRoom.findById(req.params.id)
+      .select("players")
+      .lean();
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Game room not found" });
+    }
+
+    const player = gameRoom.players.find(
+      (p) => p.userId === userId && p.password === password
+    );
+    if (!player) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+
+    // Update game state in memory
+    const updated = gameStateManager.updateGameState(req.params.id, (state) => {
+      const nation = state.gameState.nations.find((n) => n.owner === userId);
+      if (!nation) {
+        throw new Error("Nation not found for this user");
+      }
+
+      if (!nation.armies || nation.armies.length === 0) {
+        throw new Error("No armies found for this nation");
+      }
+
+      const army = nation.armies.find(
+        (a) => a.id.toString() === armyId.toString()
+      );
+      if (!army) {
+        throw new Error("Army not found");
+      }
+
+      // Set attack target
+      army.attackTarget = {
+        current: { ...army.position },
+        final: { x: target.x, y: target.y },
+      };
+
+      return state;
+    });
+
+    if (!updated) {
+      return res.status(400).json({ error: "Failed to update game state" });
+    }
+
+    const nation = updated.gameState.nations.find((n) => n.owner === userId);
     const army = nation.armies.find(
       (a) => a.id.toString() === armyId.toString()
-    );
-    if (!army) {
-      return res.status(404).json({ error: "Army not found" });
-    }
-    if (target.x == null || target.y == null) {
-      return res
-        .status(400)
-        .json({ error: "Invalid target coordinates provided" });
-    }
-
-    // Set the attack target on the army.
-    // Store both the current position and the final target.
-    army.attackTarget = {
-      current: { ...army.position },
-      final: { x: target.x, y: target.y },
-      // You can add extra fields here (e.g., movement speed, etc.) if needed.
-    };
-
-    await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-        "gameState.nations.armies.id": armyId,
-      },
-      {
-        $set: {
-          "gameState.nations.$[nation].armies.$[army].attackTarget":
-            army.attackTarget,
-        },
-      },
-      {
-        arrayFilters: [{ "nation.owner": userId }, { "army.id": armyId }],
-      }
     );
 
     res.json({
@@ -1166,6 +1038,13 @@ router.post("/:id/setAttackTarget", async (req, res, next) => {
       army,
     });
   } catch (error) {
+    if (
+      error.message === "Nation not found for this user" ||
+      error.message === "No armies found for this nation" ||
+      error.message === "Army not found"
+    ) {
+      return res.status(404).json({ error: error.message });
+    }
     next(error);
   }
 });
