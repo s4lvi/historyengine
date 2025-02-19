@@ -314,7 +314,6 @@ export function expandTerritory(nation, mapData, allNations) {
       if (d < currentMinDistance) currentMinDistance = d;
     });
   }
-  s;
   const scoredCells = validAdjacentCells
     .map((adj) => {
       if (adj.cell.biome === "OCEAN") return null;
