@@ -47,7 +47,7 @@ const LandingPage = () => {
           <FaDiscord />
         </a>
         <p
-          className="cursor-pointer hover:text-gray-300"
+          className="cursor-pointer hover:text-gray-300 w-32"
           onClick={() => navigate("/how-to-play")}
         >
           How to play
@@ -124,7 +124,7 @@ const HowToPlay = () => {
         </div>
       </main>
 
-      <footer className="w-full bg-gray-900 text-center p-4 text-white flex flex-row justify-between px-12">
+      <footer className="w-full bg-gray-900 text-center p-4 text-white flex flex-row justify-between items-center px-12">
         <p>&copy; 2025 annexi.io</p>
         <p
           className="cursor-pointer hover:text-gray-300"
@@ -133,10 +133,10 @@ const HowToPlay = () => {
           <FaDiscord />
         </p>
         <p
-          className="cursor-pointer hover:text-gray-300"
-          onClick={() => navigate("/how-to-play")}
+          className="cursor-pointer hover:text-gray-300 w-32"
+          onClick={() => navigate("/rooms")}
         >
-          How to play
+          Back to rooms.
         </p>
       </footer>
     </div>
