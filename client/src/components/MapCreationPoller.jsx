@@ -16,7 +16,7 @@ const MapCreationPoller = ({
     const checkMapStatus = async () => {
       try {
         const response = await fetch(
-          `${process.env.REACT_APP_API_URL}api/maps/${mapId}/metadata`
+          `${process.env.REACT_APP_API_URL}api/maps/${mapId}`
         );
 
         if (response.status === 404) {

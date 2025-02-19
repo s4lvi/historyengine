@@ -266,7 +266,7 @@ const GameRoomList = () => {
 
       // Create the map first using the maps endpoint
       const mapResponse = await fetch(
-        `${process.env.REACT_APP_API_URL}api/maps`,
+        `${process.env.REACT_APP_API_URL}api/maps/gamemap`,
         {
           method: "POST",
           headers: {
@@ -286,12 +286,12 @@ const GameRoomList = () => {
         throw new Error("Failed to create map");
       }
 
-      const newMap = await mapResponse.json();
+      const newMapId = await mapResponse.json();
 
       // Set polling state to wait for map creation
       setMapGenerationState({
         isPolling: true,
-        mapId: newMap._id,
+        mapId: newMapId,
         formData: formData,
       });
 

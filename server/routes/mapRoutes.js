@@ -117,6 +117,74 @@ router.post("/", async (req, res, next) => {
   }
 });
 
+router.post("/gamemap", async (req, res, next) => {
+  try {
+    let { name, width, height, erosion_passes, num_blobs, seed } = req.body;
+
+    // Validate dimensions
+    if (!width || !height) {
+      const error = new Error("Width and height must be provided");
+      error.status = 400;
+      throw error;
+    }
+    width = Number(width);
+    height = Number(height);
+    if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
+      const error = new Error("Width and height must be positive numbers");
+      error.status = 400;
+      throw error;
+    }
+
+    console.log("Starting map generation with dimensions:", width, height);
+    if (!erosion_passes) erosion_passes = 4;
+    if (!num_blobs) num_blobs = 3;
+    if (!seed) seed = Math.random();
+
+    // Offload the heavy map generation to a worker thread
+    const mapData = await runMapGenerationWorker({
+      width,
+      height,
+      erosion_passes,
+      num_blobs,
+      seed,
+    });
+    console.log("Map generated successfully in worker thread");
+
+    // Save map metadata (without the huge mapData)
+    const newMap = new Map({
+      name: name || "Untitled Map",
+      width,
+      height,
+    });
+
+    res.status(201).json(newMap._id);
+    console.log("Saving new map metadata to database");
+    await newMap.save();
+    console.log("Map metadata saved successfully");
+
+    // Define the chunk size (number of rows per chunk)
+    const CHUNK_SIZE = 50;
+    const chunks = [];
+    for (let i = 0; i < mapData.length; i += CHUNK_SIZE) {
+      const chunkRows = mapData.slice(i, i + CHUNK_SIZE);
+      chunks.push({
+        map: newMap._id,
+        startRow: i,
+        endRow: i + chunkRows.length - 1,
+        rows: chunkRows,
+      });
+    }
+    console.log(`Saving ${chunks.length} chunks to the database`);
+    await MapChunk.insertMany(chunks);
+    console.log("All chunks saved successfully");
+
+    console.log("Response sent successfully");
+  } catch (error) {
+    console.error("Error in POST /api/maps:", error);
+    next(error);
+  }
+});
+
 router.get("/", async (req, res, next) => {
   try {
     const maps = await Map.find({
