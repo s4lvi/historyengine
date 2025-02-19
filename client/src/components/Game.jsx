@@ -686,18 +686,15 @@ const Game = () => {
   // ----------------------------
   const getNationColor = (nation) => {
     const palette = [
-      "#FF5733",
-      "#33FF57",
-      "#3357FF",
-      "#FF33A8",
-      "#A833FF",
-      "#33FFF0",
-      "#FFC133",
-      "#FF3333",
-      "#33FF33",
-      "#3333FF",
+      "#ff0008",
+      "#ff0084",
+      "#ff00f7",
+      "#a200ff",
+      "#d4ff00",
+      "#ffc400",
+      "#ff6200",
     ];
-    if (nation.owner === userId) return "#FFFF00";
+    if (nation.owner === userId) return "#0000ff";
     const index = gameState?.gameState?.nations?.findIndex(
       (n) => n.owner === nation.owner
     );
