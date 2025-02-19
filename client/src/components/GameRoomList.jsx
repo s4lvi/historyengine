@@ -304,6 +304,7 @@ const GameRoomList = () => {
 
   const handleMapReady = async (mapData) => {
     try {
+      console.log("Called map ready", mapData);
       // Create the game room now that the map is ready
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}api/gamerooms`,

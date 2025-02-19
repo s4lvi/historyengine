@@ -13,6 +13,11 @@ const mapSchema = new mongoose.Schema({
   width: { type: Number, required: true },
   height: { type: Number, required: true },
   createdAt: { type: Date, default: Date.now },
+  status: {
+    type: String,
+    enum: ["generating", "ready", "error"],
+    default: "generating",
+  },
 });
 const Map = mongoose.model("Map", mapSchema);
 
@@ -117,6 +122,29 @@ router.post("/", async (req, res, next) => {
   }
 });
 
+router.get("/:id/status", async (req, res, next) => {
+  try {
+    const map = await Map.findById(req.params.id)
+      .select("status width height")
+      .lean();
+
+    if (!map) {
+      return res.status(404).json({ error: "Map not found" });
+    }
+
+    // Return both status and dimensions so frontend can prepare
+    res.json({
+      status: map.status,
+      width: map.width,
+      height: map.height,
+      ready: map.status === "ready",
+    });
+  } catch (error) {
+    console.error("Error checking map status:", error);
+    next(error);
+  }
+});
+
 router.post("/gamemap", async (req, res, next) => {
   try {
     let { name, width, height, erosion_passes, num_blobs, seed } = req.body;
@@ -135,52 +163,71 @@ router.post("/gamemap", async (req, res, next) => {
       throw error;
     }
 
-    console.log("Starting map generation with dimensions:", width, height);
-    if (!erosion_passes) erosion_passes = 4;
-    if (!num_blobs) num_blobs = 3;
-    if (!seed) seed = Math.random();
-
-    // Offload the heavy map generation to a worker thread
-    const mapData = await runMapGenerationWorker({
-      width,
-      height,
-      erosion_passes,
-      num_blobs,
-      seed,
-    });
-    console.log("Map generated successfully in worker thread");
-
-    // Save map metadata (without the huge mapData)
+    // Save map metadata first
     const newMap = new Map({
       name: name || "Untitled Map",
       width,
       height,
+      status: "generating",
     });
 
-    console.log("Saving new map metadata to database");
-    newMap.save();
+    await newMap.save();
     console.log("Map metadata saved successfully");
 
-    // Define the chunk size (number of rows per chunk)
-    const CHUNK_SIZE = 50;
-    const chunks = [];
-    for (let i = 0; i < mapData.length; i += CHUNK_SIZE) {
-      const chunkRows = mapData.slice(i, i + CHUNK_SIZE);
-      chunks.push({
-        map: newMap._id,
-        startRow: i,
-        endRow: i + chunkRows.length - 1,
-        rows: chunkRows,
-      });
-    }
-    console.log(`Saving ${chunks.length} chunks to the database`);
-    MapChunk.insertMany(chunks);
-    console.log("All chunks submitted for saving");
-
+    // Send response immediately with the map ID
     res.status(201).json(newMap._id);
     console.log("Response sent successfully");
+
+    // Continue with map generation asynchronously
+    (async () => {
+      try {
+        console.log(
+          "Starting async map generation with dimensions:",
+          width,
+          height
+        );
+        if (!erosion_passes) erosion_passes = 4;
+        if (!num_blobs) num_blobs = 3;
+        if (!seed) seed = Math.random();
+
+        const mapData = await runMapGenerationWorker({
+          width,
+          height,
+          erosion_passes,
+          num_blobs,
+          seed,
+        });
+        console.log("Map generated successfully in worker thread");
+
+        // Define the chunk size and save chunks
+        const CHUNK_SIZE = 50;
+        const chunks = [];
+        for (let i = 0; i < mapData.length; i += CHUNK_SIZE) {
+          const chunkRows = mapData.slice(i, i + CHUNK_SIZE);
+          chunks.push({
+            map: newMap._id,
+            startRow: i,
+            endRow: i + chunkRows.length - 1,
+            rows: chunkRows,
+          });
+        }
+
+        console.log(`Saving ${chunks.length} chunks to the database`);
+        await MapChunk.insertMany(chunks);
+        console.log("All chunks saved successfully");
+
+        // Update map status to ready after chunks are saved
+        await Map.findByIdAndUpdate(newMap._id, { status: "ready" });
+        console.log("Map status updated to ready");
+      } catch (error) {
+        console.error("Error in async map generation:", error);
+        // Update map status to error if anything fails
+        await Map.findByIdAndUpdate(newMap._id, { status: "error" });
+        console.error("Map status updated to error due to:", error.message);
+      }
+    })();
   } catch (error) {
-    console.error("Error in POST /api/maps:", error);
+    console.error("Error in POST /api/maps/gamemap:", error);
     next(error);
   }
 });

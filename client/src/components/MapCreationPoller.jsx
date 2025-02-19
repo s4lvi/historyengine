@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 const MapCreationPoller = ({
   mapId,
@@ -8,57 +8,96 @@ const MapCreationPoller = ({
   pollingInterval = 5000,
 }) => {
   const [attempts, setAttempts] = useState(0);
+  const [status, setStatus] = useState("generating");
   const maxAttempts = 24; // 2 minutes maximum waiting time
+  const onMapReadyRef = useRef(onMapReady);
+  const hasCompletedRef = useRef(false);
 
   useEffect(() => {
-    let timeoutId;
+    onMapReadyRef.current = onMapReady;
+  }, [onMapReady]);
+
+  useEffect(() => {
+    let mounted = true;
+    let timeoutId = null;
 
     const checkMapStatus = async () => {
       try {
+        // Don't proceed if we've already completed
+        if (hasCompletedRef.current || !mounted) return;
+
         const response = await fetch(
-          `${process.env.REACT_APP_API_URL}api/maps/${mapId}`
+          `${process.env.REACT_APP_API_URL}api/maps/${mapId}/status`
         );
 
-        if (response.status === 404) {
-          // Map not ready yet, continue polling
+        if (!mounted) return;
+
+        if (!response.ok) {
+          throw new Error("Failed to fetch map status");
+        }
+
+        const data = await response.json();
+        setStatus(data.status);
+
+        if (data.status === "error") {
+          onError(new Error("Map generation failed"));
+          return;
+        }
+
+        if (data.ready === false) {
           setAttempts((prev) => {
             if (prev >= maxAttempts) {
               onError(new Error("Map generation timed out after 2 minutes"));
               return prev;
             }
-            timeoutId = setTimeout(checkMapStatus, pollingInterval);
+            if (mounted && !hasCompletedRef.current) {
+              timeoutId = setTimeout(checkMapStatus, pollingInterval);
+            }
             return prev + 1;
           });
           return;
         }
 
-        if (response.ok) {
-          const mapData = await response.json();
-          onMapReady(mapData);
+        if (data.ready && !hasCompletedRef.current) {
+          hasCompletedRef.current = true;
+          onMapReadyRef.current(data);
           return;
         }
-
-        // If we get here, it's an unexpected error
-        throw new Error("Unexpected error checking map status");
       } catch (error) {
-        onError(error);
+        if (mounted) {
+          onError(error);
+        }
       }
     };
 
     checkMapStatus();
 
     return () => {
+      mounted = false;
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
     };
-  }, [mapId, onMapReady, onError, pollingInterval]);
+  }, [mapId, onError, pollingInterval, maxAttempts]);
+
+  const getStatusMessage = () => {
+    switch (status) {
+      case "generating":
+        return "Generating map...";
+      case "error":
+        return "Error generating map";
+      case "ready":
+        return "Map generated successfully!";
+      default:
+        return "Checking map status...";
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center">
       <div className="bg-gray-800 p-6 rounded-lg shadow-xl max-w-md w-full border border-gray-700">
         <h3 className="text-xl font-semibold mb-4 text-white">
-          Generating Map
+          {getStatusMessage()}
         </h3>
 
         <div className="mb-6">
@@ -70,7 +109,13 @@ const MapCreationPoller = ({
           </div>
           <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
             <div
-              className="bg-blue-600 h-full rounded-full transition-all duration-500"
+              className={`h-full rounded-full transition-all duration-500 ${
+                status === "error"
+                  ? "bg-red-600"
+                  : status === "ready"
+                  ? "bg-green-600"
+                  : "bg-blue-600"
+              }`}
               style={{
                 width: `${Math.min((attempts / maxAttempts) * 100, 100)}%`,
               }}
@@ -78,7 +123,15 @@ const MapCreationPoller = ({
           </div>
         </div>
 
-        <div className="bg-gray-700 border-l-4 border-blue-500 p-4 rounded">
+        <div
+          className={`border-l-4 p-4 rounded ${
+            status === "error"
+              ? "bg-red-900/20 border-red-500"
+              : status === "ready"
+              ? "bg-green-900/20 border-green-500"
+              : "bg-gray-700 border-blue-500"
+          }`}
+        >
           <div className="flex">
             <div className="ml-3">
               <p className="text-sm text-gray-300">
@@ -89,13 +142,15 @@ const MapCreationPoller = ({
           </div>
         </div>
 
-        <div className="animate-pulse mt-4 flex justify-center">
-          <div className="flex items-center space-x-2 text-blue-400">
-            <div className="w-2 h-2 bg-blue-400 rounded-full"></div>
-            <div className="w-2 h-2 bg-blue-400 rounded-full"></div>
-            <div className="w-2 h-2 bg-blue-400 rounded-full"></div>
+        {status !== "ready" && status !== "error" && (
+          <div className="animate-pulse mt-4 flex justify-center">
+            <div className="flex items-center space-x-2 text-blue-400">
+              <div className="w-2 h-2 bg-blue-400 rounded-full"></div>
+              <div className="w-2 h-2 bg-blue-400 rounded-full"></div>
+              <div className="w-2 h-2 bg-blue-400 rounded-full"></div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
