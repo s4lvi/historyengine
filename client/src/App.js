@@ -5,12 +5,8 @@ import {
   Route,
   useNavigate,
 } from "react-router-dom";
-import WorldMap from "./components/WorldMap";
-import WorldMap3D from "./components/WorldMap3d";
 import Game from "./components/Game";
-import MapList from "./components/MapList";
 import GameRoomList from "./components/GameRoomList";
-import Header from "./components/Header";
 import { ErrorBoundary } from "./components/ErrorHandling";
 
 const LandingPage = () => {

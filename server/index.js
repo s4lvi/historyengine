@@ -13,7 +13,8 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: "https://annexi.io" }));
+app.set("trust proxy", true);
 app.use(express.json());
 
 // -------------------------------------------------------------------

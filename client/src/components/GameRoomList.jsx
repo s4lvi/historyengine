@@ -256,19 +256,6 @@ const GameRoomList = () => {
     }
   };
 
-  const fetchAvailableMaps = async () => {
-    try {
-      const response = await fetch(`${process.env.REACT_APP_API_URL}api/maps`);
-      if (!response.ok) {
-        throw new Error("Failed to fetch available maps");
-      }
-      const data = await response.json();
-      setAvailableMaps(data);
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
   const handleCreateGameRoom = async (formData) => {
     if (isCreating) return;
 
@@ -345,7 +332,6 @@ const GameRoomList = () => {
 
   useEffect(() => {
     fetchGameRooms();
-    fetchAvailableMaps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
