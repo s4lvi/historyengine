@@ -477,15 +477,54 @@ export const determineBiome = (
 // Generates a set of initial large blobs.
 function generateInitialBlobs(numBlobs, width, height) {
   const minDim = Math.min(width, height);
+  const maxDistance = minDim / 6;
   const dist_factor = 0.9;
   const blobs = [];
-  for (let i = 0; i < numBlobs; i++) {
-    blobs.push({
-      x: Math.random() * (width * dist_factor) + width * (1 - dist_factor),
-      y: Math.random() * (height * dist_factor) + height * (1 - dist_factor),
-      radius: Math.random() * (minDim / 6) + minDim / 4,
-    });
+
+  // Place first blob randomly
+  blobs.push({
+    x: Math.random() * (width * dist_factor) + width * (1 - dist_factor),
+    y: Math.random() * (height * dist_factor) + height * (1 - dist_factor),
+    radius: Math.random() * (minDim / 6) + minDim / 4,
+  });
+
+  // Add remaining blobs
+  for (let i = 1; i < numBlobs; i++) {
+    let newBlob;
+    let isValidPosition = false;
+    let attempts = 0;
+    const maxAttempts = 100; // Prevent infinite loops
+
+    while (!isValidPosition && attempts < maxAttempts) {
+      // Generate candidate blob
+      newBlob = {
+        x: Math.random() * (width * dist_factor) + width * (1 - dist_factor),
+        y: Math.random() * (height * dist_factor) + height * (1 - dist_factor),
+        radius: Math.random() * (minDim / 6) + minDim / 4,
+      };
+
+      // Check if the new blob is within maxDistance of at least one existing blob
+      isValidPosition = blobs.some((existingBlob) => {
+        const distance = Math.sqrt(
+          Math.pow(newBlob.x - existingBlob.x, 2) +
+            Math.pow(newBlob.y - existingBlob.y, 2)
+        );
+        return distance <= maxDistance;
+      });
+
+      attempts++;
+    }
+
+    if (attempts === maxAttempts) {
+      console.warn(
+        `Could not find valid position for blob ${i} after ${maxAttempts} attempts`
+      );
+      // Use the last attempted position anyway
+    }
+
+    blobs.push(newBlob);
   }
+
   return blobs;
 }
 
