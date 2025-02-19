@@ -264,19 +264,16 @@ const NationOverlay = ({
   setSelectedArmy,
 }) => {
   const palette = [
-    "#FF5733",
-    "#33FF57",
-    "#3357FF",
-    "#FF33A8",
-    "#A833FF",
-    "#33FFF0",
-    "#FFC133",
-    "#FF3333",
-    "#33FF33",
-    "#3333FF",
+    "#ff0008",
+    "#ff0084",
+    "#ff00f7",
+    "#a200ff",
+    "#d4ff00",
+    "#ffc400",
+    "#ff6200",
   ];
   const nationColor =
-    nation.owner === userId ? "#FFFF00" : palette[nationIndex % palette.length];
+    nation.owner === userId ? "#0000ff" : palette[nationIndex % palette.length];
   const baseColor = string2hex(nationColor);
 
   // Compute the merged territory for this nation.
