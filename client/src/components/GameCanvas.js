@@ -765,6 +765,7 @@ const GameCanvas = ({
         const iconSize = cellSize;
         const centerX = Math.floor(army.position.x) * cellSize + cellSize / 2;
         const centerY = Math.floor(army.position.y) * cellSize + cellSize / 2;
+        const isSelected = selectedArmies.some((sel) => sel.id === army.id);
         overlays.push(
           <BorderedSprite
             key={`army-${nation.owner}-${idx}`}
@@ -773,10 +774,10 @@ const GameCanvas = ({
             y={centerY}
             width={iconSize}
             height={iconSize}
-            borderColor={baseColor}
+            borderColor={isSelected ? "0x00ff00" : baseColor}
             borderWidth={2 * Math.sqrt(scale)}
             interactive={true}
-            isSelected={selectedArmies.some((sel) => sel.id === army.id)}
+            isSelected={isSelected}
             pointerdown={(e) => {
               e.stopPropagation();
               console.log("Army clicked:", army);

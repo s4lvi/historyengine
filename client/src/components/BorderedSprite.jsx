@@ -19,13 +19,7 @@ const BorderedSprite = ({
 }) => {
   // Create the outline filter for the sprite.
   const filters = useMemo(
-    () => [
-      new OutlineFilter(
-        1,
-        isSelected ? "0x00ff00" : borderColor,
-        outlineQuality
-      ),
-    ],
+    () => [new OutlineFilter(1, borderColor, outlineQuality)],
     [borderWidth, borderColor, outlineQuality, isSelected]
   );
 
