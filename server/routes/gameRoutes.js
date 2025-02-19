@@ -167,7 +167,7 @@ router.get("/", async (req, res, next) => {
               height: room.map.height,
             }
           : null,
-        playerCount: (room.players?.length || 0) + 1, // +1 for creator
+        playerCount: (room.nations?.length || 0) + 1, // +1 for creator
         status: gameState ? "active" : "initializing",
       };
     });
