@@ -395,7 +395,7 @@ const GameRoomList = () => {
                   Created: {new Date(room.createdAt).toLocaleDateString()}
                 </p>
                 <p className="text-gray-500 text-sm">
-                  Players: {room.players?.length + 1 || 1}
+                  Players: {room.players?.length}
                 </p>
               </div>
               <div className="flex gap-3">

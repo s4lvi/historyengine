@@ -6,7 +6,7 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
-import { Stage, Container, Graphics } from "@pixi/react";
+import { Stage, Container, Graphics, Text } from "@pixi/react";
 import { string2hex } from "@pixi/utils";
 import BorderedSprite from "./BorderedSprite";
 import { settings } from "@pixi/settings";
@@ -305,22 +305,36 @@ const NationOverlay = ({
         const centerX = city.x * cellSize + cellSize / 2;
         const centerY = city.y * cellSize + cellSize / 2;
         return (
-          <BorderedSprite
-            key={`city-${nation.owner}-${idx}`}
-            texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
-            x={centerX}
-            y={centerY}
-            width={iconSize}
-            height={iconSize}
-            borderColor={baseColor}
-            borderWidth={2 * Math.sqrt(scale)}
-            interactive={true}
-            pointerdown={(e) => {
-              e.stopPropagation();
-              console.log("City clicked:", city);
-            }}
-            baseZ={150 + centerY}
-          />
+          <Graphics zIndex={500 + centerY}>
+            <BorderedSprite
+              key={`city-${nation.owner}-${idx}`}
+              texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
+              x={centerX}
+              y={centerY}
+              width={iconSize}
+              height={iconSize}
+              borderColor={baseColor}
+              borderWidth={2 * Math.sqrt(scale)}
+              interactive={true}
+              pointerdown={(e) => {
+                e.stopPropagation();
+                console.log("City clicked:", city);
+              }}
+              baseZ={500 + centerY}
+            />
+            {city.type === "capital" && (
+              <Text
+                text={`${nation.owner}`}
+                x={centerX}
+                y={centerY + iconSize / 2 + 5}
+                anchor={0.5}
+                style={{
+                  fill: 0xffffff,
+                  fontSize: Math.max(60 / scale, 16),
+                }}
+              />
+            )}
+          </Graphics>
         );
       })}
       {(nation.armies || []).map((army, idx) => {
