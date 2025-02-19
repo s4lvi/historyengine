@@ -157,9 +157,8 @@ router.post("/gamemap", async (req, res, next) => {
       height,
     });
 
-    res.status(201).json(newMap._id);
     console.log("Saving new map metadata to database");
-    await newMap.save();
+    newMap.save();
     console.log("Map metadata saved successfully");
 
     // Define the chunk size (number of rows per chunk)
@@ -175,9 +174,10 @@ router.post("/gamemap", async (req, res, next) => {
       });
     }
     console.log(`Saving ${chunks.length} chunks to the database`);
-    await MapChunk.insertMany(chunks);
-    console.log("All chunks saved successfully");
+    MapChunk.insertMany(chunks);
+    console.log("All chunks submitted for saving");
 
+    res.status(201).json(newMap._id);
     console.log("Response sent successfully");
   } catch (error) {
     console.error("Error in POST /api/maps:", error);
