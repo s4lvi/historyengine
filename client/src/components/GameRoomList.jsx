@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
+import MapCreationPoller from "./MapCreationPoller";
 
 const MAP_SIZES = {
   Small: { width: 100, height: 100, erosion_passes: 3, num_blobs: 7 },
@@ -226,6 +227,12 @@ const GameRoomList = () => {
   const [error, setError] = useState(null);
   const [createError, setCreateError] = useState(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+
+  const [mapGenerationState, setMapGenerationState] = useState({
+    isPolling: false,
+    mapId: null,
+    formData: null,
+  });
   const navigate = useNavigate();
 
   const fetchGameRooms = async () => {
@@ -263,43 +270,45 @@ const GameRoomList = () => {
       setIsCreating(true);
       setCreateError(null);
 
-      let mapId = formData.selectedMapId;
-
-      // If generating a new map, create it first
-      if (formData.generateNewMap) {
-        console.log(
-          "Generating new map with dimensions:",
-          formData.width,
-          formData.height
-        );
-        const mapResponse = await fetch(
-          `${process.env.REACT_APP_API_URL}api/maps`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              name: formData.roomName + "-Map",
-              width: formData.width,
-              height: formData.height,
-              erosion_passes: formData.erosion_passes,
-              num_blobs: formData.num_blobs,
-            }),
-          }
-        );
-        console.log("Map generated successfully");
-        if (!mapResponse.ok) {
-          throw new Error("Failed to generate new map");
+      // Start map generation
+      const mapResponse = await fetch(
+        `${process.env.REACT_APP_API_URL}api/maps`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: formData.roomName + "-Map",
+            width: formData.width,
+            height: formData.height,
+            erosion_passes: formData.erosion_passes,
+            num_blobs: formData.num_blobs,
+          }),
         }
+      );
 
-        const newMap = await mapResponse.json();
-        console.log("New map created:", newMap._id);
-        mapId = newMap._id;
+      if (!mapResponse.ok) {
+        throw new Error("Failed to start map generation");
       }
 
-      console.log("Creating game room with map:", mapId);
-      // Create the game room with the map and the creator's credentials
+      const newMap = await mapResponse.json();
+
+      // Start polling for map completion
+      setMapGenerationState({
+        isPolling: true,
+        mapId: newMap._id,
+        formData,
+      });
+    } catch (err) {
+      setCreateError(err.message);
+      setIsCreating(false);
+    }
+  };
+
+  const handleMapReady = async (mapData) => {
+    try {
+      // Create the game room with the completed map
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}api/gamerooms`,
         {
@@ -308,33 +317,55 @@ const GameRoomList = () => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            mapId,
-            roomName: formData.roomName,
-            creatorName: formData.creatorName,
-            creatorPassword: formData.creatorPassword,
-            joinCode: formData.joinCode,
+            mapId: mapGenerationState.mapId,
+            roomName: mapGenerationState.formData.roomName,
+            creatorName: mapGenerationState.formData.creatorName,
+            creatorPassword: mapGenerationState.formData.creatorPassword,
+            joinCode: mapGenerationState.formData.joinCode,
           }),
         }
       );
-      console.log("Game room created successfully");
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.message || "Failed to create game room");
       }
 
       const newGameRoom = await response.json();
-      setIsCreateDialogOpen(false);
 
+      // Store credentials and navigate
       const roomKey = `gameRoom-${newGameRoom._id}-userId`;
-      localStorage.setItem(`${roomKey}-userId`, formData.creatorName);
-      localStorage.setItem(`${roomKey}-password`, formData.creatorPassword);
-      localStorage.setItem(`${roomKey}-joinCode`, formData.joinCode);
-      navigate(`/rooms/${newGameRoom._id}`); // Assuming you'll create this route
+      localStorage.setItem(
+        `${roomKey}-userId`,
+        mapGenerationState.formData.creatorName
+      );
+      localStorage.setItem(
+        `${roomKey}-password`,
+        mapGenerationState.formData.creatorPassword
+      );
+      localStorage.setItem(
+        `${roomKey}-joinCode`,
+        mapGenerationState.formData.joinCode
+      );
+
+      // Reset states
+      setIsCreateDialogOpen(false);
+      setIsCreating(false);
+      setMapGenerationState({ isPolling: false, mapId: null, formData: null });
+
+      // Navigate to the new room
+      navigate(`/rooms/${newGameRoom._id}`);
     } catch (err) {
       setCreateError(err.message);
-    } finally {
       setIsCreating(false);
+      setMapGenerationState({ isPolling: false, mapId: null, formData: null });
     }
+  };
+
+  const handlePollingError = (error) => {
+    setCreateError(error.message);
+    setIsCreating(false);
+    setMapGenerationState({ isPolling: false, mapId: null, formData: null });
   };
 
   useEffect(() => {
@@ -363,6 +394,14 @@ const GameRoomList = () => {
         isCreating={isCreating}
         availableMaps={availableMaps}
       />
+      {mapGenerationState.isPolling && (
+        <MapCreationPoller
+          mapId={mapGenerationState.mapId}
+          formData={mapGenerationState.formData}
+          onMapReady={handleMapReady}
+          onError={handlePollingError}
+        />
+      )}
 
       {error && <ErrorMessage message={error} onRetry={fetchGameRooms} />}
 
