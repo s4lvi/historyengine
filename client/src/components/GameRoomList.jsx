@@ -267,6 +267,11 @@ const GameRoomList = () => {
 
       // If generating a new map, create it first
       if (formData.generateNewMap) {
+        console.log(
+          "Generating new map with dimensions:",
+          formData.width,
+          formData.height
+        );
         const mapResponse = await fetch(
           `${process.env.REACT_APP_API_URL}api/maps`,
           {
@@ -283,15 +288,17 @@ const GameRoomList = () => {
             }),
           }
         );
-
+        console.log("Map generated successfully");
         if (!mapResponse.ok) {
           throw new Error("Failed to generate new map");
         }
 
         const newMap = await mapResponse.json();
+        console.log("New map created:", newMap._id);
         mapId = newMap._id;
       }
 
+      console.log("Creating game room with map:", mapId);
       // Create the game room with the map and the creator's credentials
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}api/gamerooms`,
@@ -309,7 +316,7 @@ const GameRoomList = () => {
           }),
         }
       );
-
+      console.log("Game room created successfully");
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.message || "Failed to create game room");
