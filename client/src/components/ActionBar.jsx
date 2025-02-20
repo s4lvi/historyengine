@@ -8,10 +8,10 @@ const ActionBar = ({
   userState,
   hasFounded,
 }) => {
-  // State to track which structure button is hovered.
-  const [hoveredStructure, setHoveredStructure] = useState(null);
+  // State to track which item is hovered and its type
+  const [hoveredItem, setHoveredItem] = useState(null);
+  const [hoveredType, setHoveredType] = useState(null); // 'structure' or 'army'
 
-  // If no userState, show the found-nation button.
   if (!hasFounded) {
     return (
       <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-4">
@@ -40,7 +40,6 @@ const ActionBar = ({
     );
   }
 
-  // Helper: check if the player has enough resources.
   const userResources = userState?.resources || {};
   const isAffordable = (cost) => {
     for (const [resource, required] of Object.entries(cost)) {
@@ -51,10 +50,8 @@ const ActionBar = ({
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-10">
-      {/* The container is relative so we can position the info card absolutely */}
       <div className="relative bg-gray-900 bg-opacity-50 text-white p-4">
         <div className="max-w-7xl mx-auto">
-          {/* Groups: Structures and Armies */}
           <div className="flex flex-row gap-8">
             {/* Structures Group */}
             <div>
@@ -72,8 +69,14 @@ const ActionBar = ({
                           onClick={() => {
                             affordable && onBuildCity(null, null, structure);
                           }}
-                          onMouseEnter={() => setHoveredStructure(structure)}
-                          onMouseLeave={() => setHoveredStructure(null)}
+                          onMouseEnter={() => {
+                            setHoveredItem(structure);
+                            setHoveredType("structure");
+                          }}
+                          onMouseLeave={() => {
+                            setHoveredItem(null);
+                            setHoveredType(null);
+                          }}
                           className={`p-2 bg-gray-800 rounded flex flex-col items-center ${
                             !affordable
                               ? "opacity-50 cursor-not-allowed"
@@ -112,8 +115,14 @@ const ActionBar = ({
                         <button
                           key={armyType}
                           onClick={() => affordable && onRaiseArmy(armyType)}
-                          onMouseEnter={() => setHoveredStructure(armyType)}
-                          onMouseLeave={() => setHoveredStructure(null)}
+                          onMouseEnter={() => {
+                            setHoveredItem(armyType);
+                            setHoveredType("army");
+                          }}
+                          onMouseLeave={() => {
+                            setHoveredItem(null);
+                            setHoveredType(null);
+                          }}
                           className={`p-2 bg-gray-800 rounded flex flex-col items-center ${
                             !affordable
                               ? "opacity-50 cursor-not-allowed"
@@ -141,8 +150,9 @@ const ActionBar = ({
             </div>
           </div>
         </div>
-        {/* Hover info card for structures */}
-        {hoveredStructure && (
+
+        {/* Hover info card */}
+        {hoveredItem && (
           <div
             className="absolute transform -translate-y-full translate-x-0 bg-gray-900 bg-opacity-75 text-white p-4 rounded shadow-lg"
             style={{
@@ -152,27 +162,41 @@ const ActionBar = ({
           >
             <div className="flex flex-col items-center">
               <img
-                src={`/${hoveredStructure.toLowerCase().replace(" ", "_")}.png`}
-                alt={hoveredStructure}
+                src={`/${hoveredItem.toLowerCase().replace(" ", "_")}.png`}
+                alt={hoveredItem}
                 className="w-16 h-16 mb-2"
               />
-              <h4 className="font-bold mb-1">{hoveredStructure}</h4>
+              <h4 className="font-bold mb-1">{hoveredItem}</h4>
+
+              {/* Costs section */}
               <p className="text-sm mb-2">
                 Cost:{" "}
-                {config?.buildCosts?.structures?.[hoveredStructure] &&
-                  Object.entries(
-                    config.buildCosts.structures[hoveredStructure]
-                  ).map(([res, amt], index, arr) => (
-                    <span key={res}>
-                      {res}: {amt}
-                      {index < arr.length - 1 ? ", " : ""}
-                    </span>
-                  ))}
+                {Object.entries(
+                  hoveredType === "structure"
+                    ? config.buildCosts.structures[hoveredItem]
+                    : config.buildCosts.armies[hoveredItem]
+                ).map(([res, amt], index, arr) => (
+                  <span key={res}>
+                    {res}: {amt}
+                    {index < arr.length - 1 ? ", " : ""}
+                  </span>
+                ))}
               </p>
-              <p className="text-sm">
-                {config?.structures?.descriptions[hoveredStructure] ||
-                  "No description available."}
-              </p>
+
+              {/* Description or Stats section */}
+              {hoveredType === "structure" ? (
+                <p className="text-sm">
+                  {config.structures.descriptions[hoveredItem] ||
+                    "No description available."}
+                </p>
+              ) : (
+                <div className="text-sm">
+                  <ul>
+                    <li>Speed: {config.armies.stats[hoveredItem].speed}</li>
+                    <li>Power: {config.armies.stats[hoveredItem].power}</li>
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         )}

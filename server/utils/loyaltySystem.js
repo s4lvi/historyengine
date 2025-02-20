@@ -14,7 +14,7 @@ const LOYALTY_SETTINGS = {
   DISCONNECTED_PENALTY: -3,
   CITY_RANGE: 10,
   CAPITAL_RANGE: 15,
-  ARMY_RANGE: 8,
+  ARMY_RANGE: 6,
   OUTPOST_RANGE: 8,
   DISTANCE_DECAY: 0.8,
 };
@@ -50,9 +50,9 @@ function calculateLoyaltyModifiers(
         ? LOYALTY_SETTINGS.CAPITAL_BONUS
         : LOYALTY_SETTINGS.CITY_BONUS;
       if (distance <= range) {
-        const influence =
-          baseBonus * Math.pow(LOYALTY_SETTINGS.DISTANCE_DECAY, distance);
-        modifier += influence;
+        // Linear decay: weight = 1 at distance 0, 0 at distance == range.
+        const weight = Math.max(0, 1 - distance / range);
+        modifier += baseBonus * weight;
       }
     }
   }
@@ -65,9 +65,8 @@ function calculateLoyaltyModifiers(
         army.position.y
       );
       if (distance <= LOYALTY_SETTINGS.ARMY_RANGE) {
-        modifier +=
-          LOYALTY_SETTINGS.ARMY_BONUS *
-          Math.pow(LOYALTY_SETTINGS.DISTANCE_DECAY, distance);
+        const weight = Math.max(0, 1 - distance / LOYALTY_SETTINGS.ARMY_RANGE);
+        modifier += LOYALTY_SETTINGS.ARMY_BONUS * weight;
       }
     }
   }
@@ -83,9 +82,11 @@ function calculateLoyaltyModifiers(
             army.position.y
           );
           if (distance <= LOYALTY_SETTINGS.ARMY_RANGE) {
-            modifier +=
-              LOYALTY_SETTINGS.ENEMY_ARMY_PENALTY *
-              Math.pow(LOYALTY_SETTINGS.DISTANCE_DECAY, distance);
+            const weight = Math.max(
+              0,
+              1 - distance / LOYALTY_SETTINGS.ARMY_RANGE
+            );
+            modifier += LOYALTY_SETTINGS.ENEMY_ARMY_PENALTY * weight;
           }
         }
       }

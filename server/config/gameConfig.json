@@ -17,20 +17,20 @@
   },
   "armies": {
     "stats": {
-      "light infantry": { "speed": 0.5, "power": 50, "populationCost": 100 },
-      "heavy infantry": { "speed": 0.3, "power": 200, "populationCost": 150 },
-      "cavalry": { "speed": 0.9, "power": 150, "populationCost": 150 }
+      "light infantry": { "speed": 0.5, "power": 1000},
+      "heavy infantry": { "speed": 0.3, "power": 4000},
+      "cavalry": { "speed": 0.9, "power": 2500 }
     }
   },
   "structures": {
     "descriptions": {
-      "town": "Gives bonuses to territory expansion and population growth.",
+      "town": "Expands your nation's territory",
       "fort": "Provides a defensive bonus to the territory.",
-      "workshop": "Gives bonus to the regeneration of bronze and steel.",
-      "farm": "Provides a bonus to food regeneration.",
-      "mine": "Provides a bonus to stone regeneration. If built near an iron or copper depost, it will also provide a bonus to bronze and steel regeneration.",
-      "stable": "Provides a increase to the horse resource capacity.",
-      "lumber mill": "Provides a bonus to wood regeneration."
+      "workshop": "nothing.......yet",
+      "farm": "Produces food. Placed on a food node.",
+      "mine": "Produces stone, bronze, or steel. Placed on a stone or ore node.",
+      "stable": "Produces horses. Placed on a horse node.",
+      "lumber mill": "Produces wood. Placed on a wood node."
     }
   },
   "resources": [

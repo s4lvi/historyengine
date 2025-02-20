@@ -240,6 +240,7 @@ const Game = () => {
           } else {
             // Another nation won—treat it similar to defeat.
             if (!actionModal || actionModal.type !== "defeat") {
+              console.log("Setting defeat modal because someone won");
               setActionModal({
                 type: "defeat",
                 message: `${winningNation.owner} has won the game. Your nation has been defeated.`,
@@ -247,10 +248,11 @@ const Game = () => {
                   navigate("/");
                 },
               });
+            } else {
+              setUserState(null);
+              setFoundingNation(true);
+              setHasFounded(false);
             }
-            setUserState(null);
-            setFoundingNation(true);
-            setHasFounded(false);
           }
         } else {
           // No win condition—proceed with existing logic.
@@ -262,11 +264,19 @@ const Game = () => {
             setIsDefeated(false);
             setHasFounded(true);
           } else {
+            console.log(
+              "No player nation found, checking for defeat...",
+              isDefeated,
+              hasFounded
+            );
             if (!isDefeated && hasFounded) {
               const defeatedNation = data.gameState.nations?.find(
                 (n) => n.owner === userId && n.status === "defeated"
               );
+              console.log(userId);
+              console.log("Defeated nation:", defeatedNation);
               if (defeatedNation) {
+                console.log("Nation is defeated");
                 setIsDefeated(true);
                 setActionModal({
                   type: "defeat",
@@ -280,8 +290,6 @@ const Game = () => {
                 });
               }
               setUserState(null);
-              setFoundingNation(true);
-              setHasFounded(false);
             }
           }
         }
@@ -293,7 +301,7 @@ const Game = () => {
     fetchGameState();
     const interval = setInterval(fetchGameState, 100);
     return () => clearInterval(interval);
-  }, [id, userId, storedPassword, navigate, isDefeated]);
+  }, [id, userId, storedPassword, navigate, isDefeated, hasFounded]);
 
   // Full state polling effect: every 5 seconds, fetch the full state to overwrite local territory.
   useEffect(() => {
@@ -346,21 +354,41 @@ const Game = () => {
             (n) => n.owner === userId && n.status !== "defeated"
           );
           if (playerNation) {
+            console.log(
+              "Player nation found:",
+              playerNation,
+              hasFounded,
+              isDefeated
+            );
             setUserState(playerNation);
             setIsDefeated(false);
             setHasFounded(true);
           } else {
+            console.log(
+              "No player nation found, checking for defeat...",
+              isDefeated,
+              hasFounded
+            );
             if (!isDefeated && hasFounded) {
-              const defeatedNation = data.gameState.nations.find(
+              const defeatedNation = data.gameState.nations?.find(
                 (n) => n.owner === userId && n.status === "defeated"
               );
+              console.log("Defeated nation:", defeatedNation);
               if (defeatedNation) {
+                console.log("Nation is defeated");
                 setIsDefeated(true);
-                setHasFounded(false);
+                setActionModal({
+                  type: "defeat",
+                  message:
+                    "Your nation has been defeated! You can start over by founding a new nation.",
+                  onClose: () => {
+                    setActionModal(null);
+                    setFoundingNation(true);
+                    setHasFounded(false);
+                  },
+                });
               }
               setUserState(null);
-              setFoundingNation(true);
-              setHasFounded(false);
             }
           }
         }
@@ -374,7 +402,15 @@ const Game = () => {
     // Then set interval for rectification every 5 seconds
     const interval = setInterval(fetchFullState, 5000);
     return () => clearInterval(interval);
-  }, [id, userId, storedPassword, navigate, actionModal]);
+  }, [
+    id,
+    userId,
+    storedPassword,
+    navigate,
+    actionModal,
+    isDefeated,
+    hasFounded,
+  ]);
 
   // ----------------------------
   // Handle login form submission
@@ -482,6 +518,7 @@ const Game = () => {
       setIsDefeated(false);
       setActionModal(null);
       setHasFounded(true);
+      console.log("Nation founded successfully");
     } catch (err) {
       setError(err.message);
       setFoundingNation(false);
@@ -797,10 +834,8 @@ const Game = () => {
             loginError={loginError}
             actionModal={actionModal}
             setActionModal={setActionModal}
-            onBuildCity={handleBuildCity}
             config={config}
             userState={userState}
-            onRaiseArmy={handleRaiseArmy}
           />
         </>
       )}

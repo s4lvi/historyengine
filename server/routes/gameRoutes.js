@@ -340,6 +340,7 @@ router.post("/:id/state", async (req, res, next) => {
             add: { x: [], y: [] },
             sub: { x: [], y: [] },
           },
+          cachedBorderSet: null,
         };
       }
 
@@ -350,12 +351,14 @@ router.post("/:id/state", async (req, res, next) => {
           add: { x: [], y: [] },
           sub: { x: [], y: [] },
         },
+        cachedBorderSet: null,
       };
     };
 
     const filteredGameState = {
       ...gameState.gameState,
       nations: (gameState.gameState.nations || []).map(filterNation),
+      cachedBorderSet: null,
     };
 
     res.json({
@@ -602,7 +605,9 @@ router.post("/:id/quit", async (req, res, next) => {
 
       // Update remaining players count
       state.gameState.remainingPlayers = state.gameState.nations.length;
-
+      state.gameState.nations.forEach((nation) => {
+        delete nation.cachedBorderSet;
+      });
       return state;
     });
 
@@ -880,15 +885,6 @@ router.post("/:id/raiseArmy", async (req, res, next) => {
         throw new Error(`Army type '${type}' is not supported`);
       }
 
-      // Check population requirement
-      const requiredPopulation = armyStats.populationCost || 1000;
-      if (nation.population < requiredPopulation) {
-        throw new Error(
-          `Not enough population to raise an army of type '${type}'. ` +
-            `Required population: ${requiredPopulation}`
-        );
-      }
-
       // Check resource costs
       const armyCost = config.buildCosts.armies[type];
       for (const resource in armyCost) {
@@ -904,7 +900,6 @@ router.post("/:id/raiseArmy", async (req, res, next) => {
       for (const resource in armyCost) {
         nation.resources[resource] -= armyCost[resource];
       }
-      nation.population -= requiredPopulation;
 
       // Determine starting position
       let startPos = null;

@@ -281,30 +281,48 @@ const NationOverlay = ({
 
   return (
     <>
+      {/* Render territory */}
       <Graphics
         key={`territory-${nation.owner}`}
         zIndex={100}
         draw={(g) => {
           g.clear();
-          // Draw non-border cells with lower opacity.
+          // Draw territory with lower opacity.
           g.beginFill(baseColor, 0.5);
           for (let i = 0; i < territory.x.length; i++) {
             const x = territory.x[i];
             const y = territory.y[i];
-            const key = `${x},${y}`;
             g.drawRect(x * cellSize, y * cellSize, cellSize, cellSize);
           }
           g.endFill();
         }}
       />
+
+      {/* Render attacked cells */}
+      {nation.armiesAffectedCells && nation.armiesAffectedCells.length > 0 && (
+        <Graphics
+          key={`attack-cells-${nation.owner}`}
+          zIndex={150}
+          draw={(g) => {
+            g.clear();
+            // Draw each attacked cell with a semi-transparent red overlay.
+            g.beginFill(0xff0000, 0.4);
+            nation.armiesAffectedCells.forEach(({ x, y }) => {
+              g.drawRect(x * cellSize, y * cellSize, cellSize, cellSize);
+            });
+            g.endFill();
+          }}
+        />
+      )}
+
+      {/* Render cities */}
       {(nation.cities || []).map((city, idx) => {
         const iconSize = cellSize;
         const centerX = city.x * cellSize + cellSize / 2;
         const centerY = city.y * cellSize + cellSize / 2;
         return (
-          <Graphics zIndex={500 + centerY}>
+          <Graphics key={`city-${nation.owner}-${idx}`} zIndex={500 + centerY}>
             <BorderedSprite
-              key={`city-${nation.owner}-${idx}`}
               texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
               x={centerX}
               y={centerY}
@@ -334,6 +352,8 @@ const NationOverlay = ({
           </Graphics>
         );
       })}
+
+      {/* Render armies */}
       {(nation.armies || []).map((army, idx) => {
         const iconSize = cellSize;
         const centerX = Math.floor(army.position.x) * cellSize + cellSize / 2;
@@ -357,7 +377,7 @@ const NationOverlay = ({
               setSelectedArmy(army);
             }}
             baseZ={500 + centerY}
-            text={`${army.currentPower}`}
+            text={`${Math.round(army.currentPower)}`}
           />
         );
       })}

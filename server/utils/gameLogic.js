@@ -1,12 +1,11 @@
 // gameLogic.js
 import _ from "lodash";
 import config from "../config/config.js";
-import { updateLoyalty, initializeLoyalty } from "./loyaltySystem.js";
+import { updateLoyalty, initializeLoyalty, LOYALTY } from "./loyaltySystem.js";
 
 const MAX_POPULATION_PER_TERRITORY = 10;
 const CITY_POPULATION_BONUS = 500;
-const COMPACTNESS_WEIGHT = 10;
-const REINFORCEMENT_RATE = 1;
+const REINFORCEMENT_RATE = LOYALTY.ARMY_BONUS + 1;
 const ENEMY_TERRITORY_PENALTY = 1;
 
 export function checkWinCondition(gameState, mapData) {
@@ -74,38 +73,10 @@ export function isCellInTerritory(territory, x, y, territorySet = null) {
   return found;
 }
 
-function getBestCityLocation(nation, mapData) {
-  let bestScore = -Infinity;
-  let bestLocation = null;
-  const territorySet = getTerritorySet(nation.territory);
-  const cityPositions = new Set();
-  if (nation.cities) {
-    nation.cities.forEach((city) => {
-      cityPositions.add(`${city.x},${city.y}`);
-    });
-  }
-  forEachTerritoryCell(nation.territory, (x, y) => {
-    if (cityPositions.has(`${x},${y}`)) return;
-    const cell = mapData[y] && mapData[y][x];
-    if (!cell) return;
-    const score = calculateCellDesirability(
-      cell,
-      x,
-      y,
-      nation.territory,
-      territorySet
-    );
-    if (score > bestScore) {
-      bestScore = score;
-      bestLocation = { x, y };
-    }
-  });
-  return bestLocation;
-}
-
-function getBorderCells(nation, mapData, allNations) {
+function getBorderCells(nation, mapData, allNations, invalidateBorderCache) {
   // If we have a cached border set and no territory delta changes, reuse it.
   if (
+    !invalidateBorderCache &&
     nation.cachedBorderSet &&
     (!nation.territoryDelta ||
       (nation.territoryDelta.add.x.length === 0 &&
@@ -164,72 +135,12 @@ function getValidAdjacentCells(territory, mapData, allNations) {
   return Array.from(adjacentCells).map((str) => JSON.parse(str));
 }
 
-export function setExpansionTarget(nation, target, mapData) {
-  // Verify the target cell is on land.
-  if (
-    !mapData[target.y] ||
-    !mapData[target.y][target.x] ||
-    mapData[target.y][target.x].biome === "OCEAN"
-  ) {
-    return {
-      success: false,
-      message: "Expansion target must be on land (non-OCEAN biome)",
-    };
-  }
-
-  // Use resource cost from config.
-  const cost = config.expansionTarget.cost;
-  for (const resource in cost) {
-    if ((nation.resources[resource] || 0) < cost[resource]) {
-      return {
-        success: false,
-        message: `Insufficient resources: ${resource} required`,
-      };
-    }
-  }
-  // Deduct the resource cost.
-  for (const resource in cost) {
-    nation.resources[resource] -= cost[resource];
-  }
-  const duration = config.expansionTarget.duration;
-
-  // Determine the starting point for the expansion target:
-  // Prefer the nearest city; if none exist, use the nation's starting cell.
-  let startingPoint = null;
-  if (nation.cities && nation.cities.length > 0) {
-    let bestDistance = Infinity;
-    nation.cities.forEach((city) => {
-      const distance =
-        Math.abs(city.x - target.x) + Math.abs(city.y - target.y);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        startingPoint = { x: city.x, y: city.y };
-      }
-    });
-  } else if (nation.startingCell) {
-    startingPoint = nation.startingCell;
-  }
-  if (!startingPoint) {
-    return {
-      success: false,
-      message:
-        "No valid starting point (city or starting cell) found for expansion target",
-    };
-  }
-
-  // Always reset the expansion target.
-  nation.expansionTarget = {
-    start: { ...startingPoint },
-    current: { ...startingPoint },
-    final: { x: target.x, y: target.y },
-    ticksRemaining: duration,
-    totalDuration: duration,
-  };
-
-  return { success: true, message: "Expansion target set" };
-}
-
-export function expandTerritory(nation, mapData, allNations) {
+export function expandTerritory(
+  nation,
+  mapData,
+  allNations,
+  invalidateBorderCache
+) {
   // Initialize territory if not set.
   if (
     !nation.territory ||
@@ -253,7 +164,12 @@ export function expandTerritory(nation, mapData, allNations) {
   }
 
   // Get the current border cells.
-  const adjacentCells = getBorderCells(nation, mapData, allNations);
+  const adjacentCells = getBorderCells(
+    nation,
+    mapData,
+    allNations,
+    invalidateBorderCache
+  );
   if (adjacentCells.length === 0) return;
 
   // Get cities that can support territory expansion
@@ -373,15 +289,13 @@ export function updatePopulation(nation) {
   }
 }
 
-export function updateArmyMovements(updatedNation, mapData, gameState) {
+function updateArmyMovementsUpdated(updatedNation, mapData, gameState) {
   if (!updatedNation.armies || !Array.isArray(updatedNation.armies)) {
     return updatedNation.armies || [];
   }
 
-  // Create a map of current army positions for collision detection
+  // Build a map of occupied positions for collision detection.
   const occupiedPositions = new Map();
-
-  // First pass: Record current positions of all armies from all nations
   if (gameState.nations && Array.isArray(gameState.nations)) {
     gameState.nations.forEach((nation) => {
       if (nation.armies && Array.isArray(nation.armies)) {
@@ -400,17 +314,16 @@ export function updateArmyMovements(updatedNation, mapData, gameState) {
     });
   }
 
-  const ARMY_STEP = config.armyMovementStep || 0.2;
-  const TARGET_SNAP_DISTANCE = 1.0; // Distance at which army snaps to target
+  const TARGET_SNAP_DISTANCE = 1.0;
+  // Create a global set to capture all cells influenced by armies.
+  let globalAffectedCellsSet = new Set();
 
   updatedNation.armies = updatedNation.armies
     .map((army) => {
-      // Skip movement if army has no position
       if (!army.position) return army;
-
       let newPosition = { ...army.position };
 
-      // Update movement based on attackTarget
+      // Process movement if the army has an attack target.
       if (army.attackTarget) {
         const { current, final } = army.attackTarget;
         const dx = final.x - current.x;
@@ -418,17 +331,12 @@ export function updateArmyMovements(updatedNation, mapData, gameState) {
         const distance = Math.sqrt(dx * dx + dy * dy);
 
         if (distance <= TARGET_SNAP_DISTANCE) {
-          // Check if final position is occupied
           const finalPosKey = `${Math.floor(final.x)},${Math.floor(final.y)}`;
           const isFinalPositionOccupied =
             occupiedPositions.has(finalPosKey) &&
             occupiedPositions.get(finalPosKey).armyId !== army.id;
-
           if (!isFinalPositionOccupied) {
-            // Snap to final position
             newPosition = { x: final.x, y: final.y };
-
-            // Update occupied positions map
             const oldPosKey = `${Math.floor(army.position.x)},${Math.floor(
               army.position.y
             )}`;
@@ -437,8 +345,6 @@ export function updateArmyMovements(updatedNation, mapData, gameState) {
               nationId: updatedNation.id,
               armyId: army.id,
             });
-
-            // Clear attack target since we've reached destination
             army.attackTarget = null;
           }
         } else {
@@ -446,36 +352,25 @@ export function updateArmyMovements(updatedNation, mapData, gameState) {
           const maxAngleVariation = Math.PI / 36;
           const randomVariation = (Math.random() - 0.5) * 2 * maxAngleVariation;
           const newAngle = targetAngle + randomVariation;
-
-          // Calculate proposed new position
           const proposedX =
             current.x +
             config.armies.stats[army.type].speed * Math.cos(newAngle);
           const proposedY =
             current.y +
             config.armies.stats[army.type].speed * Math.sin(newAngle);
-
-          // Check if the proposed position is valid (on map and not ocean)
+          const floorProposedX = Math.floor(proposedX);
+          const floorProposedY = Math.floor(proposedY);
           const isValidTerrain =
-            mapData[Math.floor(proposedY)] &&
-            mapData[Math.floor(proposedY)][Math.floor(proposedX)] &&
-            mapData[Math.floor(proposedY)][Math.floor(proposedX)].biome !==
-              "OCEAN";
-
-          // Check for army collision at the proposed position
-          const proposedPosKey = `${Math.floor(proposedX)},${Math.floor(
-            proposedY
-          )}`;
+            mapData[floorProposedY] &&
+            mapData[floorProposedY][floorProposedX] &&
+            mapData[floorProposedY][floorProposedX].biome !== "OCEAN";
+          const proposedPosKey = `${floorProposedX},${floorProposedY}`;
           const isPositionOccupied =
             occupiedPositions.has(proposedPosKey) &&
             occupiedPositions.get(proposedPosKey).armyId !== army.id;
-
-          // Only move if position is valid and unoccupied
           if (isValidTerrain && !isPositionOccupied) {
             newPosition = { x: proposedX, y: proposedY };
             army.attackTarget.current = { ...newPosition };
-
-            // Update occupied positions map
             const oldPosKey = `${Math.floor(army.position.x)},${Math.floor(
               army.position.y
             )}`;
@@ -488,50 +383,66 @@ export function updateArmyMovements(updatedNation, mapData, gameState) {
         }
       }
 
-      // Update army position
+      // Update army position.
       army.position = newPosition;
-
       const posX = Math.floor(army.position.x);
       const posY = Math.floor(army.position.y);
-
-      // Retrieve the maximum power for this army type from config
       const maxPower = config.armies?.stats?.[army.type]?.power || 100;
-
-      // Initialize currentPower if not already set
       if (army.currentPower === undefined) {
         army.currentPower = maxPower;
       }
 
-      // Apply territory modifiers
+      // --- Apply Territory Modifiers ---
+      // Reinforce if in friendly territory.
       if (isCellInTerritory(updatedNation.territory, posX, posY)) {
-        // Army is in friendly territory—reinforce it
         army.currentPower += REINFORCEMENT_RATE;
-      } else {
-        // Check if army is in enemy territory
-        let inEnemyTerritory = false;
-        if (gameState.nations && Array.isArray(gameState.nations)) {
-          for (const otherNation of gameState.nations) {
-            if (
-              otherNation.owner !== updatedNation.owner &&
-              isCellInTerritory(otherNation.territory, posX, posY)
-            ) {
-              inEnemyTerritory = true;
-              break;
+      }
+      // For each cell in range (using LOYALTY.ARMY_RANGE), check for enemy influence.
+      let enemyPenalty = 0;
+      for (let dx = -LOYALTY.ARMY_RANGE; dx <= LOYALTY.ARMY_RANGE; dx++) {
+        for (let dy = -LOYALTY.ARMY_RANGE; dy <= LOYALTY.ARMY_RANGE; dy++) {
+          // Skip the army's own cell.
+          if (dx === 0 && dy === 0) continue;
+          const neighborX = posX + dx;
+          const neighborY = posY + dy;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          // Linear decay: weight is 1 at distance 0 and 0 at LOYALTY.ARMY_RANGE.
+          const weight = Math.max(0, 1 - dist / LOYALTY.ARMY_RANGE);
+          let isEnemy = false;
+          if (gameState.nations && Array.isArray(gameState.nations)) {
+            for (const otherNation of gameState.nations) {
+              if (
+                otherNation.owner !== updatedNation.owner &&
+                isCellInTerritory(otherNation.territory, neighborX, neighborY)
+              ) {
+                isEnemy = true;
+                break;
+              }
+            }
+          }
+          if (isEnemy) {
+            enemyPenalty += ENEMY_TERRITORY_PENALTY * weight;
+            // Only add the neighbor if there is enemy influence.
+            if (dist <= LOYALTY.ARMY_RANGE) {
+              globalAffectedCellsSet.add(`${neighborX},${neighborY}`);
             }
           }
         }
-        if (inEnemyTerritory) {
-          army.currentPower -= ENEMY_TERRITORY_PENALTY;
-        }
       }
-
-      // Clamp currentPower between 0 and maxPower
+      army.currentPower -= enemyPenalty;
       army.currentPower = Math.min(maxPower, Math.max(0, army.currentPower));
 
-      // Return null if army is destroyed (power = 0)
       return army.currentPower > 0 ? army : null;
     })
     .filter((army) => army !== null);
+
+  // Set the nation's global affected cells (for visualization).
+  updatedNation.armiesAffectedCells = Array.from(globalAffectedCellsSet).map(
+    (key) => {
+      const [x, y] = key.split(",").map(Number);
+      return { x, y };
+    }
+  );
 
   return updatedNation.armies;
 }
@@ -542,43 +453,44 @@ export function updateNation(nation, mapData, gameState) {
     console.warn("Invalid map data structure in updateNation");
     return nation;
   }
-  // Reset territory delta
-  nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
-  // Invalidate caches if territory changed (this should be done when delta is nonempty)
-  if (
-    nation.territoryDelta.add.x.length > 0 ||
-    nation.territoryDelta.sub.x.length > 0
-  ) {
-    delete nation.cachedBorderSet;
-    delete nation.cachedNaturalLimits;
-    delete nation.cachedConnectedCells;
-  }
-  const updatedNation = { ...nation };
-  updatedNation.resources = updatedNation.resources || {};
+
+  // Preserve the current territoryDelta (if any) for later comparison.
+  // (Assume expandTerritory may add new changes to nation.territoryDelta)
+  const previousDelta = nation.territoryDelta || {
+    add: { x: [], y: [] },
+    sub: { x: [], y: [] },
+  };
 
   // --- 1. Update Loyalty ---
   const startLoyalty = process.hrtime();
-  // Use cached connectivity if possible.
   let connectedCells;
-  if (!nation.territoryDelta.sub.x.length && nation.cachedConnectedCells) {
+  if (!previousDelta.sub.x.length && nation.cachedConnectedCells) {
     connectedCells = nation.cachedConnectedCells;
   } else {
     connectedCells = computeConnectedCells(nation);
+    if (nation.cachedConnectedCells != connectedCells) {
+      gameState.invalidateBorderCache = true;
+    }
     nation.cachedConnectedCells = connectedCells;
   }
-  const lostCells = updateLoyalty(updatedNation, gameState, connectedCells);
+  updateLoyalty(nation, gameState, connectedCells);
+  if (nation.cachedConnectedCells != connectedCells) {
+    gameState.invalidateBorderCache = true;
+  }
   const endLoyalty = process.hrtime(startLoyalty);
-  // --- 2. Regenerate Natural Resources (using cached natural limits) ---
-  const startNaturalResources = process.hrtime();
-  if (updatedNation.cities) {
-    updatedNation.cities.forEach((city) => {
-      // Only resource structures produce resources.
-      if (["capital", "town", "fort"].includes(city.type)) return;
 
+  connectedCells = computeConnectedCells(nation);
+  nation.cachedConnectedCells = connectedCells;
+
+  // --- 2. Regenerate Natural Resources ---
+  const startNaturalResources = process.hrtime();
+  if (nation.cities) {
+    nation.cities.forEach((city) => {
+      // Only non‑resource structures produce resources.
+      if (["capital", "town", "fort"].includes(city.type)) return;
       const { x, y } = city;
       const cell = mapData[y] && mapData[y][x];
       if (!cell) return;
-
       const baseProduction = {
         farm: 0.5,
         "lumber mill": 0.5,
@@ -586,126 +498,76 @@ export function updateNation(nation, mapData, gameState) {
         stable: 0.5,
       };
       const productionAmount = baseProduction[city.type] || 0;
-
-      // Add the production to the nation's resources.
-      updatedNation.resources[city.resource] =
-        (updatedNation.resources[city.resource] || 0) + productionAmount;
+      nation.resources[city.resource] =
+        (nation.resources[city.resource] || 0) + productionAmount;
     });
   }
   const endNaturalResources = process.hrtime(startNaturalResources);
 
-  // --- 3. Update Expansion Target ---
-  const startExpansionTarget = process.hrtime();
-  if (
-    updatedNation.expansionTarget &&
-    updatedNation.expansionTarget.ticksRemaining > 0
-  ) {
-    const expTarget = updatedNation.expansionTarget;
-    const baseStep = 0.2;
-    const maxAngleVariation = Math.PI / 36;
-    const dx = expTarget.final.x - expTarget.current.x;
-    const dy = expTarget.final.y - expTarget.current.y;
-    const targetAngle = Math.atan2(dy, dx);
-    const randomVariation = (Math.random() - 0.5) * 2 * maxAngleVariation;
-    const newAngle = targetAngle + randomVariation;
-    const newX = expTarget.current.x + baseStep * Math.cos(newAngle);
-    const newY = expTarget.current.y + baseStep * Math.sin(newAngle);
-    if (
-      mapData[Math.floor(newY)] &&
-      mapData[Math.floor(newY)][Math.floor(newX)] &&
-      mapData[Math.floor(newY)][Math.floor(newX)].biome !== "OCEAN"
-    ) {
-      expTarget.current = { x: newX, y: newY };
-    }
-    expTarget.ticksRemaining--;
-  }
-  if (updatedNation.expansionTarget?.ticksRemaining === 0) {
-    delete updatedNation.expansionTarget;
-  }
-  const endExpansionTarget = process.hrtime(startExpansionTarget);
-
-  // --- 4. Update Armies Movement ---
+  // --- 3. Update Armies Movement ---
   const startArmies = process.hrtime();
-  if (updatedNation.armies && Array.isArray(updatedNation.armies)) {
-    const ARMY_STEP = config.armyMovementStep || 0.2;
-
-    updatedNation.armies = updateArmyMovements(
-      updatedNation,
-      mapData,
-      gameState
-    );
+  if (nation.armies && Array.isArray(nation.armies)) {
+    nation.armies = updateArmyMovementsUpdated(nation, mapData, gameState);
   }
   const endArmies = process.hrtime(startArmies);
 
-  // --- 5. Update Territory Expansion and Population ---
+  // --- 4. Update Territory Expansion and Population ---
   const startTerritoryPopulation = process.hrtime();
-  if (updatedNation.status !== "defeated") {
-    expandTerritory(updatedNation, mapData, gameState.nations);
-    updatePopulation(updatedNation);
+  if (nation.status !== "defeated") {
+    expandTerritory(
+      nation,
+      mapData,
+      gameState.nations,
+      gameState.invalidateBorderCache
+    );
+    updatePopulation(nation);
   }
   const endTerritoryPopulation = process.hrtime(startTerritoryPopulation);
-  // console.log(
-  //   `Territory expansion and population update took ${(
-  //     endTerritoryPopulation[0] * 1000 +
-  //     endTerritoryPopulation[1] / 1e6
-  //   ).toFixed(2)} ms`
-  // );
 
-  // --- 6. Auto‑City Spawning ---
-  // Updated CITY_BUILD_COST: now uses { stone, food } instead of { stone, "arable land" }
-  const startAutoCity = process.hrtime();
-  const CITY_BUILD_COST = { stone: 10, food: 20 };
-  if (updatedNation.auto_city) {
-    let canBuild = true;
-    for (const resource in CITY_BUILD_COST) {
-      if (
-        (updatedNation.resources[resource] || 0) < CITY_BUILD_COST[resource]
-      ) {
-        canBuild = false;
-        break;
-      }
-    }
-    if (canBuild && Math.random() < 0.05) {
-      const bestLocation = getBestCityLocation(updatedNation, mapData);
-      if (bestLocation) {
-        for (const resource in CITY_BUILD_COST) {
-          updatedNation.resources[resource] -= CITY_BUILD_COST[resource];
-        }
-        const newCity = {
-          name: `City ${
-            updatedNation.cities ? updatedNation.cities.length + 1 : 1
-          }`,
-          x: bestLocation.x,
-          y: bestLocation.y,
-          population: 50,
-        };
-        if (!updatedNation.cities) updatedNation.cities = [];
-        updatedNation.cities.push(newCity);
-        // Territory changed, so invalidate caches.
-        delete updatedNation.cachedNaturalLimits;
-        delete updatedNation.cachedBorderSet;
-      }
+  // --- 5. Cache Invalidation: Check if territory changed ---
+  const deltaChanged =
+    nation.territoryDelta.add.x.length > 0 ||
+    nation.territoryDelta.sub.x.length > 0;
+  if (deltaChanged) {
+    delete nation.cachedBorderSet;
+    delete nation.cachedConnectedCells;
+    delete nation.cachedNaturalLimits;
+    gameState.invalidateBorderCache = true;
+  }
+
+  // Additionally, if any enemy nation lost territory, invalidate caches for all nations.
+  if (gameState.nations && Array.isArray(gameState.nations)) {
+    const enemyLostTerritory = gameState.nations.some((otherNation) => {
+      return (
+        otherNation.owner !== nation.owner &&
+        otherNation.territoryDelta &&
+        otherNation.territoryDelta.sub.x.length > 0
+      );
+    });
+    if (enemyLostTerritory) {
+      gameState.nations.forEach((nationItem) => {
+        delete nationItem.cachedBorderSet;
+        delete nationItem.cachedConnectedCells;
+      });
+      gameState.invalidateBorderCache = true;
     }
   }
-  const endAutoCity = process.hrtime(startAutoCity);
 
-  // --- 7. Finalize Territory Delta for Client ---
-  if (updatedNation.territoryDelta) {
-    updatedNation.territoryDeltaForClient = {
+  // --- 6. Finalize Territory Delta for Client and Reset It ---
+  if (nation.territoryDelta) {
+    nation.territoryDeltaForClient = {
       add: {
-        x: [...updatedNation.territoryDelta.add.x],
-        y: [...updatedNation.territoryDelta.add.y],
+        x: [...nation.territoryDelta.add.x],
+        y: [...nation.territoryDelta.add.y],
       },
       sub: {
-        x: [...updatedNation.territoryDelta.sub.x],
-        y: [...updatedNation.territoryDelta.sub.y],
+        x: [...nation.territoryDelta.sub.x],
+        y: [...nation.territoryDelta.sub.y],
       },
     };
-    updatedNation.territoryDelta = {
-      add: { x: [], y: [] },
-      sub: { x: [], y: [] },
-    };
+    nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
   }
+
   const overallEnd = process.hrtime(overallStart);
   console.log(
     `updateNation overall took ${(
@@ -713,7 +575,7 @@ export function updateNation(nation, mapData, gameState) {
       overallEnd[1] / 1e6
     ).toFixed(2)} ms`
   );
-  return updatedNation;
+  return nation;
 }
 
 function computeConnectedCells(nation) {
