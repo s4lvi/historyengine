@@ -38,7 +38,9 @@ const SettingsModal = ({
 
           <div className="flex justify-between items-center">
             <span className="text-gray-500">Room:</span>
-            <span className="font-medium">{gameState?.roomName}</span>
+            <span className="font-medium">
+              {gameState?.gameState?.roomName}
+            </span>
           </div>
 
           <div className="flex justify-between items-center">
@@ -68,14 +70,14 @@ const SettingsModal = ({
               onClick={onLeaveGame}
               className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded"
             >
-              Surrender
+              Leave Game
             </button>
-            <button
+            {/* <button
               onClick={onBackToGameRooms}
               className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded"
             >
               Back to Game Rooms
-            </button>
+            </button> */}
           </div>
         </div>
       </div>

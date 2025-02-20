@@ -9,6 +9,7 @@ import Game from "./components/Game";
 import GameRoomList from "./components/GameRoomList";
 import { ErrorBoundary } from "./components/ErrorHandling";
 import { FaDiscord } from "react-icons/fa";
+import Lobby from "./components/Lobby";
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -154,6 +155,7 @@ function App() {
               <Route path="/" element={<LandingPage />} />
               <Route path="/rooms" element={<LandingPage />} />
               <Route path="/rooms/:id" element={<Game />} />
+              <Route path="/lobby/:id" element={<Lobby />} />
               <Route path="/how-to-play" element={<HowToPlay />} />
             </Routes>
           </main>

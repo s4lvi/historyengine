@@ -142,35 +142,79 @@ router.get("/:id/status", async (req, res, next) => {
   }
 });
 
-// -------------------------------------------------------------------
-// List open game rooms
-// -------------------------------------------------------------------
+/* =========================================================================
+   LOBBY ENDPOINTS
+   ========================================================================= */
+
+// Create a new lobby. A newly created game room starts in "lobby" mode.
+router.post("/", async (req, res, next) => {
+  try {
+    const {
+      roomName,
+      joinCode,
+      creatorName,
+      creatorPassword,
+      // Lobby settings can include: mapSize, width, height, erosion_passes, num_blobs, maxPlayers
+      lobby: lobbySettings = {},
+    } = req.body;
+
+    if (!creatorName || !creatorPassword) {
+      return res
+        .status(400)
+        .json({ error: "Creator credentials are required" });
+    }
+
+    // Generate a join code if not provided.
+    const generatedJoinCode =
+      joinCode || Math.random().toString(36).substring(2, 8).toUpperCase();
+
+    const gameRoom = new GameRoom({
+      roomName: roomName || "Game Room",
+      joinCode: generatedJoinCode,
+      status: "lobby", // start in the lobby phase
+      creator: { userId: creatorName, password: creatorPassword },
+      players: [{ userId: creatorName, password: creatorPassword }],
+      // Store base dimensions in the root as well as inside lobby settings.
+      width: lobbySettings.width || 150,
+      height: lobbySettings.height || 150,
+      lobby: {
+        mapSize: lobbySettings.mapSize || "Normal",
+        width: lobbySettings.width || 150,
+        height: lobbySettings.height || 150,
+        erosion_passes: lobbySettings.erosion_passes || 3,
+        num_blobs: lobbySettings.num_blobs || 9,
+        maxPlayers: lobbySettings.maxPlayers || 4,
+      },
+    });
+
+    await gameRoom.save();
+
+    res.status(201).json({
+      lobbyId: gameRoom._id,
+      joinCode: generatedJoinCode,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// List available lobbies (rooms in "lobby" status)
 router.get("/", async (req, res, next) => {
   try {
-    const gameRooms = await GameRoom.find({ status: "open" })
-      .select("roomName creator players createdAt map")
+    const gameRooms = await GameRoom.find({ status: "lobby" })
+      .select("roomName creator players createdAt lobby")
       .lean();
 
-    // Enhance with essential in-memory state and format the response
-    const enhancedRooms = gameRooms.map((room) => {
-      const gameState = gameStateManager.getRoom(room._id.toString());
-      return {
-        _id: room._id,
-        roomName: room.roomName,
-        creator: room.creator,
-        players: room.players || [],
-        createdAt: room.createdAt,
-        map: room.map
-          ? {
-              name: room.map.name,
-              width: room.map.width,
-              height: room.map.height,
-            }
-          : null,
-        playerCount: room.nations?.length || 0,
-        status: gameState ? "active" : "initializing",
-      };
-    });
+    const enhancedRooms = gameRooms.map((room) => ({
+      _id: room._id,
+      roomName: room.roomName,
+      creator: room.creator,
+      players: room.players || [],
+      createdAt: room.createdAt,
+      lobby: room.lobby,
+      playerCount: room.players?.length || 0,
+      status: room.status,
+    }));
 
     res.json(enhancedRooms);
   } catch (error) {
@@ -178,7 +222,184 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-// In gameRoutes.js, update these endpoints:
+// GET /api/gamerooms/:id - Retrieve full lobby details
+router.get("/:id", async (req, res, next) => {
+  try {
+    const gameRoom = await GameRoom.findById(req.params.id)
+      .select("roomName joinCode status players lobby createdAt")
+      .lean();
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Lobby not found" });
+    }
+    res.json(gameRoom);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Join a lobby. Checks that the room is still in lobby mode and that it isn’t full.
+router.post("/:id/join", async (req, res, next) => {
+  try {
+    const { joinCode, userName, password } = req.body;
+    if (!userName || !password) {
+      return res
+        .status(400)
+        .json({ error: "userName and password are required" });
+    }
+
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Lobby not found" });
+    }
+
+    // Ensure the room is still waiting in the lobby.
+    if (gameRoom.status !== "lobby") {
+      return res.status(400).json({ error: "Game has already started" });
+    }
+
+    if (gameRoom.joinCode !== joinCode) {
+      return res.status(403).json({ error: "Invalid join code" });
+    }
+
+    if (gameRoom.players.length >= gameRoom.lobby.maxPlayers) {
+      return res.status(400).json({ error: "Lobby is full" });
+    }
+
+    let player = gameRoom.players.find((p) => p.userId === userName);
+    if (player) {
+      if (player.password !== password) {
+        return res
+          .status(403)
+          .json({ error: "Invalid password for existing user" });
+      }
+      res.json({
+        message: "Rejoined lobby successfully",
+        userId: player.userId,
+        lobby: gameRoom.lobby,
+      });
+    } else {
+      player = { userId: userName, password };
+      gameRoom.players.push(player);
+      await gameRoom.save();
+
+      res.json({
+        message: "Joined lobby successfully",
+        userId: player.userId,
+        lobby: gameRoom.lobby,
+      });
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Update lobby settings. Only the lobby creator can change settings.
+router.put("/:id/settings", async (req, res, next) => {
+  try {
+    const { userName, password, lobby: lobbySettings } = req.body;
+    if (!userName || !password || !lobbySettings) {
+      return res
+        .status(400)
+        .json({ error: "userName, password, and lobby settings are required" });
+    }
+
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Lobby not found" });
+    }
+
+    if (
+      gameRoom.creator.userId !== userName ||
+      gameRoom.creator.password !== password
+    ) {
+      return res
+        .status(403)
+        .json({ error: "Only the lobby creator can update settings" });
+    }
+
+    // Merge the existing lobby settings with the new ones.
+    gameRoom.lobby = { ...gameRoom.lobby, ...lobbySettings };
+
+    // If the dimensions have changed, update the top-level width/height.
+    if (lobbySettings.width) gameRoom.width = lobbySettings.width;
+    if (lobbySettings.height) gameRoom.height = lobbySettings.height;
+
+    await gameRoom.save();
+    res.json({ message: "Lobby settings updated", lobby: gameRoom.lobby });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Start the game from the lobby. Only the creator may trigger this.
+router.post("/:id/start", async (req, res, next) => {
+  try {
+    const { userName, password } = req.body;
+    const gameRoom = await GameRoom.findById(req.params.id);
+    if (!gameRoom) {
+      return res.status(404).json({ error: "Lobby not found" });
+    }
+    if (
+      gameRoom.creator.userId !== userName ||
+      gameRoom.creator.password !== password
+    ) {
+      return res
+        .status(403)
+        .json({ error: "Only the lobby creator can start the game" });
+    }
+
+    // Initialize game state first
+    gameStateManager.addRoom(gameRoom._id.toString(), {
+      tickCount: 0,
+      lastActivity: Date.now(),
+      width: gameRoom.width,
+      height: gameRoom.height,
+      gameState: {
+        roomName: gameRoom.roomName,
+        nations: [],
+        players: gameRoom.players,
+        creator: gameRoom.creator,
+      },
+    });
+
+    // Generate map with lobby settings
+    const lobbySettings = gameRoom.lobby;
+    const mapData = await runMapGenerationWorker({
+      width: lobbySettings.width,
+      height: lobbySettings.height,
+      erosion_passes: lobbySettings.erosion_passes,
+      num_blobs: lobbySettings.num_blobs,
+      seed: Math.random(),
+    });
+
+    // Save map data to game state manager
+    gameStateManager.setMapData(gameRoom._id.toString(), mapData);
+
+    // Start game loop only after map is generated and stored
+    await gameLoop.startRoom(gameRoom._id.toString());
+
+    // Update room status last
+    gameRoom.status = "in-progress";
+    await gameRoom.save();
+
+    console.log(`Game room ${gameRoom._id} started successfully`);
+
+    res.json({
+      message: "Game started successfully",
+      gameRoomId: gameRoom._id,
+      players: gameRoom.players,
+    });
+  } catch (error) {
+    // If anything fails, clean up
+    try {
+      await gameLoop.stopRoom(req.params.id);
+      gameStateManager.removeRoom(req.params.id);
+    } catch (cleanupError) {
+      console.error("Error during cleanup:", cleanupError);
+    }
+    next(error);
+  }
+});
 
 // -------------------------------------------------------------------
 // Get game room metadata
@@ -187,7 +408,7 @@ router.get("/:id/metadata", async (req, res, next) => {
   try {
     // Get metadata from both MongoDB and memory
     const gameRoom = await GameRoom.findById(req.params.id)
-      .select("width height status")
+      .select("width height status lobby") // Added lobby to selection
       .lean();
 
     if (!gameRoom) {
@@ -200,10 +421,14 @@ router.get("/:id/metadata", async (req, res, next) => {
       return res.status(404).json({ error: "Game state not found" });
     }
 
+    // Always include width and height, either from game room or lobby settings
+    const width = gameRoom.width || gameRoom.lobby?.width || state.width;
+    const height = gameRoom.height || gameRoom.lobby?.height || state.height;
+
     res.json({
       map: {
-        width: gameRoom.width,
-        height: gameRoom.height,
+        width,
+        height,
         status: gameRoom.status,
       },
       config,
@@ -320,8 +545,27 @@ router.post("/:id/state", async (req, res, next) => {
       return res.status(403).json({ error: "Invalid credentials" });
     }
 
-    // Get game state from memory
-    const gameState = gameStateManager.getRoom(req.params.id);
+    // Get game state and update lastPoll time for this player
+    const currentTime = Date.now();
+    const gameState = gameStateManager.updateGameState(
+      req.params.id,
+      (state) => {
+        if (!state) return null;
+
+        // Just update lastPoll for this player
+        if (state.gameState.nations) {
+          const userNation = state.gameState.nations.find(
+            (n) => n.owner === userId
+          );
+          if (userNation) {
+            userNation.lastPoll = currentTime;
+          }
+        }
+
+        return state;
+      }
+    );
+
     if (!gameState) {
       return res.status(404).json({ error: "Game state not found" });
     }
@@ -333,9 +577,10 @@ router.post("/:id/state", async (req, res, next) => {
       }
 
       if (full) {
+        const { lastPoll, ...nationData } = nation;
         return {
-          ...nation,
-          territoryLoyalty: nation.territoryLoyalty || {},
+          ...nationData,
+          territoryLoyalty: nationData.territoryLoyalty || {},
           territoryDeltaForClient: {
             add: { x: [], y: [] },
             sub: { x: [], y: [] },
@@ -344,7 +589,7 @@ router.post("/:id/state", async (req, res, next) => {
         };
       }
 
-      const { territory, territoryLoyalty, ...rest } = nation;
+      const { territory, territoryLoyalty, lastPoll, ...rest } = nation;
       return {
         ...rest,
         territoryDeltaForClient: nation.territoryDeltaForClient || {
@@ -609,6 +854,10 @@ router.post("/:id/quit", async (req, res, next) => {
         (nation) => nation.owner !== userId
       );
 
+      state.gameState.players = state.gameState.players.filter(
+        (p) => p.userId !== userId
+      );
+
       // Update remaining players count
       state.gameState.remainingPlayers = state.gameState.nations.length;
       state.gameState.nations.forEach((nation) => {
@@ -625,73 +874,6 @@ router.post("/:id/quit", async (req, res, next) => {
       message: "Successfully quit the match",
       remainingPlayers: updated.gameState.remainingPlayers,
     });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// -------------------------------------------------------------------
-// POST /api/gamerooms/:id/join - Join a game room
-// -------------------------------------------------------------------
-router.post("/:id/join", async (req, res, next) => {
-  try {
-    const { joinCode, userName, password } = req.body;
-    if (!userName || !password) {
-      return res
-        .status(400)
-        .json({ error: "userName and password are required" });
-    }
-
-    // Verify game room in MongoDB
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom) {
-      return res.status(404).json({ error: "Game room not found" });
-    }
-
-    if (gameRoom.status !== "open") {
-      return res.status(400).json({ error: "Game room is not open" });
-    }
-
-    if (gameRoom.joinCode !== joinCode) {
-      return res.status(403).json({ error: "Invalid join code" });
-    }
-
-    // Check existing player
-    let player = gameRoom.players.find((p) => p.userId === userName);
-    if (player) {
-      if (player.password !== password) {
-        return res
-          .status(403)
-          .json({ error: "Invalid password for existing user" });
-      }
-
-      res.json({
-        message: "Rejoined game room successfully",
-        userId: player.userId,
-        config,
-      });
-    } else {
-      // Add new player
-      player = { userId: userName, password, userState: {} };
-
-      // Update in MongoDB
-      gameRoom.players.push(player);
-      await gameRoom.save();
-
-      // Update in memory
-      gameStateManager.updateGameState(req.params.id, (state) => {
-        if (!state.gameState.players) {
-          state.gameState.players = [];
-        }
-        state.gameState.players.push(player);
-        return state;
-      });
-
-      res.json({
-        message: "Joined game room successfully",
-        userId: player.userId,
-      });
-    }
   } catch (error) {
     next(error);
   }

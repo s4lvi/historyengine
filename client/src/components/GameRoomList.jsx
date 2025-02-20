@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
-import MapCreationPoller from "./MapCreationPoller";
 
 const MAP_SIZES = {
   Small: { width: 100, height: 100, erosion_passes: 3, num_blobs: 7 },
@@ -9,44 +8,22 @@ const MAP_SIZES = {
   Large: { width: 250, height: 250, erosion_passes: 3, num_blobs: 10 },
 };
 
-const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
+const CreateLobbyForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
   const [formData, setFormData] = useState({
     roomName: "",
-    selectedMapId: "",
-    generateNewMap: true,
-    mapName: "",
-    mapSize: "Normal", // New field for map size selection
-    width: MAP_SIZES.Normal.width,
-    height: MAP_SIZES.Normal.height,
-    erosion_passes: MAP_SIZES.Normal.erosion_passes,
-    num_blobs: MAP_SIZES.Normal.num_blobs,
+    joinCode: "",
     creatorName: "",
     creatorPassword: "",
-    joinCode: "",
   });
 
   if (!isOpen) return null;
 
   const handleChange = (e) => {
-    const { name, value, type, checked } = e.target;
-
-    if (name === "mapSize") {
-      // When map size changes, update both width and height
-      const selectedSize = MAP_SIZES[value];
-      setFormData((prev) => ({
-        ...prev,
-        mapSize: value,
-        width: selectedSize.width,
-        height: selectedSize.height,
-        erosion_passes: selectedSize.erosion_passes,
-        num_blobs: selectedSize.num_blobs,
-      }));
-    } else {
-      setFormData((prev) => ({
-        ...prev,
-        [name]: type === "checkbox" ? checked : value,
-      }));
-    }
+    const { name, value, type } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: type === "number" ? Number(value) : value,
+    }));
   };
 
   const handleSubmit = (e) => {
@@ -68,22 +45,21 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
           aria-hidden="true"
           onClick={onClose}
         ></div>
-
         {/* Modal panel */}
         <div className="inline-block align-bottom bg-gray-900 bg-opacity-75 rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full sm:p-6">
           <div className="sm:flex sm:items-start">
             <div className="mt-3 text-center sm:mt-0 sm:text-left w-full">
-              <h3 className="text-lg leading-6 font-medium " id="modal-title">
-                Create New Game Room
+              <h3 className="text-lg leading-6 font-medium" id="modal-title">
+                Create New Lobby
               </h3>
               <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-                {/* Room Name */}
+                {/* Lobby Name */}
                 <div>
                   <label
                     htmlFor="roomName"
                     className="block text-sm font-medium text-gray-500"
                   >
-                    Room Name
+                    Lobby Name
                   </label>
                   <input
                     type="text"
@@ -95,7 +71,6 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                     required
                   />
                 </div>
-
                 {/* Join Code */}
                 <div>
                   <label
@@ -114,14 +89,13 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                     required
                   />
                 </div>
-
                 {/* Creator Name */}
                 <div>
                   <label
                     htmlFor="creatorName"
                     className="block text-sm font-medium text-gray-500"
                   >
-                    Creator Name
+                    Your Name
                   </label>
                   <input
                     type="text"
@@ -133,14 +107,13 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                     required
                   />
                 </div>
-
                 {/* Creator Password */}
                 <div>
                   <label
                     htmlFor="creatorPassword"
                     className="block text-sm font-medium text-gray-500"
                   >
-                    Creator Password
+                    Password
                   </label>
                   <input
                     type="password"
@@ -153,39 +126,12 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   />
                 </div>
 
-                {/* Map Generation Options */}
-                <div className="space-y-2">
-                  <div>
-                    <label
-                      htmlFor="mapSize"
-                      className="block text-sm font-medium text-gray-500"
-                    >
-                      Map Size
-                    </label>
-                    <select
-                      id="mapSize"
-                      name="mapSize"
-                      value={formData.mapSize}
-                      onChange={handleChange}
-                      className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      required
-                    >
-                      {Object.keys(MAP_SIZES).map((size) => (
-                        <option key={size} value={size}>
-                          {size} ({MAP_SIZES[size].width}x
-                          {MAP_SIZES[size].height})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
                 {/* Form Buttons */}
                 <div className="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
                   <button
                     type="submit"
                     disabled={isCreating}
-                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium  hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:bg-blue-300"
+                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:bg-blue-300"
                   >
                     {isCreating ? (
                       <>
@@ -193,7 +139,7 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                         Creating...
                       </>
                     ) : (
-                      "Create Game Room"
+                      "Create Lobby"
                     )}
                   </button>
                   <button
@@ -213,23 +159,17 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
   );
 };
 
-const GameRoomList = () => {
-  const [gameRooms, setGameRooms] = useState([]);
-  const [availableMaps, setAvailableMaps] = useState([]);
+const LobbyList = () => {
+  const [lobbies, setLobbies] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState(null);
   const [createError, setCreateError] = useState(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
 
-  const [mapGenerationState, setMapGenerationState] = useState({
-    isPolling: false,
-    mapId: null,
-    formData: null,
-  });
   const navigate = useNavigate();
 
-  const fetchGameRooms = async () => {
+  const fetchLobbies = async () => {
     try {
       setIsLoading(true);
       setError(null);
@@ -240,7 +180,7 @@ const GameRoomList = () => {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || "Failed to fetch game rooms");
+        throw new Error(errorData.message || "Failed to fetch lobbies");
       }
 
       const data = await response.json();
@@ -249,55 +189,59 @@ const GameRoomList = () => {
         throw new Error("Invalid data received from server");
       }
 
-      setGameRooms(data);
+      setLobbies(data);
     } catch (err) {
       setError(err.message);
     } finally {
       setIsLoading(false);
     }
   };
-
-  const handleCreateGameRoom = async (formData) => {
+  const handleCreateLobby = async (formData) => {
     if (isCreating) return;
 
     try {
       setIsCreating(true);
       setCreateError(null);
 
-      // Use the new endpoint to create a game room with asynchronous map generation
+      // Create a lobby using the new endpoint.
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/init`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             roomName: formData.roomName,
             joinCode: formData.joinCode,
             creatorName: formData.creatorName,
             creatorPassword: formData.creatorPassword,
-            mapName: `Room:${formData.creatorName}`,
-            width: formData.width,
-            height: formData.height,
-            erosion_passes: formData.erosion_passes,
-            num_blobs: formData.num_blobs,
+            lobby: {
+              mapSize: formData.mapSize,
+              width: formData.width,
+              height: formData.height,
+              erosion_passes: formData.erosion_passes,
+              num_blobs: formData.num_blobs,
+              maxPlayers: formData.maxPlayers,
+            },
           }),
         }
       );
 
       if (!response.ok) {
-        throw new Error("Failed to create game room");
+        throw new Error("Failed to create lobby");
       }
 
-      const result = await response.json(); // { gameRoomId, joinCode }
-      // Set polling state with the returned game room ID
-      setMapGenerationState({
-        isPolling: true,
-        gameRoomId: result.gameRoomId,
-        formData: formData,
-      });
-
+      const result = await response.json(); // { lobbyId, joinCode }
+      // Store the creator credentials so that Lobby knows this user is the creator.
+      localStorage.setItem(
+        `lobby-${result.lobbyId}-creator`,
+        formData.creatorName
+      );
+      localStorage.setItem(
+        `lobby-${result.lobbyId}-password`,
+        formData.creatorPassword
+      );
+      // Redirect to the lobby waiting room.
+      navigate(`/lobby/${result.lobbyId}`);
       setIsCreateDialogOpen(false);
     } catch (err) {
       setCreateError(err.message);
@@ -305,105 +249,68 @@ const GameRoomList = () => {
     }
   };
 
-  const handleMapReady = async (data) => {
-    console.log(
-      "Map is ready for game room",
-      mapGenerationState.gameRoomId,
-      data
-    );
-
-    // Store credentials
-    const roomKey = `gameRoom-${mapGenerationState.gameRoomId}-userId`;
-    localStorage.setItem(
-      `${roomKey}-userId`,
-      mapGenerationState.formData.creatorName
-    );
-    localStorage.setItem(
-      `${roomKey}-password`,
-      mapGenerationState.formData.creatorPassword
-    );
-    localStorage.setItem(
-      `${roomKey}-joinCode`,
-      mapGenerationState.formData.joinCode
-    );
-    // Optionally, you can store credentials or any additional data here.
-    navigate(`/rooms/${mapGenerationState.gameRoomId}`);
-  };
-
-  const handlePollingError = (error) => {
-    setCreateError(error.message);
-    setIsCreating(false);
-    setMapGenerationState({ isPolling: false, mapId: null, formData: null });
-  };
-
   useEffect(() => {
-    fetchGameRooms();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    fetchLobbies();
   }, []);
 
-  if (isLoading && gameRooms.length === 0) return <LoadingSpinner />;
-  console.log("gameRooms", gameRooms);
+  if (isLoading && lobbies.length === 0) return <LoadingSpinner />;
+  console.log("lobbies", lobbies);
+
   return (
     <div className="max-w-4xl mx-auto p-6">
       <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Open Games</h1>
+        <h1 className="text-3xl font-bold">Open Lobbies</h1>
         <button
           onClick={() => setIsCreateDialogOpen(true)}
-          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300  px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
+          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300 px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
         >
-          Create New Game
+          Create New Lobby
         </button>
       </div>
 
-      {!mapGenerationState.isPolling && (
-        <CreateGameRoomForm
+      {isCreateDialogOpen && (
+        <CreateLobbyForm
           isOpen={isCreateDialogOpen}
           onClose={() => setIsCreateDialogOpen(false)}
-          onSubmit={handleCreateGameRoom}
+          onSubmit={handleCreateLobby}
           isCreating={isCreating}
-          availableMaps={availableMaps}
-        />
-      )}
-      {mapGenerationState.isPolling && (
-        <MapCreationPoller
-          gameRoomId={mapGenerationState.gameRoomId}
-          formData={mapGenerationState.formData}
-          onMapReady={handleMapReady}
-          onError={handlePollingError}
         />
       )}
 
-      {error && <ErrorMessage message={error} onRetry={fetchGameRooms} />}
-
+      {error && <ErrorMessage message={error} onRetry={fetchLobbies} />}
       {createError && <ErrorMessage message={createError} />}
 
       <div className="space-y-4">
-        {gameRooms.length === 0 && (
-          <div>No open games available. Try starting your own!</div>
+        {lobbies.length === 0 && (
+          <div>No open lobbies available. Try starting your own!</div>
         )}
-        {gameRooms.map((room) => (
+        {lobbies.map((lobby) => (
           <div
-            key={room._id}
+            key={lobby._id}
             className="bg-gray-900 rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition-shadow duration-200"
           >
             <div className="flex justify-between items-center">
               <div>
                 <h2 className="text-xl font-semibold text-gray-100">
-                  {room.roomName}
+                  {lobby.roomName}
                 </h2>
                 <p className="text-gray-500 text-sm mt-1">
-                  Created: {new Date(room.createdAt).toLocaleDateString()}
+                  Created: {new Date(lobby.createdAt).toLocaleDateString()}
                 </p>
                 <p className="text-gray-500 text-sm">
-                  Players: {room.players?.length}
+                  Players: {lobby.players?.length}/{lobby.lobby.maxPlayers}
+                </p>
+                <p className="text-gray-500 text-sm">
+                  Map Size: {lobby.lobby.mapSize} ({lobby.lobby.width}x
+                  {lobby.lobby.height})
                 </p>
               </div>
               <div className="flex gap-3">
                 <button
-                  onClick={() => navigate(`/rooms/${room._id}`)}
-                  className={`px-4 py-2 rounded-md transition-colors duration-200 flex items-center gap-2 bg-green-700 hover:bg-green-600"`}
+                  onClick={() => navigate(`/lobby/${lobby._id}`)}
+                  className="px-4 py-2 rounded-md transition-colors duration-200 flex items-center gap-2 bg-green-700 hover:bg-green-600"
                 >
-                  {"Join Game"}
+                  Join Lobby
                 </button>
               </div>
             </div>
@@ -414,4 +321,4 @@ const GameRoomList = () => {
   );
 };
 
-export default GameRoomList;
+export default LobbyList;

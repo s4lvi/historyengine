@@ -9,7 +9,21 @@ const REINFORCEMENT_RATE = LOYALTY.ARMY_BONUS + 1;
 const ENEMY_TERRITORY_PENALTY = 1;
 
 export function checkWinCondition(gameState, mapData) {
-  // Compute total claimable cells (cells that are not ocean)
+  // Count active (non-defeated) nations
+  const activeNations = gameState.nations.filter(
+    (nation) => nation.status !== "defeated"
+  );
+
+  // If only one player remains, they win
+  if (gameState.players.length === 1) {
+    const winner = activeNations[0].owner;
+    gameState.nations.forEach((nation) => {
+      nation.status = nation.owner === winner ? "winner" : "defeated";
+    });
+    return;
+  }
+
+  // Otherwise, check territory win condition
   let totalClaimable = 0;
   for (let y = 0; y < mapData.length; y++) {
     for (let x = 0; x < mapData[0].length; x++) {
@@ -26,6 +40,9 @@ export function checkWinCondition(gameState, mapData) {
 
   // Update each nation with its territory percentage.
   gameState.nations.forEach((nation) => {
+    // Skip already defeated nations
+    if (nation.status === "defeated") return;
+
     // Assume nation.territory.x is an array of claimed cell x-coordinates
     const territoryCount =
       nation.territory && nation.territory.x ? nation.territory.x.length : 0;
