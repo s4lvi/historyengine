@@ -357,6 +357,12 @@ router.post("/:id/state", async (req, res, next) => {
 
     const filteredGameState = {
       ...gameState.gameState,
+      players: gameState.gameState.players.map((p) => ({
+        userId: p.userId,
+      })),
+      creator: {
+        userId: gameState.gameState.creator.userId,
+      },
       nations: (gameState.gameState.nations || []).map(filterNation),
       cachedBorderSet: null,
     };
