@@ -549,7 +549,6 @@ function spawnSubBlobs(
           const subX = blob.x + Math.cos(angle) * blob.radius * 0.9;
           const subY = blob.y + Math.sin(angle) * blob.radius * 0.9;
           const subRadius = Math.random();
-          console.log("Added sub blob", blob.radius, subRadius);
           newBlobs.push({ x: subX, y: subY, radius: subRadius });
         }
       }

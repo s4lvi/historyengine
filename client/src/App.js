@@ -1,3 +1,4 @@
+// App.js
 import React from "react";
 import {
   BrowserRouter as Router,
@@ -6,7 +7,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 import Game from "./components/Game";
-import GameRoomList from "./components/GameRoomList";
+import LobbyList from "./components/LobbyList";
 import { ErrorBoundary } from "./components/ErrorHandling";
 import { FaDiscord } from "react-icons/fa";
 import Lobby from "./components/Lobby";
@@ -20,29 +21,30 @@ const LandingPage = () => {
         backgroundImage: "url('/background.png')",
         imageRendering: "pixelated",
         imageRendering: "crisp-edges",
-      }} // update with your background image URL
+      }}
     >
-      <div className=" bg-gray-900 w-full bg-opacity-75">
+      <div className="bg-gray-900 w-full bg-opacity-75">
         <img
           src="annexilogo.png"
           alt="Annexi Logo"
-          className="w-128 mx-auto"
+          className="w-48 sm:w-128 mx-auto cursor-pointer"
           onClick={() => navigate("/")}
         />
       </div>
 
-      {/* Main Content: Centered Game Room List Card */}
-      <main className="flex-grow flex items-center justify-center ">
-        <div className="bg-gray-900 text-white bg-opacity-75 rounded-lg shadow-xl p-8 m-4 w-full max-w-4xl">
-          <GameRoomList />
+      <main className="flex-grow flex items-center justify-center p-4">
+        <div className="bg-gray-900 text-white bg-opacity-75 rounded-lg shadow-xl p-6 sm:p-8 m-4 w-full max-w-4xl">
+          <LobbyList />
         </div>
       </main>
 
-      <footer className="w-full bg-gray-900 text-center p-4 text-white flex flex-row justify-between items-center px-12">
+      <footer
+        className="w-full bg-gray-900 text-center p-4 text-white flex flex-col sm:flex-row justify-between items-center px-4 sm:px-12"
+        style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}
+      >
         <p>&copy; 2025 annexi.io</p>
-
         <a
-          className="cursor-pointer hover:text-gray-300"
+          className="cursor-pointer hover:text-gray-300 my-2 sm:my-0"
           href="https://discord.gg/6YRU8YP5q7"
         >
           <FaDiscord />
@@ -67,19 +69,19 @@ const HowToPlay = () => {
         backgroundImage: "url('/background.png')",
         imageRendering: "pixelated",
         imageRendering: "crisp-edges",
-      }} // update with your background image URL
+      }}
     >
-      <div className=" bg-gray-900 w-full bg-opacity-75">
+      <div className="bg-gray-900 w-full bg-opacity-75">
         <img
           src="annexilogo.png"
           alt="Annexi Logo"
-          className="w-128 mx-auto"
+          className="w-48 sm:w-128 mx-auto cursor-pointer"
           onClick={() => navigate("/")}
         />
       </div>
 
-      <main className="flex-grow flex items-center justify-center">
-        <div className="bg-gray-900 text-white bg-opacity-75 rounded-lg shadow-xl p-8 m-4 w-full max-w-4xl">
+      <main className="flex-grow flex items-center justify-center p-4">
+        <div className="bg-gray-900 text-white bg-opacity-75 rounded-lg shadow-xl p-6 sm:p-8 m-4 w-full max-w-4xl">
           <h1 className="text-3xl font-bold mb-8 text-center">How to Play</h1>
 
           <div className="space-y-6">
@@ -125,14 +127,17 @@ const HowToPlay = () => {
         </div>
       </main>
 
-      <footer className="w-full bg-gray-900 text-center p-4 text-white flex flex-row justify-between items-center px-12">
+      <footer
+        className="w-full bg-gray-900 text-center p-4 text-white flex flex-col sm:flex-row justify-between items-center px-4 sm:px-12"
+        style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}
+      >
         <p>&copy; 2025 annexi.io</p>
-        <p
-          className="cursor-pointer hover:text-gray-300"
-          onClick={() => window.location("https://discord.gg/6YRU8YP5q7")}
+        <a
+          className="cursor-pointer hover:text-gray-300 my-2 sm:my-0"
+          href="https://discord.gg/6YRU8YP5q7"
         >
           <FaDiscord />
-        </p>
+        </a>
         <p
           className="cursor-pointer hover:text-gray-300 w-32"
           onClick={() => navigate("/rooms")}
@@ -149,8 +154,7 @@ function App() {
     <ErrorBoundary>
       <Router>
         <div className="App min-h-screen bg-gray-50">
-          {/* <Header /> */}
-          <main className="pb-12 max-w-7xl mx-auto ">
+          <main className="max-w-7xl mx-auto ">
             <Routes>
               <Route path="/" element={<LandingPage />} />
               <Route path="/rooms" element={<LandingPage />} />

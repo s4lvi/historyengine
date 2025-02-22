@@ -1,26 +1,29 @@
+// Lobby.js
 import React, { useState, useEffect } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
 
 const Lobby = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { search } = useLocation();
 
-  // State for lobby details from backend
+  // Extract joincode from the URL query parameters
+  const params = new URLSearchParams(search);
+  const joinCodeFromQuery = params.get("joincode");
+
   const [lobby, setLobby] = useState(null);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // State for join form (for non-creators)
   const [joinForm, setJoinForm] = useState({
     userName: "",
     password: "",
-    joinCode: "",
+    joinCode: joinCodeFromQuery || "",
   });
   const [joinError, setJoinError] = useState(null);
   const [isJoining, setIsJoining] = useState(false);
 
-  // State for creator settings form
   const [settingsForm, setSettingsForm] = useState({
     roomName: "",
     mapSize: "Normal",
@@ -28,18 +31,15 @@ const Lobby = () => {
   });
   const [settingsUpdating, setSettingsUpdating] = useState(false);
   const [settingsError, setSettingsError] = useState(null);
+  const [isStartingGame, setIsStartingGame] = useState(false);
 
-  // Check local storage for credentials:
   const localCreatorName = localStorage.getItem(`lobby-${id}-creator`);
   const localUserName = localStorage.getItem(`lobby-${id}-userName`);
   const localPassword = localStorage.getItem(`lobby-${id}-password`);
 
-  // Consider the user joined if either creator or regular user credentials exist.
   const isJoined = (localCreatorName || localUserName) && localPassword;
-  // The user is the creator if their creator credentials exist.
   const isCreator = Boolean(localCreatorName);
 
-  // When lobby data is fetched, update settingsForm from the lobby.lobby object.
   useEffect(() => {
     if (lobby && lobby.lobby) {
       setSettingsForm({
@@ -50,7 +50,6 @@ const Lobby = () => {
     }
   }, [lobby]);
 
-  // Poll for lobby details every 2 seconds.
   useEffect(() => {
     let interval;
     const fetchLobbyDetails = async () => {
@@ -59,7 +58,7 @@ const Lobby = () => {
           `${process.env.REACT_APP_API_URL}api/gamerooms/${id}`
         );
         if (!response.ok) {
-          throw new Error("Failed to fetch lobby details");
+          setError("This game has started or the id is invalid");
         }
         const data = await response.json();
         setLobby((prev) =>
@@ -68,12 +67,11 @@ const Lobby = () => {
         if (isLoading) {
           setIsLoading(false);
         }
-        // Redirect if lobby status becomes "in-progress"
-        if (data.status === "in-progress") {
+        if (data.status === "in-progress" || data.status === "paused") {
           navigate(`/rooms/${id}`);
         }
       } catch (err) {
-        setError(err.message);
+        setError("This game has started or the id is invalid");
         setIsLoading(false);
       }
     };
@@ -82,88 +80,23 @@ const Lobby = () => {
     return () => clearInterval(interval);
   }, [id, navigate, isLoading]);
 
-  // Handle join form changes.
+  // Update joinCode automatically if present in the URL
+  useEffect(() => {
+    if (joinCodeFromQuery && joinForm.joinCode !== joinCodeFromQuery) {
+      setJoinForm((prev) => ({ ...prev, joinCode: joinCodeFromQuery }));
+    }
+  }, [joinCodeFromQuery, joinForm.joinCode]);
+
   const handleJoinChange = (e) => {
     const { name, value } = e.target;
     setJoinForm((prev) => ({ ...prev, [name]: value }));
   };
 
-  // Handle join form submission.
-  const handleJoin = async (e) => {
-    e.preventDefault();
-    setIsJoining(true);
-    setJoinError(null);
-    try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/join`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            joinCode: joinForm.joinCode, // use the join code entered by the player
-            userName: joinForm.userName,
-            password: joinForm.password,
-          }),
-        }
-      );
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to join lobby");
-      }
-      // Save joined user credentials locally.
-      localStorage.setItem(`lobby-${id}-userName`, joinForm.userName);
-      localStorage.setItem(`lobby-${id}-password`, joinForm.password);
-      setIsJoining(false);
-    } catch (err) {
-      setJoinError(err.message);
-      setIsJoining(false);
-    }
-  };
-
-  // Handle settings form changes (for creator).
-  const handleSettingsChange = (e) => {
-    const { name, value, type } = e.target;
-    setSettingsForm((prev) => ({
-      ...prev,
-      [name]: type === "number" ? Number(value) : value,
-    }));
-  };
-
-  // Handle settings form submission.
-  const handleSettingsSubmit = async (e) => {
-    e.preventDefault();
-    setSettingsUpdating(true);
-    setSettingsError(null);
-    try {
-      const creatorName = localCreatorName;
-      const creatorPassword = localPassword;
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/settings`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userName: creatorName,
-            password: creatorPassword,
-            lobby: settingsForm,
-          }),
-        }
-      );
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to update lobby settings");
-      }
-      const data = await response.json();
-      setLobby((prev) => ({ ...prev, lobby: data.lobby }));
-      setSettingsUpdating(false);
-    } catch (err) {
-      setSettingsError(err.message);
-      setSettingsUpdating(false);
-    }
-  };
-
-  // Handle start game action for the creator.
   const handleStartGame = async () => {
+    // Prevent duplicate clicks
+    if (isStartingGame) return;
+    setIsStartingGame(true);
+
     try {
       const creatorName = localCreatorName;
       const creatorPassword = localPassword;
@@ -185,6 +118,129 @@ const Lobby = () => {
       navigate(`/rooms/${id}`);
     } catch (err) {
       alert(err.message);
+      setIsStartingGame(false); // Reset so the user can try again if needed
+    }
+  };
+
+  const handleJoin = async (e) => {
+    e.preventDefault();
+    setIsJoining(true);
+    setJoinError(null);
+    try {
+      const response = await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/join`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            joinCode: joinForm.joinCode,
+            userName: joinForm.userName,
+            password: joinForm.password,
+          }),
+        }
+      );
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to join lobby");
+      }
+      localStorage.setItem(`lobby-${id}-userName`, joinForm.userName);
+      localStorage.setItem(`lobby-${id}-password`, joinForm.password);
+      setIsJoining(false);
+    } catch (err) {
+      setJoinError(err.message);
+      setIsJoining(false);
+    }
+  };
+
+  const handleSettingsChange = (e) => {
+    const { name, value, type } = e.target;
+    setSettingsForm((prev) => ({
+      ...prev,
+      [name]: type === "number" ? Number(value) : value,
+    }));
+  };
+
+  // Converts the selected map size to width and height dimensions.
+  const getDimensions = (size) => {
+    switch (size) {
+      case "Small":
+        return { width: 100, height: 100 };
+      case "Normal":
+        return { width: 200, height: 200 };
+      case "Large":
+        return { width: 300, height: 300 };
+      default:
+        return { width: 200, height: 200 };
+    }
+  };
+
+  // New function to update settings automatically (called on a debounced change)
+  const updateSettings = async () => {
+    setSettingsUpdating(true);
+    setSettingsError(null);
+    try {
+      const creatorName = localCreatorName;
+      const creatorPassword = localPassword;
+      const dimensions = getDimensions(settingsForm.mapSize);
+      const updatedSettings = { ...settingsForm, ...dimensions };
+      const response = await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/settings`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userName: creatorName,
+            password: creatorPassword,
+            lobby: updatedSettings,
+          }),
+        }
+      );
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to update lobby settings");
+      }
+      const data = await response.json();
+      setLobby((prev) => ({ ...prev, lobby: data.lobby }));
+    } catch (err) {
+      setSettingsError(err.message);
+    } finally {
+      setSettingsUpdating(false);
+    }
+  };
+
+  // Debounce updating settings when settingsForm changes (only for the creator)
+  useEffect(() => {
+    if (isCreator) {
+      const timer = setTimeout(() => {
+        updateSettings();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [settingsForm, isCreator]);
+
+  // New function to close the lobby
+  const handleCloseLobby = async () => {
+    try {
+      const creatorName = localCreatorName;
+      const creatorPassword = localPassword;
+      const response = await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/end`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userName: creatorName,
+            password: creatorPassword,
+          }),
+        }
+      );
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to close lobby");
+      }
+      navigate("/");
+    } catch (err) {
+      alert(err.message);
     }
   };
 
@@ -197,26 +253,40 @@ const Lobby = () => {
   }
 
   if (error) {
-    return <ErrorMessage message={error} />;
+    return (
+      <div className="min-h-screen bg-gray-800 text-white flex items-center justify-center p-4">
+        <div className="bg-gray-900 bg-opacity-75 rounded-lg shadow-xl p-4 sm:p-8 w-full max-w-lg">
+          <h2 className="text-2xl font-bold mb-4">This lobby is closed.</h2>
+          <button
+            type="submit"
+            onClick={() => navigate("/")}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded"
+          >
+            Go Back
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="min-h-screen bg-gray-800 text-white flex items-center justify-center p-4">
-      <div className="bg-gray-900 bg-opacity-75 rounded-lg shadow-xl p-8 w-full max-w-2xl">
+      <div className="bg-gray-900 bg-opacity-75 rounded-lg shadow-xl p-4 sm:p-8 w-full max-w-lg">
         <h2 className="text-2xl font-bold mb-4">
           Lobby: {lobby.roomName || "Lobby"}
         </h2>
-        <p className="mb-2">
-          Join Code:{" "}
-          <span className="font-mono bg-gray-700 px-2 py-1 rounded">
-            {lobby.joinCode}
-          </span>
-        </p>
+        {isJoined && (
+          <p className="mb-2">
+            Join Code:{" "}
+            <span className="font-mono bg-gray-700 px-2 py-1 rounded">
+              {lobby.joinCode}
+            </span>
+          </p>
+        )}
         <p className="mb-4">
           Players: {lobby.players?.length}/{lobby.lobby.maxPlayers}
         </p>
 
-        {/* For non-creators, show join form */}
         {!isJoined && !isCreator && (
           <div className="mb-4">
             <h3 className="text-xl font-semibold mb-2">Join Lobby</h3>
@@ -249,7 +319,6 @@ const Lobby = () => {
                   required
                 />
               </div>
-              {/* Editable join code field for players */}
               <div>
                 <label htmlFor="joinCode" className="block text-sm font-medium">
                   Join Code
@@ -277,13 +346,12 @@ const Lobby = () => {
           </div>
         )}
 
-        {/* For users who are joined */}
         {isJoined && (
           <>
             {isCreator && (
               <div className="mb-4">
                 <h3 className="text-xl font-semibold mb-2">Lobby Settings</h3>
-                <form onSubmit={handleSettingsSubmit} className="space-y-4">
+                <form className="space-y-4">
                   <div>
                     <label
                       htmlFor="roomName"
@@ -339,20 +407,21 @@ const Lobby = () => {
                     />
                   </div>
                   {settingsError && <ErrorMessage message={settingsError} />}
-                  <div className="flex space-x-4">
+                  <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-4">
                     <button
-                      type="submit"
-                      disabled={settingsUpdating}
-                      className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded"
+                      type="button"
+                      onClick={handleCloseLobby}
+                      className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded"
                     >
-                      {settingsUpdating ? "Updating..." : "Update Settings"}
+                      Close Lobby
                     </button>
                     <button
                       type="button"
                       onClick={handleStartGame}
+                      disabled={isStartingGame}
                       className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded"
                     >
-                      Start Game
+                      {isStartingGame ? "Starting..." : "Start Game"}
                     </button>
                   </div>
                 </form>

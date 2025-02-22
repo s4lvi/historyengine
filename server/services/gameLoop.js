@@ -7,18 +7,36 @@ class GameLoop {
     this.activeRooms = new Set();
     this.intervalIds = new Map();
     this.cacheCount = 0;
-    this.INACTIVE_TIMEOUT = 2000;
+    this.INACTIVE_TIMEOUT = 600000;
   }
 
-  async startRoom(roomId) {
+  async startRoom(roomId, invalidateCache = true) {
     if (this.activeRooms.has(roomId)) return;
     this.activeRooms.add(roomId);
-    this.runLoop(roomId);
+
+    // Clear caches immediately when starting/resuming the room.
+    const state = gameStateManager.getRoom(roomId);
+    if (state && state.gameState && state.gameState.nations) {
+      state.gameState.nations.forEach((nation) => {
+        delete nation.cachedBorderSet;
+        delete nation.cachedConnectedCells;
+        nation.territoryDelta = {
+          add: { x: [], y: [] },
+          sub: { x: [], y: [] },
+        };
+      });
+      // Mark that we just resumed so the first tick will force a full cache reset.
+      state.justResumed = true;
+      state.invalidateBorderCache = true;
+      gameStateManager.updateGameState(roomId, () => state);
+    }
+
+    this.runLoop(roomId, invalidateCache);
     console.log(`Started game loop for room ${roomId}`);
     this.cacheCount = 0;
   }
 
-  async runLoop(roomId) {
+  async runLoop(roomId, invalidateCache = false) {
     if (!this.activeRooms.has(roomId)) return;
 
     try {
@@ -36,7 +54,6 @@ class GameLoop {
         return;
       }
 
-      // Update game state
       const currentTime = Date.now();
       const updatedState = {
         ...state,
@@ -44,46 +61,21 @@ class GameLoop {
         lastActivity: currentTime,
       };
 
-      // Remove inactive nations (haven't polled in 2 seconds)
-      if (updatedState.gameState.nations) {
-        const inactiveNations = updatedState.gameState.nations.filter(
-          (nation) => {
-            return (
-              nation.status !== "defeated" &&
-              (!nation.lastPoll ||
-                currentTime - nation.lastPoll > this.INACTIVE_TIMEOUT)
-            );
-          }
-        );
-
-        if (inactiveNations.length > 0) {
-          console.log(
-            `Removing inactive nations:`,
-            inactiveNations.map((n) => n.owner)
-          );
-
-          // Filter out inactive nations
-          updatedState.gameState.nations =
-            updatedState.gameState.nations.filter(
-              (nation) =>
-                nation.status === "defeated" ||
-                !inactiveNations.find(
-                  (inactive) => inactive.owner === nation.owner
-                )
-            );
-
-          // Filter out the corresponding players
-          updatedState.gameState.players =
-            updatedState.gameState.players.filter(
-              (player) =>
-                !inactiveNations.find(
-                  (inactive) => inactive.owner === player.userId
-                )
-            );
-        }
+      // If the game just resumed, force cache invalidation for all nations.
+      if (updatedState.justResumed && updatedState.gameState.nations) {
+        updatedState.gameState.nations.forEach((nation) => {
+          delete nation.cachedBorderSet;
+          delete nation.cachedConnectedCells;
+          nation.territoryDelta = {
+            add: { x: [], y: [] },
+            sub: { x: [], y: [] },
+          };
+        });
+        // Clear the flag so this only happens on the first tick.
+        updatedState.justResumed = false;
       }
 
-      // Pre-invalidate caches for all nations
+      // Also, if the invalidate flag is set, clear caches.
       if (
         updatedState.invalidateBorderCache &&
         updatedState.gameState.nations
@@ -94,27 +86,25 @@ class GameLoop {
         });
       }
 
-      // Update each active nation
+      // Update each active nation.
       if (updatedState.gameState.nations) {
         const activeNations = updatedState.gameState.nations.filter(
           (nation) => nation.status !== "defeated"
         );
-
         updatedState.gameState.nations = [
           ...activeNations.map((nation) =>
             updateNation(nation, mapData, updatedState.gameState)
           ),
-          // Keep defeated nations in the list without updating them
           ...updatedState.gameState.nations.filter(
             (nation) => nation.status === "defeated"
           ),
         ];
 
-        // Check win conditions
+        // Check win conditions.
         checkWinCondition(updatedState.gameState, mapData);
       }
 
-      // Maintain the invalidation flag for at least 2 loops
+      // Maintain the invalidation flag for at least 2 loops.
       if (updatedState.invalidateBorderCache) {
         this.cacheCount += 1;
         if (this.cacheCount >= 2) {
@@ -124,11 +114,16 @@ class GameLoop {
       } else {
         this.cacheCount = 0;
       }
+      if (invalidateCache) {
+        updatedState.invalidateBorderCache = true;
+        this.cacheCount = 0;
+        invalidateCache = false;
+      }
 
-      // Save updated state
+      // Save the updated state.
       gameStateManager.updateGameState(roomId, () => updatedState);
 
-      // Schedule next tick
+      // Schedule the next tick.
       this.intervalIds.set(
         roomId,
         setTimeout(() => this.runLoop(roomId), 100)

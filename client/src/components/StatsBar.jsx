@@ -11,29 +11,28 @@ const StatsBar = ({ gameState, userId }) => {
   // Safely access territory length
   const territoryLength = userNation.territory?.x?.length || 0;
 
-  // Safely access cities length
-  const citiesLength =
-    userNation.cities?.filter((c) => c.type === "capital" || c.type === "town")
-      .length || 0;
-
   return (
     <div className="absolute top-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-2 z-40">
-      <div className="flex items-center gap-6">
+      <div className="flex flex-wrap items-center gap-2 md:gap-6">
         {/* Core Stats */}
-        <div className="flex gap-6 items-center">
-          <div>
-            <span className="text-sm opacity-80">Population</span>
-            <div className="font-medium">
+        <div className="flex flex-wrap gap-2 md:gap-6 items-center">
+          <div className="min-w-[80px]">
+            <span className="text-xs md:text-sm opacity-80">Population</span>
+            <div className="text-sm md:text-base font-medium">
               {(userNation.population || 0).toLocaleString()}
             </div>
           </div>
-          <div>
-            <span className="text-sm opacity-80">Territory</span>
-            <div className="font-medium">{territoryLength} tiles</div>
+          <div className="min-w-[70px]">
+            <span className="text-xs md:text-sm opacity-80">Territory</span>
+            <div className="text-sm md:text-base font-medium">
+              {territoryLength}
+            </div>
           </div>
-          <div>
-            <span className="text-sm opacity-80">Controlled</span>
-            <div className="font-medium">{userNation.territoryPercentage}%</div>
+          <div className="min-w-[70px]">
+            <span className="text-xs md:text-sm opacity-80">Controlled</span>
+            <div className="text-sm md:text-base font-medium">
+              {userNation.territoryPercentage}%
+            </div>
           </div>
         </div>
 
@@ -41,19 +40,21 @@ const StatsBar = ({ gameState, userId }) => {
         <div className="h-8 w-px bg-white bg-opacity-20"></div>
 
         {/* Resources Section */}
-        <div className="flex gap-6 items-center">
-          {["food", "wood", "stone", "bronze", "steel", "horses"].map(
-            (resource) => (
-              <div key={resource}>
-                <span className="text-sm opacity-80 capitalize">
-                  {resource}
-                </span>
-                <div className="font-medium">
-                  {(userNation.resources?.[resource] || 0).toFixed(0)}
+        <div className="flex-1 overflow-x-auto">
+          <div className="flex gap-2 md:gap-6 items-center">
+            {["food", "wood", "stone", "bronze", "steel", "horses"].map(
+              (resource) => (
+                <div key={resource} className="min-w-[60px]">
+                  <span className="text-xs md:text-sm opacity-80 capitalize">
+                    {resource}
+                  </span>
+                  <div className="text-sm md:text-base font-medium">
+                    {(userNation.resources?.[resource] || 0).toFixed(0)}
+                  </div>
                 </div>
-              </div>
-            )
-          )}
+              )
+            )}
+          </div>
         </div>
       </div>
     </div>

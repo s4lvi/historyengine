@@ -1,12 +1,7 @@
+// LobbyList.js (and CreateLobbyForm included)
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
-
-const MAP_SIZES = {
-  Small: { width: 100, height: 100, erosion_passes: 3, num_blobs: 7 },
-  Normal: { width: 150, height: 150, erosion_passes: 3, num_blobs: 9 },
-  Large: { width: 250, height: 250, erosion_passes: 3, num_blobs: 10 },
-};
 
 const CreateLobbyForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
   const [formData, setFormData] = useState({
@@ -46,7 +41,7 @@ const CreateLobbyForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
           onClick={onClose}
         ></div>
         {/* Modal panel */}
-        <div className="inline-block align-bottom bg-gray-900 bg-opacity-75 rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full sm:p-6">
+        <div className="inline-block align-bottom bg-gray-900 bg-opacity-75 rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg w-full sm:w-auto sm:p-6">
           <div className="sm:flex sm:items-start">
             <div className="mt-3 text-center sm:mt-0 sm:text-left w-full">
               <h3 className="text-lg leading-6 font-medium" id="modal-title">
@@ -131,7 +126,7 @@ const CreateLobbyForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   <button
                     type="submit"
                     disabled={isCreating}
-                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:bg-blue-300"
+                    className="w-full sm:w-auto inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:text-sm disabled:bg-blue-300"
                   >
                     {isCreating ? (
                       <>
@@ -145,7 +140,7 @@ const CreateLobbyForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   <button
                     type="button"
                     onClick={onClose}
-                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-gray-900 text-base font-medium text-gray-500 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:w-auto sm:text-sm"
+                    className="mt-3 w-full sm:w-auto inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-gray-900 text-base font-medium text-gray-500 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:text-sm"
                   >
                     Cancel
                   </button>
@@ -171,7 +166,6 @@ const LobbyList = () => {
 
   const fetchLobbies = async () => {
     try {
-      setIsLoading(true);
       setError(null);
 
       const response = await fetch(
@@ -196,6 +190,7 @@ const LobbyList = () => {
       setIsLoading(false);
     }
   };
+
   const handleCreateLobby = async (formData) => {
     if (isCreating) return;
 
@@ -203,7 +198,6 @@ const LobbyList = () => {
       setIsCreating(true);
       setCreateError(null);
 
-      // Create a lobby using the new endpoint.
       const response = await fetch(
         `${process.env.REACT_APP_API_URL}api/gamerooms`,
         {
@@ -215,6 +209,7 @@ const LobbyList = () => {
             creatorName: formData.creatorName,
             creatorPassword: formData.creatorPassword,
             lobby: {
+              // You can extend this with additional map settings if needed.
               mapSize: formData.mapSize,
               width: formData.width,
               height: formData.height,
@@ -230,8 +225,7 @@ const LobbyList = () => {
         throw new Error("Failed to create lobby");
       }
 
-      const result = await response.json(); // { lobbyId, joinCode }
-      // Store the creator credentials so that Lobby knows this user is the creator.
+      const result = await response.json();
       localStorage.setItem(
         `lobby-${result.lobbyId}-creator`,
         formData.creatorName
@@ -240,7 +234,6 @@ const LobbyList = () => {
         `lobby-${result.lobbyId}-password`,
         formData.creatorPassword
       );
-      // Redirect to the lobby waiting room.
       navigate(`/lobby/${result.lobbyId}`);
       setIsCreateDialogOpen(false);
     } catch (err) {
@@ -250,19 +243,22 @@ const LobbyList = () => {
   };
 
   useEffect(() => {
+    let interval;
+    setIsLoading(true);
     fetchLobbies();
+    interval = setInterval(fetchLobbies, 2000);
+    return () => clearInterval(interval);
   }, []);
 
   if (isLoading && lobbies.length === 0) return <LoadingSpinner />;
-  console.log("lobbies", lobbies);
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Open Lobbies</h1>
+    <div className="w-full max-w-4xl mx-auto p-4 sm:p-6">
+      <div className="flex flex-col sm:flex-row justify-between items-center mb-8">
+        <h1 className="text-3xl font-bold mb-4 sm:mb-0">Open Lobbies</h1>
         <button
           onClick={() => setIsCreateDialogOpen(true)}
-          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300 px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
+          className="w-full sm:w-auto bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300 px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
         >
           Create New Lobby
         </button>
@@ -289,8 +285,8 @@ const LobbyList = () => {
             key={lobby._id}
             className="bg-gray-900 rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition-shadow duration-200"
           >
-            <div className="flex justify-between items-center">
-              <div>
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center">
+              <div className="mb-4 sm:mb-0">
                 <h2 className="text-xl font-semibold text-gray-100">
                   {lobby.roomName}
                 </h2>

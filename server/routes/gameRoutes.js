@@ -181,8 +181,8 @@ router.post("/", async (req, res, next) => {
         mapSize: lobbySettings.mapSize || "Normal",
         width: lobbySettings.width || 150,
         height: lobbySettings.height || 150,
-        erosion_passes: lobbySettings.erosion_passes || 3,
-        num_blobs: lobbySettings.num_blobs || 9,
+        erosion_passes: 4,
+        num_blobs: 10,
         maxPlayers: lobbySettings.maxPlayers || 4,
       },
     });
@@ -347,8 +347,14 @@ router.post("/:id/start", async (req, res, next) => {
         .status(403)
         .json({ error: "Only the lobby creator can start the game" });
     }
+    // Prevent duplicate game starts
+    if (gameRoom.status !== "lobby") {
+      return res
+        .status(400)
+        .json({ error: "Game has already started or is not in lobby state" });
+    }
 
-    // Initialize game state first
+    // Initialize game state
     gameStateManager.addRoom(gameRoom._id.toString(), {
       tickCount: 0,
       lastActivity: Date.now(),
@@ -375,22 +381,24 @@ router.post("/:id/start", async (req, res, next) => {
     // Save map data to game state manager
     gameStateManager.setMapData(gameRoom._id.toString(), mapData);
 
-    // Start game loop only after map is generated and stored
+    // Start game loop, but immediately pause it until all players have founded their nation.
     await gameLoop.startRoom(gameRoom._id.toString());
+    await gameLoop.pauseRoom(gameRoom._id.toString());
 
-    // Update room status last
-    gameRoom.status = "in-progress";
+    // Update room status to paused
+    gameRoom.status = "paused";
     await gameRoom.save();
 
-    console.log(`Game room ${gameRoom._id} started successfully`);
-
+    console.log(
+      `Game room ${gameRoom._id} started in paused mode awaiting nation founding`
+    );
     res.json({
-      message: "Game started successfully",
+      message:
+        "Game started and paused; waiting for all players to found their nation",
       gameRoomId: gameRoom._id,
       players: gameRoom.players,
     });
   } catch (error) {
-    // If anything fails, clean up
     try {
       await gameLoop.stopRoom(req.params.id);
       gameStateManager.removeRoom(req.params.id);
@@ -626,6 +634,93 @@ router.post("/:id/state", async (req, res, next) => {
 // -------------------------------------------------------------------
 // Found a nation
 // -------------------------------------------------------------------
+// router.post("/:id/foundNation", async (req, res, next) => {
+//   try {
+//     const { userId, password, x, y } = req.body;
+
+//     // Verify credentials in MongoDB
+//     const gameRoom = await GameRoom.findById(req.params.id)
+//       .select("players")
+//       .lean();
+//     if (!gameRoom) {
+//       return res.status(404).json({ error: "Game room not found" });
+//     }
+
+//     const player = gameRoom.players.find(
+//       (p) => p.userId === userId && p.password === password
+//     );
+//     if (!player) {
+//       return res.status(403).json({ error: "Invalid credentials" });
+//     }
+
+//     // Get and update game state in memory
+//     const updated = gameStateManager.updateGameState(req.params.id, (state) => {
+//       if (!state.gameState.nations) {
+//         state.gameState.nations = [];
+//       }
+
+//       // Filter out defeated nations
+//       state.gameState.nations = state.gameState.nations.filter(
+//         (nation) => nation.owner !== userId || nation.status !== "defeated"
+//       );
+
+//       // Check for existing nation
+//       if (state.gameState.nations.some((n) => n.owner === userId)) {
+//         throw new Error("Nation already exists for this user");
+//       }
+
+//       // Create new nation
+//       const newNation = {
+//         owner: userId,
+//         status: "active",
+//         startingCell: { x, y },
+//         territory: { x: [x], y: [y] },
+//         territoryLoyalty: { [`${x},${y}`]: LOYALTY.INITIAL },
+//         population: 100,
+//         nationalWill: 50,
+//         resources: {
+//           food: 1000,
+//           wood: 500,
+//           stone: 300,
+//           bronze: 0,
+//           steel: 0,
+//           horses: 0,
+//         },
+//         cities: [
+//           {
+//             name: "Capital",
+//             x,
+//             y,
+//             population: 50,
+//             type: "capital",
+//           },
+//         ],
+//         structures: [],
+//         auto_city: false,
+//         expansionTarget: null,
+//         attackTarget: null,
+//       };
+
+//       state.gameState.nations.push(newNation);
+//       return state;
+//     });
+
+//     if (!updated) {
+//       return res.status(400).json({ error: "Failed to update game state" });
+//     }
+
+//     res.status(201).json({
+//       message: "Nation founded successfully",
+//       nation: updated.gameState.nations.find((n) => n.owner === userId),
+//     });
+//   } catch (error) {
+//     if (error.message === "Nation already exists for this user") {
+//       return res.status(400).json({ error: error.message });
+//     }
+//     next(error);
+//   }
+// });
+
 router.post("/:id/foundNation", async (req, res, next) => {
   try {
     const { userId, password, x, y } = req.body;
@@ -637,6 +732,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
+    const gameRoomPlayersCount = gameRoom.players.length;
 
     const player = gameRoom.players.find(
       (p) => p.userId === userId && p.password === password
@@ -645,26 +741,26 @@ router.post("/:id/foundNation", async (req, res, next) => {
       return res.status(403).json({ error: "Invalid credentials" });
     }
 
-    // Get and update game state in memory
+    // Update game state in memory
     const updated = gameStateManager.updateGameState(req.params.id, (state) => {
       if (!state.gameState.nations) {
         state.gameState.nations = [];
       }
 
-      // Filter out defeated nations
+      // Remove any previous nation for this user (if present)
       state.gameState.nations = state.gameState.nations.filter(
-        (nation) => nation.owner !== userId || nation.status !== "defeated"
+        (nation) => nation.owner !== userId
       );
 
-      // Check for existing nation
+      // Check that a nation does not already exist for this user
       if (state.gameState.nations.some((n) => n.owner === userId)) {
         throw new Error("Nation already exists for this user");
       }
 
-      // Create new nation
+      // Create new nation with 'active' status
       const newNation = {
         owner: userId,
-        status: "active",
+        status: "active", // Nation is immediately active upon founding
         startingCell: { x, y },
         territory: { x: [x], y: [y] },
         territoryLoyalty: { [`${x},${y}`]: LOYALTY.INITIAL },
@@ -694,11 +790,27 @@ router.post("/:id/foundNation", async (req, res, next) => {
       };
 
       state.gameState.nations.push(newNation);
+
+      // If all players have now founded a nation, mark founding complete.
+      if (state.gameState.nations.length === gameRoomPlayersCount) {
+        state.foundingComplete = true;
+      }
       return state;
     });
 
     if (!updated) {
       return res.status(400).json({ error: "Failed to update game state" });
+    }
+
+    // If all players have an active nation, unpause the game loop and update room status.
+    if (updated.foundingComplete) {
+      await gameLoop.startRoom(req.params.id);
+      await GameRoom.findByIdAndUpdate(req.params.id, {
+        status: "in-progress",
+      });
+      console.log(
+        "All players have founded their nation and are active. Game unpaused."
+      );
     }
 
     res.status(201).json({
@@ -763,14 +875,34 @@ router.post("/:id/end", async (req, res, next) => {
       return res.status(404).json({ error: "Game room not found" });
     }
 
-    // Stop game loop and remove from memory
+    // Stop game loop immediately.
     await gameLoop.stopRoom(gameRoom._id.toString());
-    gameStateManager.removeRoom(gameRoom._id.toString());
 
-    // Remove from database
-    await GameRoom.findByIdAndDelete(req.params.id);
+    // Mark all nations as defeated in the in-memory game state.
+    const state = gameStateManager.getRoom(gameRoom._id.toString());
+    if (state && state.gameState && Array.isArray(state.gameState.nations)) {
+      state.gameState.nations.forEach((nation) => {
+        nation.status = "defeated";
+      });
+      // Optionally update the state to ensure clients see the defeat.
+      gameStateManager.updateGameState(gameRoom._id.toString(), () => state);
+    }
 
+    // Respond immediately so that clients can update their UI.
     res.json({ message: "Game session ended successfully" });
+
+    // Delay the deletion of the room and cleanup for 2 seconds.
+    setTimeout(async () => {
+      try {
+        // Remove game state from memory.
+        gameStateManager.removeRoom(gameRoom._id.toString());
+        // Delete the room from the database.
+        await GameRoom.findByIdAndDelete(req.params.id);
+        console.log(`Game room ${gameRoom._id} deleted after delay.`);
+      } catch (cleanupError) {
+        console.error("Error during delayed cleanup:", cleanupError);
+      }
+    }, 2000);
   } catch (error) {
     next(error);
   }

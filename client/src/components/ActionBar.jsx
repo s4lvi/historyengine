@@ -10,7 +10,8 @@ const ActionBar = ({
 }) => {
   // State to track which item is hovered and its type
   const [hoveredItem, setHoveredItem] = useState(null);
-  const [hoveredType, setHoveredType] = useState(null); // 'structure' or 'army'
+  const [hoveredType, setHoveredType] = useState(null);
+  const isMobile = window.innerWidth <= 768;
 
   if (!hasFounded) {
     return (
@@ -93,9 +94,11 @@ const ActionBar = ({
                             alt={structure}
                             className="w-8 h-8 mb-1"
                           />
-                          <span className="text-xs truncate w-full text-center">
-                            {structure}
-                          </span>
+                          {!isMobile && (
+                            <span className="text-xs truncate w-full text-center">
+                              {structure}
+                            </span>
+                          )}
                         </button>
                       );
                     }
@@ -106,7 +109,11 @@ const ActionBar = ({
             {/* Armies Group */}
             <div>
               <h3 className="text-sm font-medium mb-2 text-gray-300">Armies</h3>
-              <div className="grid grid-cols-4 gap-2">
+              <div
+                className={
+                  isMobile ? "grid grid-cols-2 gap-2" : "grid grid-cols-4 gap-2"
+                }
+              >
                 {config?.buildCosts?.armies &&
                   Object.entries(config.buildCosts.armies).map(
                     ([armyType, cost]) => {
@@ -139,9 +146,11 @@ const ActionBar = ({
                             alt={armyType}
                             className="w-8 h-8 mb-1"
                           />
-                          <span className="text-xs truncate w-full text-center">
-                            {armyType}
-                          </span>
+                          {!isMobile && (
+                            <span className="text-xs truncate w-full text-center">
+                              {armyType}
+                            </span>
+                          )}
                         </button>
                       );
                     }
@@ -152,7 +161,7 @@ const ActionBar = ({
         </div>
 
         {/* Hover info card */}
-        {hoveredItem && (
+        {hoveredItem && !isMobile && (
           <div
             className="absolute transform -translate-y-full translate-x-0 bg-gray-900 bg-opacity-75 text-white p-4 rounded shadow-lg"
             style={{

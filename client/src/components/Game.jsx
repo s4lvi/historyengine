@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import GameCanvas from "./GameCanvas";
 import { LoadingSpinner } from "./ErrorHandling";
@@ -93,7 +93,7 @@ const Game = () => {
     }
   };
 
-  const mergeTerritory = (existing, delta) => {
+  const mergeTerritory = useCallback((existing, delta) => {
     if (!existing) {
       return { x: delta.add.x.slice(), y: delta.add.y.slice() };
     }
@@ -113,7 +113,7 @@ const Game = () => {
     newX = newX.concat(delta.add.x);
     newY = newY.concat(delta.add.y);
     return { x: newX, y: newY };
-  };
+  }, []);
 
   // ----------------------------
   // Fetch metadata on mount
@@ -156,18 +156,29 @@ const Game = () => {
   // Poll game state (every 200ms)
   // ----------------------------
   useEffect(() => {
-    if (!storedUserId || !storedPassword) return;
-    const fetchGameState = async () => {
+    let pollCount = 0;
+    const interval = setInterval(async () => {
+      // Every 25 polls (~5000ms) use full polling.
+      const full = pollCount % 25 === 0;
+      if (full && actionModal) {
+        pollCount++;
+        return;
+      }
+
       try {
+        const requestBody = {
+          userId: storedUserId,
+          password: storedPassword,
+        };
+        if (full) {
+          requestBody.full = "true";
+        }
         const response = await fetch(
           `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              userId: storedUserId,
-              password: storedPassword,
-            }),
+            body: JSON.stringify(requestBody),
           }
         );
         if (!response.ok) {
@@ -175,25 +186,46 @@ const Game = () => {
           return;
         }
         const data = await response.json();
+
+        // Update game state with territory handling:
         setGameState((prevState) => {
           const previousNations = prevState?.gameState?.nations || [];
           const prevTerritories = previousNations.reduce((acc, nation) => {
             acc[nation.owner] = nation.territory || null;
             return acc;
           }, {});
+
           if (data.gameState.nations) {
             data.gameState.nations = data.gameState.nations.map((nation) => {
-              const previousTerritory = prevTerritories[nation.owner] || null;
-              if (nation.territoryDeltaForClient) {
+              if (full) {
+                // On a full poll, overwrite the local territory completely.
+                if (
+                  nation.territory &&
+                  nation.territory.x &&
+                  nation.territory.y
+                ) {
+                  nation.territory = {
+                    x: [...nation.territory.x],
+                    y: [...nation.territory.y],
+                  };
+                } else if (nation.territoryDeltaForClient) {
+                  nation.territory = {
+                    x: [...nation.territoryDeltaForClient.add.x],
+                    y: [...nation.territoryDeltaForClient.add.y],
+                  };
+                }
+              } else if (nation.territoryDeltaForClient) {
+                // For incremental updates, merge the delta.
+                const previousTerritory = prevTerritories[nation.owner] || null;
                 nation.territory = mergeTerritory(
                   previousTerritory,
                   nation.territoryDeltaForClient
                 );
-                delete nation.territoryDeltaForClient;
               }
               return nation;
             });
           }
+
           return {
             tickCount: data.tickCount,
             roomName: data.roomName,
@@ -201,41 +233,31 @@ const Game = () => {
             gameState: data.gameState,
           };
         });
+
+        // Update user state based on fetched game state.
         const winningNation = data.gameState.nations?.find(
           (n) => n.status === "winner"
         );
         if (winningNation) {
-          if (winningNation.owner === storedUserId) {
-            if (!actionModal || actionModal.type !== "win") {
-              setActionModal({
-                type: "win",
-                message: "Congratulations! Your nation has won the game!",
-                onClose: () => {
-                  handleEndGame();
-                },
-              });
-            }
-            setUserState(winningNation);
-          } else {
-            if (!actionModal || actionModal.type !== "defeat") {
-              setActionModal({
-                type: "defeat",
-                message: `${winningNation.owner} has won the game. Your nation has been defeated.`,
-                onClose: () => {
-                  navigate("/");
-                },
-              });
-            } else {
-              setUserState(null);
+          setActionModal({
+            type: "win",
+            message: "Your you have won the game.",
+            onClose: () => {
+              setActionModal(null);
               setFoundingNation(true);
               setHasFounded(false);
-            }
-          }
+              navigate("/");
+            },
+          });
         } else {
           const playerNation = data.gameState.nations?.find(
             (n) => n.owner === storedUserId && n.status !== "defeated"
           );
           if (playerNation) {
+            // If the nation is active, ensure we exit founding mode.
+            if (playerNation.status === "active") {
+              setFoundingNation(false);
+            }
             setUserState(playerNation);
             setIsDefeated(false);
             setHasFounded(true);
@@ -264,65 +286,9 @@ const Game = () => {
       } catch (err) {
         console.error("Error fetching game state:", err);
       }
-    };
-    fetchGameState();
-    const interval = setInterval(fetchGameState, 100);
-    return () => clearInterval(interval);
-  }, [id, storedUserId, storedPassword, navigate, isDefeated, hasFounded]);
+      pollCount++;
+    }, 200);
 
-  // ----------------------------
-  // Full state polling (every 5 seconds)
-  // ----------------------------
-  useEffect(() => {
-    if (!storedUserId || !storedPassword) return;
-    const fetchFullState = async () => {
-      if (actionModal) return;
-      try {
-        const response = await fetch(
-          `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              userId: storedUserId,
-              password: storedPassword,
-              full: "true",
-            }),
-          }
-        );
-        if (!response.ok) {
-          navigate("/rooms");
-          return;
-        }
-        const data = await response.json();
-        if (data.gameState.nations) {
-          data.gameState.nations = data.gameState.nations.map((nation) => {
-            if (nation.territoryDeltaForClient) {
-              delete nation.territoryDeltaForClient;
-            }
-            return nation;
-          });
-        }
-        setGameState({
-          tickCount: data.tickCount,
-          roomName: data.roomName,
-          roomCreator: data.roomCreator,
-          gameState: data.gameState,
-        });
-        if (data.gameState.nations) {
-          const playerNation = data.gameState.nations.find(
-            (n) => n.owner === storedUserId
-          );
-          if (playerNation) {
-            setUserState(playerNation);
-          }
-        }
-      } catch (err) {
-        console.error("Error fetching full game state:", err);
-      }
-    };
-    fetchFullState();
-    const interval = setInterval(fetchFullState, 5000);
     return () => clearInterval(interval);
   }, [
     id,
@@ -332,6 +298,7 @@ const Game = () => {
     actionModal,
     isDefeated,
     hasFounded,
+    // mergeTerritory is stable because it’s memoized via useCallback
   ]);
 
   // ----------------------------
@@ -555,6 +522,7 @@ const Game = () => {
       }
       const data = await response.json();
       console.log("Game ended:", data);
+      setShowSettings(false);
     } catch (err) {
       console.error("Error ending game:", err);
     }
@@ -615,7 +583,7 @@ const Game = () => {
   // If credentials are missing, show a fallback message.
   if (!storedUserId || !storedPassword) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-800 text-white">
+      <div className="flex items-center justify-center h-screen bg-gray-800 text-white p-4">
         <p>
           Missing credentials. Please return to the lobby and join the game
           properly.
@@ -625,9 +593,9 @@ const Game = () => {
   }
 
   return (
-    <div className="relative h-screen overflow-hidden">
+    <div className="relative h-screen overflow-hidden top-0 left-0 right-0">
       {!isMapLoaded || !gameState ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-800">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-800 p4">
           <LoadingSpinner />
           {mapMetadata && mapMetadata.height ? (
             <div className="text-white mt-4">
@@ -644,13 +612,20 @@ const Game = () => {
         </div>
       ) : (
         <>
-          <ControlButtons
-            onOpenSettings={() => setShowSettings(true)}
-            onOpenPlayerList={() => setShowPlayerList(true)}
-          />
-          {!isDefeated && (
-            <StatsBar gameState={gameState} userId={storedUserId} />
-          )}
+          <div className="absolute top-0 left-0 right-0 z-50">
+            {" "}
+            {/* New wrapper for top controls */}
+            <div className="flex items-start justify-between">
+              {!isDefeated && (
+                <StatsBar gameState={gameState} userId={storedUserId} />
+              )}
+              <ControlButtons
+                onOpenSettings={() => setShowSettings(true)}
+                onOpenPlayerList={() => setShowPlayerList(true)}
+              />
+            </div>
+          </div>
+
           <div className="absolute inset-0">
             <GameCanvas
               mapMetadata={mapMetadata}

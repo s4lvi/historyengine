@@ -16,7 +16,7 @@ export function checkWinCondition(gameState, mapData) {
 
   // If only one player remains, they win
   if (gameState.players.length === 1) {
-    const winner = activeNations[0].owner;
+    const winner = activeNations[0]?.owner;
     gameState.nations.forEach((nation) => {
       nation.status = nation.owner === winner ? "winner" : "defeated";
     });
@@ -470,7 +470,7 @@ export function updateNation(nation, mapData, gameState) {
     console.warn("Invalid map data structure in updateNation");
     return nation;
   }
-
+  console.log(`Updating nation: ${nation.owner}`);
   // Preserve the current territoryDelta (if any) for later comparison.
   // (Assume expandTerritory may add new changes to nation.territoryDelta)
   const previousDelta = nation.territoryDelta || {
