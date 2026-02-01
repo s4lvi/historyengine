@@ -12,6 +12,7 @@ const mapSchema = new mongoose.Schema({
   name: { type: String, default: "Untitled Map" },
   width: { type: Number, required: true },
   height: { type: Number, required: true },
+  seed: { type: Number },
   createdAt: { type: Date, default: Date.now },
   status: {
     type: String,
@@ -76,7 +77,7 @@ router.post("/", async (req, res, next) => {
     console.log("Starting map generation with dimensions:", width, height);
     if (!erosion_passes) erosion_passes = 4;
     if (!num_blobs) num_blobs = 3;
-    if (!seed) seed = Math.random();
+    const mapSeed = seed !== undefined ? Number(seed) : Math.random();
 
     // Offload the heavy map generation to a worker thread
     const mapData = await runMapGenerationWorker({
@@ -84,7 +85,7 @@ router.post("/", async (req, res, next) => {
       height,
       erosion_passes,
       num_blobs,
-      seed,
+      seed: mapSeed,
     });
     console.log("Map generated successfully in worker thread");
 
@@ -93,6 +94,7 @@ router.post("/", async (req, res, next) => {
       name: name || "Untitled Map",
       width,
       height,
+      seed: mapSeed,
     });
     console.log("Saving new map metadata to database");
     await newMap.save();
@@ -113,6 +115,8 @@ router.post("/", async (req, res, next) => {
     console.log(`Saving ${chunks.length} chunks to the database`);
     await MapChunk.insertMany(chunks);
     console.log("All chunks saved successfully");
+
+    await Map.findByIdAndUpdate(newMap._id, { status: "ready" });
 
     res.status(201).json(newMap);
     console.log("Response sent successfully");
@@ -163,11 +167,14 @@ router.post("/gamemap", async (req, res, next) => {
       throw error;
     }
 
+    const mapSeed = seed !== undefined ? Number(seed) : Math.random();
+
     // Save map metadata first
     const newMap = new Map({
       name: name || "Untitled Map",
       width,
       height,
+      seed: mapSeed,
       status: "generating",
     });
 
@@ -188,14 +195,13 @@ router.post("/gamemap", async (req, res, next) => {
         );
         if (!erosion_passes) erosion_passes = 4;
         if (!num_blobs) num_blobs = 3;
-        if (!seed) seed = Math.random();
 
         const mapData = await runMapGenerationWorker({
           width,
           height,
           erosion_passes,
           num_blobs,
-          seed,
+          seed: mapSeed,
         });
         console.log("Map generated successfully in worker thread");
 

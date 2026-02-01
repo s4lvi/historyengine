@@ -27,8 +27,15 @@ const Game = () => {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState(null);
+  const [wsConnected, setWsConnected] = useState(false);
+  const lastWsUpdateAtRef = useRef(0);
 
   const isFetchingChunk = useRef(false);
+  const wsRef = useRef(null);
+  const applyDeltaGameStateRef = useRef(null);
+  const wsReconnectTimerRef = useRef(null);
+  const wsReconnectAttemptsRef = useRef(0);
+  const lastNationOwnersRef = useRef("");
 
   // ----------------------------
   // Login and credentials state
@@ -55,8 +62,26 @@ const Game = () => {
   const [actionModal, setActionModal] = useState(null);
   const [foundingNation, setFoundingNation] = useState(false);
   const [buildingStructure, setBuildingStructure] = useState(null);
+  const [placingTower, setPlacingTower] = useState(false);
+  const [pressureMarkers, setPressureMarkers] = useState([]);
   const [isDefeated, setIsDefeated] = useState(false);
   const [hasFounded, setHasFounded] = useState(false);
+  const [attackPercent, setAttackPercent] = useState(0.25);
+  const actionModalRef = useRef(actionModal);
+  const isDefeatedRef = useRef(isDefeated);
+  const hasFoundedRef = useRef(hasFounded);
+
+  useEffect(() => {
+    actionModalRef.current = actionModal;
+  }, [actionModal]);
+
+  useEffect(() => {
+    isDefeatedRef.current = isDefeated;
+  }, [isDefeated]);
+
+  useEffect(() => {
+    hasFoundedRef.current = hasFounded;
+  }, [hasFounded]);
 
   const startFoundNation = () => {
     setFoundingNation(true);
@@ -98,34 +123,168 @@ const Game = () => {
   };
 
   const mergeTerritory = (existing, delta) => {
-    // If there’s no existing territory, then the new territory is just the additions.
-    if (!existing) {
-      return { x: delta.add.x.slice(), y: delta.add.y.slice() };
-    }
-    // Clone the existing arrays
-    let newX = existing.x.slice();
-    let newY = existing.y.slice();
-
-    // Process subtractions: remove each coordinate found in delta.sub
-    for (let i = 0; i < delta.sub.x.length; i++) {
-      const subX = delta.sub.x[i];
-      const subY = delta.sub.y[i];
-      // Look for a matching coordinate in newX/newY
-      const index = newX.findIndex(
-        (val, idx) => val === subX && newY[idx] === subY
-      );
-      if (index !== -1) {
-        newX.splice(index, 1);
-        newY.splice(index, 1);
+    const next = new Set();
+    if (existing && existing.x && existing.y) {
+      for (let i = 0; i < existing.x.length; i++) {
+        next.add(`${existing.x[i]},${existing.y[i]}`);
       }
     }
 
-    // Process additions: append them to the territory arrays
-    newX = newX.concat(delta.add.x);
-    newY = newY.concat(delta.add.y);
+    if (delta?.sub?.x?.length) {
+      for (let i = 0; i < delta.sub.x.length; i++) {
+        next.delete(`${delta.sub.x[i]},${delta.sub.y[i]}`);
+      }
+    }
 
-    return { x: newX, y: newY };
+    if (delta?.add?.x?.length) {
+      for (let i = 0; i < delta.add.x.length; i++) {
+        next.add(`${delta.add.x[i]},${delta.add.y[i]}`);
+      }
+    }
+
+    const x = [];
+    const y = [];
+    next.forEach((key) => {
+      const [sx, sy] = key.split(",");
+      x.push(Number(sx));
+      y.push(Number(sy));
+    });
+    return { x, y };
   };
+
+  const logNationOwners = (nextState) => {
+    const owners = (nextState?.nations || [])
+      .map((nation) => nation.owner)
+      .sort()
+      .join("|");
+    if (owners && owners !== lastNationOwnersRef.current) {
+      lastNationOwnersRef.current = owners;
+      console.log("[STATE] nations:", owners);
+    }
+  };
+
+  const applyDeltaGameState = (data) => {
+    logNationOwners(data.gameState);
+    setGameState((prevState) => {
+      const previousNations = prevState?.gameState?.nations || [];
+      const prevTerritories = previousNations.reduce((acc, nation) => {
+        acc[nation.owner] = nation.territory || null;
+        return acc;
+      }, {});
+
+      if (data.gameState.nations) {
+        const byOwner = new Map();
+        data.gameState.nations.forEach((nation) => {
+          const existing = byOwner.get(nation.owner);
+          if (!existing) {
+            byOwner.set(nation.owner, nation);
+            return;
+          }
+          if (existing.status === "defeated" && nation.status !== "defeated") {
+            byOwner.set(nation.owner, nation);
+            return;
+          }
+          if (nation.status !== "defeated" && existing.status !== "defeated") {
+            byOwner.set(nation.owner, nation);
+          }
+        });
+        data.gameState.nations = Array.from(byOwner.values()).map((nation) => {
+          const previousTerritory = prevTerritories[nation.owner] || null;
+          if (nation.status === "defeated") {
+            nation.territory = { x: [], y: [] };
+            if (nation.territoryDeltaForClient) {
+              delete nation.territoryDeltaForClient;
+            }
+            return nation;
+          }
+          if (nation.territoryDeltaForClient) {
+            nation.territory = mergeTerritory(
+              previousTerritory,
+              nation.territoryDeltaForClient
+            );
+            delete nation.territoryDeltaForClient;
+          }
+          return nation;
+        });
+      }
+
+      return {
+        tickCount: data.tickCount,
+        roomName: data.roomName,
+        roomCreator: data.roomCreator,
+        gameState: data.gameState,
+      };
+    });
+
+    const winningNation = data.gameState.nations?.find(
+      (n) => n.status === "winner"
+    );
+    if (winningNation) {
+      if (winningNation.owner === userId) {
+        if (!actionModalRef.current || actionModalRef.current.type !== "win") {
+          setActionModal({
+            type: "win",
+            message: "Congratulations! Your nation has won the game!",
+            onClose: () => {
+              handleEndGame();
+            },
+          });
+        }
+        setUserState(winningNation);
+      } else {
+        if (
+          !actionModalRef.current ||
+          actionModalRef.current.type !== "defeat"
+        ) {
+          setActionModal({
+            type: "defeat",
+            message: `${winningNation.owner} has won the game. Your nation has been defeated.`,
+            onClose: () => {
+              navigate("/");
+            },
+          });
+        }
+        setUserState(null);
+        setFoundingNation(true);
+        setHasFounded(false);
+      }
+    } else {
+      const playerNation = data.gameState.nations?.find(
+        (n) => n.owner === userId && n.status !== "defeated"
+      );
+      if (playerNation) {
+        setUserState(playerNation);
+        setIsDefeated(false);
+        setHasFounded(true);
+      } else {
+        if (!isDefeatedRef.current && hasFoundedRef.current) {
+          const defeatedNation = data.gameState.nations?.find(
+            (n) => n.owner === userId && n.status === "defeated"
+          );
+          if (defeatedNation) {
+            setIsDefeated(true);
+            setActionModal({
+              type: "defeat",
+              message:
+                "Your nation has been defeated! You can start over by founding a new nation.",
+              onClose: () => {
+                setActionModal(null);
+                setFoundingNation(true);
+                setHasFounded(false);
+              },
+            });
+          }
+          setUserState(null);
+          setFoundingNation(true);
+          setHasFounded(false);
+        }
+      }
+    }
+  };
+
+  useEffect(() => {
+    applyDeltaGameStateRef.current = applyDeltaGameState;
+  }, [applyDeltaGameState]);
 
   // ----------------------------
   // Fetch metadata on mount
@@ -166,6 +325,94 @@ const Game = () => {
   }, [mapMetadata, loadedRows, error]);
 
   // ----------------------------
+  // WebSocket: subscribe to game state updates
+  // ----------------------------
+  useEffect(() => {
+    if (!id || !userId || !storedPassword) return;
+    let isActive = true;
+
+    const apiBase = process.env.REACT_APP_API_URL;
+    const wsBase = apiBase
+      ? apiBase.replace(/^http/, "ws")
+      : window.location.origin.replace(/^http/, "ws");
+    const wsUrl = wsBase.endsWith("/") ? `${wsBase}ws` : `${wsBase}/ws`;
+
+    const scheduleReconnect = () => {
+      if (!isActive) return;
+      const attempts = wsReconnectAttemptsRef.current;
+      const delay = Math.min(10000, 500 * Math.pow(2, attempts));
+      wsReconnectAttemptsRef.current = attempts + 1;
+      if (wsReconnectTimerRef.current) {
+        clearTimeout(wsReconnectTimerRef.current);
+      }
+      wsReconnectTimerRef.current = setTimeout(() => {
+        if (isActive) connect();
+      }, delay);
+    };
+
+    const connect = () => {
+      if (!isActive) return;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("[WS] open");
+        wsReconnectAttemptsRef.current = 0;
+        ws.send(
+          JSON.stringify({
+            type: "subscribe",
+            roomId: id,
+            userId,
+            password: storedPassword,
+          })
+        );
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "subscribed") {
+            setWsConnected(true);
+            return;
+          }
+          if (msg.type === "state") {
+            lastWsUpdateAtRef.current = Date.now();
+            applyDeltaGameStateRef.current?.(msg);
+            return;
+          }
+          if (msg.type === "error") {
+            setError(msg.message || "WebSocket error");
+            ws.close();
+          }
+        } catch (err) {
+          console.error("Error parsing WebSocket message:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        console.warn("[WS] closed");
+        setWsConnected(false);
+        scheduleReconnect();
+      };
+      ws.onerror = (err) => {
+        console.warn("[WS] error", err);
+        setWsConnected(false);
+        ws.close();
+      };
+    };
+
+    connect();
+
+    return () => {
+      isActive = false;
+      if (wsReconnectTimerRef.current) {
+        clearTimeout(wsReconnectTimerRef.current);
+      }
+      wsRef.current?.close();
+    };
+  }, [id, userId, storedPassword]);
+
+  // ----------------------------
   // Poll game state (every 200ms)
   // ----------------------------
   // In your useEffect that polls game state:
@@ -173,6 +420,12 @@ const Game = () => {
     if (!userId || !storedPassword) return;
 
     const fetchGameState = async () => {
+      if (
+        wsConnected &&
+        Date.now() - lastWsUpdateAtRef.current < 1000
+      ) {
+        return;
+      }
       try {
         const response = await fetch(
           `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
@@ -190,110 +443,17 @@ const Game = () => {
 
         const data = await response.json();
 
-        // Update territories using your merge function, etc.
-        setGameState((prevState) => {
-          const previousNations = prevState?.gameState?.nations || [];
-          const prevTerritories = previousNations.reduce((acc, nation) => {
-            acc[nation.owner] = nation.territory || null;
-            return acc;
-          }, {});
-
-          if (data.gameState.nations) {
-            data.gameState.nations = data.gameState.nations.map((nation) => {
-              const previousTerritory = prevTerritories[nation.owner] || null;
-              if (nation.territoryDeltaForClient) {
-                nation.territory = mergeTerritory(
-                  previousTerritory,
-                  nation.territoryDeltaForClient
-                );
-                delete nation.territoryDeltaForClient;
-              }
-              return nation;
-            });
-          }
-
-          return {
-            tickCount: data.tickCount,
-            roomName: data.roomName,
-            roomCreator: data.roomCreator,
-            gameState: data.gameState,
-          };
-        });
-
-        // Check for win condition
-        const winningNation = data.gameState.nations?.find(
-          (n) => n.status === "winner"
-        );
-        if (winningNation) {
-          if (winningNation.owner === userId) {
-            // Your nation is the winner!
-            if (!actionModal || actionModal.type !== "win") {
-              setActionModal({
-                type: "win",
-                message: "Congratulations! Your nation has won the game!",
-                onClose: () => {
-                  handleEndGame();
-                },
-              });
-            }
-            setUserState(winningNation);
-          } else {
-            // Another nation won—treat it similar to defeat.
-            if (!actionModal || actionModal.type !== "defeat") {
-              setActionModal({
-                type: "defeat",
-                message: `${winningNation.owner} has won the game. Your nation has been defeated.`,
-                onClose: () => {
-                  navigate("/");
-                },
-              });
-            }
-            setUserState(null);
-            setFoundingNation(true);
-            setHasFounded(false);
-          }
-        } else {
-          // No win condition—proceed with existing logic.
-          const playerNation = data.gameState.nations?.find(
-            (n) => n.owner === userId && n.status !== "defeated"
-          );
-          if (playerNation) {
-            setUserState(playerNation);
-            setIsDefeated(false);
-            setHasFounded(true);
-          } else {
-            if (!isDefeated && hasFounded) {
-              const defeatedNation = data.gameState.nations?.find(
-                (n) => n.owner === userId && n.status === "defeated"
-              );
-              if (defeatedNation) {
-                setIsDefeated(true);
-                setActionModal({
-                  type: "defeat",
-                  message:
-                    "Your nation has been defeated! You can start over by founding a new nation.",
-                  onClose: () => {
-                    setActionModal(null);
-                    setFoundingNation(true);
-                    setHasFounded(false);
-                  },
-                });
-              }
-              setUserState(null);
-              setFoundingNation(true);
-              setHasFounded(false);
-            }
-          }
-        }
+        applyDeltaGameState(data);
       } catch (err) {
         console.error("Error fetching game state:", err);
       }
     };
 
     fetchGameState();
-    const interval = setInterval(fetchGameState, 100);
+    const intervalMs = wsConnected ? 250 : 250;
+    const interval = setInterval(fetchGameState, intervalMs);
     return () => clearInterval(interval);
-  }, [id, userId, storedPassword, navigate, isDefeated]);
+  }, [id, userId, storedPassword, navigate, wsConnected]);
 
   // Full state polling effect: every 5 seconds, fetch the full state to overwrite local territory.
   useEffect(() => {
@@ -324,15 +484,34 @@ const Game = () => {
 
         // Overwrite local state with the full state from the backend.
         if (data.gameState.nations) {
-          data.gameState.nations = data.gameState.nations.map((nation) => {
+          const byOwner = new Map();
+          data.gameState.nations.forEach((nation) => {
+            const existing = byOwner.get(nation.owner);
+            if (!existing) {
+              byOwner.set(nation.owner, nation);
+              return;
+            }
+            if (existing.status === "defeated" && nation.status !== "defeated") {
+              byOwner.set(nation.owner, nation);
+              return;
+            }
+            if (nation.status !== "defeated" && existing.status !== "defeated") {
+              byOwner.set(nation.owner, nation);
+            }
+          });
+          data.gameState.nations = Array.from(byOwner.values()).map((nation) => {
             // Remove any delta properties if present.
             if (nation.territoryDeltaForClient) {
               delete nation.territoryDeltaForClient;
+            }
+            if (nation.status === "defeated") {
+              nation.territory = { x: [], y: [] };
             }
             return nation;
           });
         }
 
+        logNationOwners(data.gameState);
         setGameState({
           tickCount: data.tickCount,
           roomName: data.roomName,
@@ -372,9 +551,10 @@ const Game = () => {
     // Immediately fetch full state on mounting
     fetchFullState();
     // Then set interval for rectification every 5 seconds
-    const interval = setInterval(fetchFullState, 5000);
+    const fullIntervalMs = wsConnected ? 15000 : 1000;
+    const interval = setInterval(fetchFullState, fullIntervalMs);
     return () => clearInterval(interval);
-  }, [id, userId, storedPassword, navigate, actionModal]);
+  }, [id, userId, storedPassword, navigate, actionModal, wsConnected]);
 
   // ----------------------------
   // Handle login form submission
@@ -529,97 +709,6 @@ const Game = () => {
     }
   };
 
-  const handleRaiseArmy = async (type) => {
-    if (!userId || !storedPassword) return;
-    try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/raiseArmy`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, password: storedPassword, type }),
-        }
-      );
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Failed to raise army");
-      }
-      const data = await response.json();
-      console.log("Army raised:", data);
-      // Rely on polling to update gameState
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  const handleSetArmyAttackTarget = async (armyId, x, y) => {
-    if (!userId || !storedPassword) return;
-    try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/setAttackTarget`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password: storedPassword,
-            armyId,
-            target: { x, y },
-          }),
-        }
-      );
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Failed to set attack target");
-      }
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  const handleSetExpandTarget = async (x, y) => {
-    if (!userId || !storedPassword) return;
-
-    // Check if nation has enough resources before making API call
-    const userNation = gameState?.gameState?.nations?.find(
-      (n) => n.owner === userId
-    );
-    const canExpand =
-      userNation &&
-      userNation.resources &&
-      userNation.resources.gold >= (config?.expansionCost?.gold || 0) &&
-      userNation.resources.food >= (config?.expansionCost?.food || 0);
-
-    if (!canExpand) {
-      setError(
-        `Not enough resources. Expansion requires ${config?.expansionCost?.gold} gold and ${config?.expansionCost?.food} food.`
-      );
-      setTimeout(() => setError(null), 3000); // Clear error after 3 seconds
-      return;
-    }
-
-    try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/setExpansionTarget`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password: storedPassword,
-            target: { x, y },
-          }),
-        }
-      );
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Failed to set expand target");
-      }
-    } catch (err) {
-      setError(err.message);
-      setTimeout(() => setError(null), 3000); // Clear error after 3 seconds
-    }
-  };
 
   const handlePauseGame = async () => {
     try {
@@ -709,6 +798,90 @@ const Game = () => {
     }
   };
 
+  const handleSendPressure = async (x, y) => {
+    if (!userId || !storedPassword) return;
+    if (!config?.territorial?.enabled) return;
+    const userNation = gameState?.gameState?.nations?.find(
+      (n) => n.owner === userId
+    );
+    if (!userNation) return;
+    const anchor =
+      userNation.cities?.find((c) => c.type === "capital") ||
+      userNation.startingCell ||
+      (userNation.territory?.x?.length
+        ? { x: userNation.territory.x[0], y: userNation.territory.y[0] }
+        : null);
+    if (!anchor) return;
+    const direction = { x: x - anchor.x, y: y - anchor.y };
+    if (direction.x === 0 && direction.y === 0) return;
+
+    try {
+      const markerId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setPressureMarkers((prev) => [
+        ...prev,
+        {
+          id: markerId,
+          x,
+          y,
+          expiresAt: Date.now() + 1400,
+        },
+      ]);
+      const response = await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/pressure`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId,
+            password: storedPassword,
+            direction,
+            target: { x, y },
+            percent: attackPercent,
+          }),
+        }
+      );
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to send pressure");
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  useEffect(() => {
+    if (!pressureMarkers.length) return;
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setPressureMarkers((prev) =>
+        prev.filter((marker) => marker.expiresAt > now)
+      );
+    }, 300);
+    return () => clearInterval(interval);
+  }, [pressureMarkers.length]);
+
+  const handlePlaceTower = async (x, y) => {
+    if (!userId || !storedPassword) return;
+    try {
+      const response = await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/upgradeNode`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, password: storedPassword, x, y }),
+        }
+      );
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to upgrade node");
+      }
+      setPlacingTower(false);
+    } catch (err) {
+      setError(err.message);
+      setPlacingTower(false);
+    }
+  };
+
   // ----------------------------
   // Create a flat grid from the loaded map chunks.
   // ----------------------------
@@ -728,7 +901,7 @@ const Game = () => {
   // ----------------------------
   // Helper for determining player (nation) colors.
   // ----------------------------
-  const getNationColor = (nation) => {
+  const nationColors = React.useMemo(() => {
     const palette = [
       "#FF5733",
       "#33FF57",
@@ -740,12 +913,32 @@ const Game = () => {
       "#FF3333",
       "#33FF33",
       "#3333FF",
+      "#FF8C42",
+      "#4ADEDE",
+      "#F72585",
+      "#3A86FF",
+      "#2A9D8F",
     ];
-    if (nation.owner === userId) return "#FFFF00";
-    const index = gameState?.gameState?.nations?.findIndex(
-      (n) => n.owner === nation.owner
-    );
-    return palette[index % palette.length];
+    const owners = (gameState?.gameState?.nations || [])
+      .map((n) => n.owner)
+      .filter(Boolean)
+      .sort();
+    const uniqueOwners = Array.from(new Set(owners));
+    const colorMap = {};
+    uniqueOwners.forEach((owner, idx) => {
+      if (idx < palette.length) {
+        colorMap[owner] = palette[idx];
+      } else {
+        const hue = (idx * 137.508) % 360;
+        colorMap[owner] = `hsl(${hue.toFixed(0)}, 75%, 55%)`;
+      }
+    });
+    return colorMap;
+  }, [gameState]);
+
+  const getNationColor = (nation) => {
+    if (!nation?.owner) return "#999999";
+    return nationColors[nation.owner] || "#999999";
   };
 
   const isMapLoaded = mapMetadata && loadedRows >= mapMetadata.height;
@@ -798,22 +991,27 @@ const Game = () => {
             mappings={mappings}
             gameState={gameState}
             userId={userId}
-            onArmyTargetSelect={handleSetArmyAttackTarget}
+            nationColors={nationColors}
+            pressureMarkers={pressureMarkers}
+            config={config}
             foundingNation={foundingNation}
             onFoundNation={handleFoundNation}
             buildingStructure={buildingStructure}
             onBuildCity={handleBuildCity}
             onCancelBuild={handleCancelBuild}
+            onSendPressure={handleSendPressure}
+            placingTower={placingTower}
+            onPlaceTower={handlePlaceTower}
           />
         )}
       </div>
       <ActionBar
-        onBuildCity={handleBuildCity}
-        onRaiseArmy={handleRaiseArmy}
         onFoundNation={startFoundNation}
-        config={config}
         userState={userState}
         hasFounded={hasFounded}
+        attackPercent={attackPercent}
+        setAttackPercent={setAttackPercent}
+        onStartPlaceTower={() => setPlacingTower(true)}
       />
       {/* The join/login modal now appears only if the map is loaded */}
       <Modal
@@ -829,10 +1027,8 @@ const Game = () => {
         actionModal={actionModal}
         setActionModal={setActionModal}
         onBuildCity={handleBuildCity}
-        onSetExpandTarget={handleSetExpandTarget}
         config={config}
         userState={userState}
-        onRaiseArmy={handleRaiseArmy}
       />
     </div>
   );

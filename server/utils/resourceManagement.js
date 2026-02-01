@@ -5,9 +5,8 @@ export const RESOURCE_LIST = [
   "food",
   "wood",
   "stone",
-  "bronze",
-  "steel",
-  "horses",
+  "iron",
+  "gold",
 ];
 
 // New resource weights (used for cell desirability, etc.)
@@ -15,9 +14,8 @@ export const RESOURCE_WEIGHTS = {
   food: 1,
   wood: 1,
   stone: 1,
-  bronze: 2,
-  steel: 3,
-  horses: 2,
+  iron: 2,
+  gold: 3,
 };
 
 // Territory maintenance cost per cell (per tick) for each resource.
@@ -26,9 +24,8 @@ export const TERRITORY_MAINTENANCE_COSTS = {
   food: 1, // each cell costs 1 unit of food per tick
   wood: 0, // each cell costs 1 unit of wood per tick
   stone: 0, // each cell costs 1 unit of stone per tick
-  bronze: 0, // no cost
-  steel: 0, // no cost
-  horses: 0, // no cost
+  iron: 0, // no cost
+  gold: 0, // no cost
 };
 
 // Multiplier for territory expansion cost.
@@ -45,12 +42,14 @@ export function calculateAvailableResources(nation) {
   return available;
 }
 
-export function assignResourcesToMap(mapData) {
+export function assignResourcesToMap(mapData, seed = 0) {
   // First, ensure we're working with a 2D array
   if (!Array.isArray(mapData)) {
     console.error("mapData is not an array");
     return mapData;
   }
+
+  const seedValue = normalizeSeed(seed);
 
   // Map over rows first, then cells
   return mapData.map((row, rowIndex) => {
@@ -66,14 +65,24 @@ export function assignResourcesToMap(mapData) {
       return arrayRow.map((cell, colIndex) => {
         if (!cell) return null;
 
+        const cellX = cell.x ?? colIndex;
+        const cellY = cell.y ?? rowIndex;
+        const resources = [];
+        const resourceNodeType = generateResourceNodeType(
+          cell.biome,
+          cell.elevation,
+          cell.moisture,
+          seedValue,
+          cellX,
+          cellY
+        );
+        if (resourceNodeType) resources.push(resourceNodeType);
         return {
           ...cell,
-          resources: generateFlatResources(
-            cell.biome,
-            cell.elevation,
-            cell.moisture,
-            cell.temperature
-          ),
+          resources,
+          resourceNode: resourceNodeType
+            ? { type: resourceNodeType, level: 0 }
+            : null,
         };
       });
     }
@@ -83,14 +92,24 @@ export function assignResourcesToMap(mapData) {
       return row.map((cell, colIndex) => {
         if (!cell) return null;
 
+        const cellX = cell.x ?? colIndex;
+        const cellY = cell.y ?? rowIndex;
+        const resources = [];
+        const resourceNodeType = generateResourceNodeType(
+          cell.biome,
+          cell.elevation,
+          cell.moisture,
+          seedValue,
+          cellX,
+          cellY
+        );
+        if (resourceNodeType) resources.push(resourceNodeType);
         return {
           ...cell,
-          resources: generateFlatResources(
-            cell.biome,
-            cell.elevation,
-            cell.moisture,
-            cell.temperature
-          ),
+          resources,
+          resourceNode: resourceNodeType
+            ? { type: resourceNodeType, level: 0 }
+            : null,
         };
       });
     }
@@ -100,13 +119,42 @@ export function assignResourcesToMap(mapData) {
   });
 }
 
-function generateFlatResources(biome, elevation, moisture, temperature) {
+function normalizeSeed(seed) {
+  if (typeof seed === "number") {
+    return Math.floor(seed * 1e9) || 0;
+  }
+  if (typeof seed === "string") {
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+      hash = (hash << 5) - hash + seed.charCodeAt(i);
+      hash |= 0;
+    }
+    return Math.abs(hash);
+  }
+  return 0;
+}
+
+function randFromSeed(seed, x, y, salt = 0) {
+  let h = seed + x * 374761393 + y * 668265263 + salt * 1442695041;
+  h = (h ^ (h >> 13)) * 1274126177;
+  h = h ^ (h >> 16);
+  return (h >>> 0) / 4294967295;
+}
+
+function generateFlatResources(
+  biome,
+  elevation,
+  moisture,
+  temperature,
+  seed,
+  x,
+  y
+) {
   const resources = [];
 
-  // In grassland or savanna, assign food and a chance for horses.
+  // In grassland or savanna, assign food.
   if (biome === "GRASSLAND" || biome === "SAVANNA") {
-    if (Math.random() < 0.004) resources.push("food");
-    if (Math.random() < 0.0008) resources.push("horses");
+    if (randFromSeed(seed, x, y, 1) < 0.004) resources.push("food");
   }
 
   // In woodlands or forests, assign wood.
@@ -116,15 +164,58 @@ function generateFlatResources(biome, elevation, moisture, temperature) {
     biome === "TROPICAL_FOREST" ||
     biome === "RAINFOREST"
   ) {
-    if (Math.random() < 0.008) resources.push("wood");
+    if (randFromSeed(seed, x, y, 3) < 0.008) resources.push("wood");
   }
 
-  // In mountains, assign stone and, at higher elevations, bronze or steel.
+  // In mountains, assign stone and, at higher elevations, iron or gold.
   if (biome === "MOUNTAIN") {
-    if (Math.random() < 0.015) resources.push("stone");
-    if (elevation > 0.7 && Math.random() < 0.005) resources.push("bronze");
-    if (elevation > 0.85 && Math.random() < 0.0005) resources.push("steel");
+    if (randFromSeed(seed, x, y, 4) < 0.015) resources.push("stone");
+    if (elevation > 0.7 && randFromSeed(seed, x, y, 5) < 0.005)
+      resources.push("iron");
+    if (elevation > 0.85 && randFromSeed(seed, x, y, 6) < 0.0005)
+      resources.push("gold");
   }
 
   return resources;
+}
+
+function generateResourceNodeType(biome, elevation, moisture, seed, x, y) {
+  const candidates = [];
+  let nodeChance = 0;
+
+  if (biome === "GRASSLAND" || biome === "SAVANNA") {
+    candidates.push("food");
+    nodeChance = 0.007;
+  } else if (biome === "RIVER" || biome === "COASTAL") {
+    candidates.push("food");
+    nodeChance = 0.01;
+  } else if (
+    biome === "FOREST" ||
+    biome === "WOODLAND" ||
+    biome === "TROPICAL_FOREST" ||
+    biome === "RAINFOREST" ||
+    biome === "TAIGA"
+  ) {
+    candidates.push("wood");
+    nodeChance = 0.007;
+  } else if (biome === "MOUNTAIN") {
+    candidates.push("stone");
+    candidates.push("iron");
+    if (elevation > 0.85) candidates.push("gold");
+    nodeChance = elevation > 0.85 ? 0.006 : 0.005;
+  } else if (biome === "DESERT") {
+    candidates.push("gold");
+    nodeChance = 0.0015;
+  } else if (biome === "TUNDRA") {
+    candidates.push("stone");
+    nodeChance = 0.002;
+  }
+
+  if (candidates.length === 0) return null;
+
+  const roll = randFromSeed(seed, x, y, 50);
+  if (roll >= nodeChance) return null;
+
+  const pick = Math.floor(randFromSeed(seed, x, y, 51) * candidates.length);
+  return candidates[Math.min(pick, candidates.length - 1)];
 }

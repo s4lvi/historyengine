@@ -11,6 +11,7 @@ const BorderedSprite = ({
   borderColor = 0x000000,
   borderWidth = 0.1,
   outlineQuality = 0.2,
+  alpha = 1,
   interactive = false,
   pointerdown,
   isSelected = false, // New prop
@@ -30,6 +31,7 @@ const BorderedSprite = ({
         width={width}
         height={height}
         anchor={0.5}
+        alpha={alpha}
         filters={isSelected && filters}
         interactive={interactive}
         pointerdown={(e) => {

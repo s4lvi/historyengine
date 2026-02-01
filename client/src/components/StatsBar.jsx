@@ -42,7 +42,7 @@ const StatsBar = ({ gameState, userId }) => {
 
         {/* Resources Section */}
         <div className="flex gap-6 items-center">
-          {["food", "wood", "stone", "bronze", "steel", "horses"].map(
+          {["food", "wood", "stone", "iron", "gold"].map(
             (resource) => (
               <div key={resource}>
                 <span className="text-sm opacity-80 capitalize">

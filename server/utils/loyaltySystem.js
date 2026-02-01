@@ -137,6 +137,9 @@ export function updateLoyalty(nation, gameState, connectedCells = null) {
     nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
   }
   const lostCells = [];
+  if (connectedCells && typeof connectedCells.has !== "function") {
+    connectedCells = null;
+  }
   // Use cached connectivity if provided.
   if (!connectedCells) {
     connectedCells = new Set();
@@ -172,17 +175,6 @@ export function updateLoyalty(nation, gameState, connectedCells = null) {
     nation.armies = [];
     nation.cities = [];
   }
-  nation.territoryDeltaForClient = {
-    add: {
-      x: [...nation.territoryDelta.add.x],
-      y: [...nation.territoryDelta.add.y],
-    },
-    sub: {
-      x: [...nation.territoryDelta.sub.x],
-      y: [...nation.territoryDelta.sub.y],
-    },
-  };
-  nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
   return lostCells;
 }
 

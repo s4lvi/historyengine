@@ -8,18 +8,6 @@
       "mine": { "wood": 50},
       "stable": { "wood": 100, "stone": 50},
       "lumber mill": { "wood": 50 }
-    },
-    "armies": {
-      "light infantry": { "food": 150, "wood": 50 },
-      "heavy infantry": { "food": 200, "wood": 100, "bronze": 150 },
-      "cavalry": { "food": 150, "bronze": 100, "horses": 100 }
-    }
-  },
-  "armies": {
-    "stats": {
-      "light infantry": { "speed": 0.5, "power": 50, "populationCost": 100 },
-      "heavy infantry": { "speed": 0.3, "power": 200, "populationCost": 150 },
-      "cavalry": { "speed": 0.9, "power": 150, "populationCost": 150 }
     }
   },
   "structures": {
@@ -41,9 +29,105 @@
     "steel",
     "horses"
   ],
-  "expansionTarget": {
-    "cost": { "stone": 20, "wood": 10 },
-    "duration": 100
+  "territorial": {
+    "matchLengthMinutes": 15,
+    "tickRateMs": 360,
+    "broadcastIntervalMs": 160,
+    "enabled": true,
+    "baseGrowth": 0.6,
+    "baseDefense": 1,
+    "baseCost": 1,
+    "pressurePerTick": 10,
+    "frontierAttemptsPerTick": 12,
+    "directionBiasMin": 0.75,
+    "alignmentWeight": 4,
+    "alignmentPower": 2.6,
+    "directionPerpPenalty": 0.18,
+    "similarityWeight": 0.6,
+    "similarityPower": 1.2,
+    "minTerrainSimilarity": 0.2,
+    "distancePenaltyPerTile": 0.02,
+    "maxDistancePenaltyTiles": 40,
+    "frontierCandidateLimit": 200,
+    "frontierScanLimit": 2000,
+    "botOrderIntervalTicks": 4,
+    "botDirectionPersistTicks": 20,
+    "botDirectionChangeChance": 0.18,
+    "botDirectionJitterRad": 0.35,
+    "botResourcePriorityWeight": 1.4,
+    "botResourceAdjacencyWeight": 0.6,
+    "botAttackPercent": 0.3,
+    "botCandidatePickTop": 12,
+    "botMaxQueuedOrders": 2,
+    "minOrderRemaining": 0.5,
+    "contestedDefenseMult": 1.35,
+    "maxPlayerPressureOrders": 1,
+    "maxOrderTicks": 40,
+    "maxOrderStaleTicks": 6,
+    "maxOrderCarryover": 60,
+    "targetBorderDistance": 10,
+    "targetReachDistance": 2,
+    "targetFocusTicks": 14,
+    "targetStallToSpreadTicks": 8,
+    "targetMaxTicks": 45,
+    "targetFocusMinAlignment": 0.1,
+    "targetDistancePenalty": 0.03,
+    "targetSpreadRadius": 12,
+    "targetSpreadWeight": 1.4,
+    "encirclementCheckIntervalTicks": 6,
+    "encirclementCaptureTicks": 10,
+    "connectivityCheckIntervalTicks": 3,
+    "winConditionCheckIntervalTicks": 6,
+    "botFrontierCandidateLimit": 300,
+    "botStuckTicks": 40,
+    "minAttackPercent": 0.05,
+    "maxAttackPercent": 1,
+    "defaultAttackPercent": 0.25,
+    "resourceNodeLevelMultipliers": { "0": 1, "1": 1.5, "2": 2, "3": 3 },
+    "resourceTypes": ["food", "wood", "iron", "stone", "gold"],
+    "resourceNodeUpgradeCosts": { "1": 50, "2": 150, "3": 400 },
+    "resourceCaptureTicks": 20,
+    "resourceYieldPerTick": 0.25,
+    "towerDefenseRadius": 2,
+    "towerDefenseBonus": 0.25,
+    "riverCrossingCostMult": 1.35,
+    "mountainCrossingCostMult": 1.75,
+    "riverCrossingScorePenalty": 0.35,
+    "mountainCrossingScorePenalty": 0.55,
+    "terrainExpansionCostMultByBiome": {
+      "RIVER": 1.8,
+      "MOUNTAIN": 2.6
+    },
+    "terrainDefenseMultByBiome": {
+      "RIVER": 1.35,
+      "MOUNTAIN": 1.7
+    },
+    "resourceEffects": {
+      "food": { "expansionPower": 0.02 },
+      "wood": { "production": 0.015 },
+      "iron": { "attackPower": 0.02 },
+      "stone": { "defensePower": 0.02 },
+      "gold": { "goldIncome": 1 }
+    },
+    "terrainSimilarity": {
+      "defaults": { "same": 1, "group": 0.8, "near": 0.6, "far": 0.3 },
+      "groups": {
+        "plains": ["GRASSLAND", "SAVANNA"],
+        "forest": ["FOREST", "WOODLAND", "TROPICAL_FOREST", "RAINFOREST"],
+        "cold": ["TUNDRA", "TAIGA"],
+        "arid": ["DESERT"],
+        "rocky": ["MOUNTAIN"],
+        "water": ["COASTAL", "RIVER"]
+      },
+      "nearGroups": {
+        "plains": ["forest", "water", "arid"],
+        "forest": ["plains", "water", "cold"],
+        "cold": ["forest", "rocky"],
+        "arid": ["plains", "rocky"],
+        "rocky": ["cold", "arid"],
+        "water": ["plains", "forest"]
+      }
+    }
   },
   "cellDesirabilityBonus": {
     "bonusMultiplier": 1000,

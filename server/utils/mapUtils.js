@@ -1,4 +1,5 @@
 // mapUtils.js
+const DEBUG_MAP = process.env.DEBUG_MAP === "true";
 
 // Standard linear interpolation
 export function lerp(t, a, b) {
@@ -123,6 +124,7 @@ export function computeDistanceToSea(heightMap, seaLevel = 0.3) {
     Array(width).fill(Infinity)
   );
   const queue = [];
+  let queueIndex = 0;
   const directions = [
     { dx: 1, dy: 0 },
     { dx: -1, dy: 0 },
@@ -140,8 +142,8 @@ export function computeDistanceToSea(heightMap, seaLevel = 0.3) {
     }
   }
 
-  while (queue.length > 0) {
-    const { x, y } = queue.shift();
+  while (queueIndex < queue.length) {
+    const { x, y } = queue[queueIndex++];
     const currentDist = distanceMap[y][x];
 
     for (const { dx, dy } of directions) {
@@ -430,7 +432,7 @@ export const generateResources = (biome, elevation, moisture, temperature) => {
         break;
       case "DESERT":
         if (random < 0.1) resources.add("salt");
-        if (moisture > 0.2) resources.add("date palms");
+        if (moisture > 0.2) resources.add("date palm");
         break;
       case "TUNDRA":
         if (random < 0.3) resources.add("fur animals");
@@ -536,7 +538,9 @@ function spawnSubBlobs(
           const subX = blob.x + Math.cos(angle) * blob.radius * 0.9;
           const subY = blob.y + Math.sin(angle) * blob.radius * 0.9;
           const subRadius = Math.random();
-          console.log("Added sub blob", blob.radius, subRadius);
+          if (DEBUG_MAP) {
+            console.log("Added sub blob", blob.radius, subRadius);
+          }
           newBlobs.push({ x: subX, y: subY, radius: subRadius });
         }
       }
@@ -585,13 +589,14 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
         : baseMoistureLand
     )
   );
-  console.log("Base moisture calculated.");
+  if (DEBUG_MAP) console.log("Base moisture calculated.");
 
   // 2. WATER PROXIMITY BOOST: Compute distance-to-water via BFS
   let waterDistance = Array.from({ length: height }, () =>
     Array(width).fill(Infinity)
   );
   const queue = [];
+  let queueIndex = 0;
   // Seed the BFS with water cells.
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -610,8 +615,8 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
     { dx: 0, dy: 1 },
     { dx: 0, dy: -1 },
   ];
-  while (queue.length) {
-    const { x, y } = queue.shift();
+  while (queueIndex < queue.length) {
+    const { x, y } = queue[queueIndex++];
     const d = waterDistance[y][x];
     for (const { dx, dy } of directions) {
       const nx = x + dx;
@@ -624,7 +629,7 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
       }
     }
   }
-  console.log("Water distance calculated.");
+  if (DEBUG_MAP) console.log("Water distance calculated.");
 
   // Boost moisture for cells near water.
   const maxWaterInfluenceDistance = 15; // in cells
@@ -640,7 +645,7 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
       }
     }
   }
-  console.log("Water boost applied.");
+  if (DEBUG_MAP) console.log("Water boost applied.");
 
   // 3. MOUNTAIN RAIN SHADOW: Reduce moisture if mountains block moisture from the west.
   // Assume prevailing wind comes from the west.
@@ -661,7 +666,7 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
       moistureMap[y][x] = Math.max(0, moistureMap[y][x] - shadow);
     }
   }
-  console.log("Mountain rain shadow applied.");
+  if (DEBUG_MAP) console.log("Mountain rain shadow applied.");
 
   // 4. FOREST BOOST: A simple heuristic that boosts moisture in areas likely to be forested.
   // Here we add a small boost if the cell is at a moderate elevation and has moist neighbors.
@@ -695,7 +700,7 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
     }
   }
   moistureMap = forestMoisture;
-  console.log("Forest boost applied.");
+  if (DEBUG_MAP) console.log("Forest boost applied.");
 
   // 5. Add natural noise and clamp the values between 0 and 1.
   for (let y = 0; y < height; y++) {
@@ -728,7 +733,7 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
     }
     moistureMap = newMap;
   }
-  console.log("Moisture diffused.");
+  if (DEBUG_MAP) console.log("Moisture diffused.");
 
   return moistureMap;
 }
@@ -779,6 +784,186 @@ function smoothEligibleCells(mapData) {
   return newMapData;
 }
 
+function ensureElevationConnectivity(heightMap, landThreshold, noise2D) {
+  const height = heightMap.length;
+  if (height === 0) return heightMap;
+  const width = heightMap[0].length;
+  const total = width * height;
+
+  const visited = new Uint8Array(total);
+  const componentId = new Int32Array(total);
+  componentId.fill(-1);
+  const componentSizes = [];
+
+  const queue = new Int32Array(total);
+  const neighbors = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ];
+
+  let componentCount = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (visited[idx]) continue;
+      if (heightMap[y][x].elevation < landThreshold) continue;
+
+      let head = 0;
+      let tail = 0;
+      queue[tail++] = idx;
+      visited[idx] = 1;
+      componentId[idx] = componentCount;
+      let size = 0;
+
+      while (head < tail) {
+        const current = queue[head++];
+        size++;
+        const cy = Math.floor(current / width);
+        const cx = current - cy * width;
+        for (const [dx, dy] of neighbors) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const nIdx = ny * width + nx;
+          if (visited[nIdx]) continue;
+          if (heightMap[ny][nx].elevation < landThreshold) continue;
+          visited[nIdx] = 1;
+          componentId[nIdx] = componentCount;
+          queue[tail++] = nIdx;
+        }
+      }
+
+      componentSizes.push(size);
+      componentCount++;
+    }
+  }
+
+  if (componentCount <= 1) return heightMap;
+
+  let mainComponent = 0;
+  for (let i = 1; i < componentSizes.length; i++) {
+    if (componentSizes[i] > componentSizes[mainComponent]) {
+      mainComponent = i;
+    }
+  }
+
+  const dist = new Int32Array(total);
+  const nearestMain = new Int32Array(total);
+  dist.fill(-1);
+  nearestMain.fill(-1);
+
+  let head = 0;
+  let tail = 0;
+  for (let i = 0; i < total; i++) {
+    if (componentId[i] === mainComponent) {
+      dist[i] = 0;
+      nearestMain[i] = i;
+      queue[tail++] = i;
+    }
+  }
+
+  while (head < tail) {
+    const current = queue[head++];
+    const cy = Math.floor(current / width);
+    const cx = current - cy * width;
+    for (const [dx, dy] of neighbors) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const nIdx = ny * width + nx;
+      if (dist[nIdx] !== -1) continue;
+      dist[nIdx] = dist[current] + 1;
+      nearestMain[nIdx] = nearestMain[current];
+      queue[tail++] = nIdx;
+    }
+  }
+
+  const bestDist = new Int32Array(componentCount).fill(-1);
+  const bestIdx = new Int32Array(componentCount).fill(-1);
+  const bestTarget = new Int32Array(componentCount).fill(-1);
+
+  for (let i = 0; i < total; i++) {
+    const comp = componentId[i];
+    if (comp < 0 || comp === mainComponent) continue;
+    const d = dist[i];
+    if (d < 0) continue;
+    if (bestDist[comp] === -1 || d < bestDist[comp]) {
+      bestDist[comp] = d;
+      bestIdx[comp] = i;
+      bestTarget[comp] = nearestMain[i];
+    }
+  }
+
+  const carveLand = (x, y, base = landThreshold) => {
+    const cell = heightMap[y][x];
+    const noise =
+      noise2D && typeof noise2D === "function"
+        ? (noise2D(x * 0.08, y * 0.08) + 1) * 0.5
+        : 0.5;
+    const lift = base + 0.05 + noise * 0.08;
+    cell.elevation = Math.max(cell.elevation, Math.min(0.75, lift));
+  };
+
+  const carveNoisyPath = (fromIdx, toIdx) => {
+    let x = fromIdx % width;
+    let y = Math.floor(fromIdx / width);
+    const tx = toIdx % width;
+    const ty = Math.floor(toIdx / width);
+    let safety = width * height;
+
+    while (safety-- > 0) {
+      const dx = tx - x;
+      const dy = ty - y;
+      if (dx === 0 && dy === 0) break;
+      const angleToTarget = Math.atan2(dy, dx);
+      const noiseAngle =
+        noise2D && typeof noise2D === "function"
+          ? noise2D(x * 0.05, y * 0.05) * 0.6
+          : 0;
+      const angle = angleToTarget + noiseAngle;
+      let moveX = Math.round(Math.cos(angle));
+      let moveY = Math.round(Math.sin(angle));
+      if (moveX === 0 && moveY === 0) {
+        moveX = dx === 0 ? 0 : dx > 0 ? 1 : -1;
+        moveY = dy === 0 ? 0 : dy > 0 ? 1 : -1;
+      }
+      x = Math.min(width - 1, Math.max(0, x + moveX));
+      y = Math.min(height - 1, Math.max(0, y + moveY));
+
+      const noise =
+        noise2D && typeof noise2D === "function"
+          ? noise2D(x * 0.1, y * 0.1)
+          : 0;
+      const radiusBase = noise > 0.55 ? 2 : noise > -0.1 ? 1 : 0;
+      for (let ry = -radiusBase; ry <= radiusBase; ry++) {
+        for (let rx = -radiusBase; rx <= radiusBase; rx++) {
+          const nx = x + rx;
+          const ny = y + ry;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const dist = Math.hypot(rx, ry);
+          if (dist > radiusBase + 0.1) continue;
+          const edgeNoise =
+            noise2D && typeof noise2D === "function"
+              ? noise2D(nx * 0.08, ny * 0.08)
+              : 0;
+          if (dist > 0.5 && edgeNoise < -0.2) continue;
+          carveLand(nx, ny);
+        }
+      }
+    }
+  };
+
+  for (let comp = 0; comp < componentCount; comp++) {
+    if (comp === mainComponent) continue;
+    if (bestIdx[comp] === -1 || bestTarget[comp] === -1) continue;
+    carveNoisyPath(bestIdx[comp], bestTarget[comp]);
+  }
+
+  return heightMap;
+}
+
 export function generateWorldMap(
   width,
   height,
@@ -787,15 +972,18 @@ export function generateWorldMap(
   seed = Math.random()
 ) {
   try {
-    console.log("Starting world map generation using blob-based elevation...");
+    if (DEBUG_MAP)
+      console.log("Starting world map generation using blob-based elevation...");
     const noise2D = createNoise2D(seed);
-    console.log("Noise function created successfully.");
+    if (DEBUG_MAP) console.log("Noise function created successfully.");
 
     const initialBlobs = generateInitialBlobs(num_blobs, width, height);
     const allBlobs = spawnSubBlobs(initialBlobs);
-    console.log(
-      `Generated ${allBlobs.length} blobs (including sub-blobs) for base elevation.`
-    );
+    if (DEBUG_MAP) {
+      console.log(
+        `Generated ${allBlobs.length} blobs (including sub-blobs) for base elevation.`
+      );
+    }
 
     // Build the height map using our blob-based elevation function.
     const heightMap = Array(height)
@@ -847,7 +1035,7 @@ export function generateWorldMap(
             }
           })
       );
-    console.log("Height map generated successfully.");
+    if (DEBUG_MAP) console.log("Height map generated successfully.");
 
     // ----------------
     // River Generation
@@ -858,7 +1046,7 @@ export function generateWorldMap(
       width,
       height
     );
-    console.log("Rivers generated successfully.");
+    if (DEBUG_MAP) console.log("Rivers generated successfully.");
     const riverErosionFactor = 0.04; // Tweak this value to control how strongly rivers lower the elevation
 
     // Define a normalized 3x3 kernel that spreads the erosion effect.
@@ -908,7 +1096,10 @@ export function generateWorldMap(
         );
       }
     }
-    console.log("River erosion (with spread) applied.");
+    if (DEBUG_MAP) console.log("River erosion (with spread) applied.");
+
+    // Ensure landmasses are connected before downstream passes.
+    ensureElevationConnectivity(heightMap, 0.35, noise2D);
 
     // -------------------
     // Moisture Generation
@@ -929,7 +1120,7 @@ export function generateWorldMap(
         );
       }
     }
-    console.log("Moisture map noise added successfully.");
+    if (DEBUG_MAP) console.log("Moisture map noise added successfully.");
 
     const erodedHeightMap = simulateErosion(heightMap, erosion_passes);
     // ----------------
@@ -1006,12 +1197,12 @@ export function generateWorldMap(
         }
       })
     );
-    console.log("Map data generated successfully.");
+    if (DEBUG_MAP) console.log("Map data generated successfully.");
 
     const smoothedMapData = smoothEligibleCells(mapData);
-    console.log("Smoothing pass completed.");
+    if (DEBUG_MAP) console.log("Smoothing pass completed.");
 
-    console.log("World map generation completed.");
+    if (DEBUG_MAP) console.log("World map generation completed.");
     return smoothedMapData;
   } catch (error) {
     console.error("Error in generateWorldMap:", error, { width, height });

@@ -85,7 +85,7 @@ const HowToPlay = () => {
         <p>&copy; 2025 annexi.io</p>
         <p
           className="cursor-pointer hover:text-gray-300"
-          onClick={() => window.location("https://discord.gg/6YRU8YP5q7")}
+          onClick={() => window.location.assign("https://discord.gg/6YRU8YP5q7")}
         >
           <FaDiscord />
         </p>
