@@ -360,6 +360,39 @@ class GameLoop {
       // Store in cache
       this.cachedMapData.set(roomKey, mapData);
       let totalClaimable = 0;
+      if (process.env.DEBUG_RESOURCES === "true") {
+        const resourceCounts = {};
+        const biomeCounts = {};
+        let sampleCell = null;
+        for (let y = 0; y < mapData.length; y++) {
+          for (let x = 0; x < mapData[0].length; x++) {
+            const cell = mapData[y][x];
+            if (!cell) continue;
+            const biome = cell.biome || "UNKNOWN";
+            biomeCounts[biome] = (biomeCounts[biome] || 0) + 1;
+            const nodeType = cell.resourceNode?.type;
+            const resList = Array.isArray(cell.resources) ? cell.resources : [];
+            if (nodeType) resourceCounts[nodeType] = (resourceCounts[nodeType] || 0) + 1;
+            if (!nodeType) {
+              for (const r of resList) {
+                resourceCounts[r] = (resourceCounts[r] || 0) + 1;
+              }
+            }
+            if (!sampleCell && cell.biome !== "OCEAN") {
+              sampleCell = {
+                x,
+                y,
+                biome: cell.biome,
+                resources: resList,
+                resourceNode: cell.resourceNode || null,
+              };
+            }
+          }
+        }
+        console.log(`[RESOURCES] init room=${roomKey} counts`, resourceCounts);
+        console.log(`[RESOURCES] init room=${roomKey} sample`, sampleCell);
+        console.log(`[RESOURCES] init room=${roomKey} biomeCounts`, biomeCounts);
+      }
       for (let y = 0; y < mapData.length; y++) {
         for (let x = 0; x < mapData[0].length; x++) {
           const cell = mapData[y][x];

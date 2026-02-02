@@ -2,6 +2,7 @@
 import express from "express";
 import mongoose from "mongoose";
 import { Worker } from "worker_threads";
+import { assignResourcesToMap } from "../utils/resourceManagement.js";
 
 const router = express.Router();
 
@@ -80,13 +81,14 @@ router.post("/", async (req, res, next) => {
     const mapSeed = seed !== undefined ? Number(seed) : Math.random();
 
     // Offload the heavy map generation to a worker thread
-    const mapData = await runMapGenerationWorker({
+    let mapData = await runMapGenerationWorker({
       width,
       height,
       erosion_passes,
       num_blobs,
       seed: mapSeed,
     });
+    mapData = assignResourcesToMap(mapData, mapSeed);
     console.log("Map generated successfully in worker thread");
 
     // Save map metadata (without the huge mapData)
@@ -196,13 +198,14 @@ router.post("/gamemap", async (req, res, next) => {
         if (!erosion_passes) erosion_passes = 4;
         if (!num_blobs) num_blobs = 3;
 
-        const mapData = await runMapGenerationWorker({
+        let mapData = await runMapGenerationWorker({
           width,
           height,
           erosion_passes,
           num_blobs,
           seed: mapSeed,
         });
+        mapData = assignResourcesToMap(mapData, mapSeed);
         console.log("Map generated successfully in worker thread");
 
         // Define the chunk size and save chunks
@@ -301,6 +304,10 @@ const FEATURES = {
 };
 
 const RESOURCES = {
+  food: 19,
+  wood: 20,
+  iron: 21,
+  gold: 22,
   "iron ore": 0,
   "precious metals": 1,
   gems: 2,

@@ -1129,6 +1129,21 @@ const GameCanvas = ({
   // Memoize resources rendering (only visible cells)
   const memoizedResources = useMemo(() => {
     if (scale < 0.4) return null;
+    if (
+      process.env.REACT_APP_DEBUG_RESOURCES === "true" &&
+      visibleMapGrid.length &&
+      mappings?.resources
+    ) {
+      const counts = {};
+      visibleMapGrid.slice(0, 200).forEach(({ cell }) => {
+        const resources = Array.isArray(cell[5]) ? cell[5] : [];
+        resources.forEach((r) => {
+          const name = mappings.resources[r] ?? r;
+          counts[name] = (counts[name] || 0) + 1;
+        });
+      });
+      console.log("[CLIENT RESOURCES] sample counts", counts);
+    }
     return renderResources(visibleMapGrid, cellSize, scale);
   }, [visibleMapGrid, cellSize, scale]);
   const memoizedCaptureOverlays = useMemo(() => {

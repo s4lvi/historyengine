@@ -6,12 +6,21 @@ import { gameLoop } from "../workers/gameLoop.js";
 import config from "../config/config.js";
 import { buildGameStateResponse } from "../utils/gameStateView.js";
 import { broadcastRoomUpdate, touchRoom } from "../wsHub.js";
+import { assignResourcesToMap } from "../utils/resourceManagement.js";
 
 const router = express.Router();
 
 import GameRoom from "../models/GameRoom.js";
 
 const MIN_FOUND_DISTANCE = 5;
+const DEFAULT_ALLOW_REFOUND = config?.territorial?.allowRefound !== false;
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.toLowerCase() === "true";
+  return Boolean(value);
+}
 
 function manhattanDistance(x1, y1, x2, y2) {
   return Math.abs(x1 - x2) + Math.abs(y1 - y2);
@@ -362,6 +371,7 @@ router.post("/init", async (req, res, next) => {
       num_blobs,
       seed,
       botCount,
+      allowRefound,
     } = req.body;
     console.log(`[BOTS] init botCount=${botCount}`);
 
@@ -405,7 +415,15 @@ router.post("/init", async (req, res, next) => {
       players: [
         { userId: creatorName, password: creatorPassword, userState: {} },
       ],
-      gameState: { nations: [], resourceUpgrades: {}, resourceNodeClaims: {}, bots: { count: botCount || 0 } },
+      gameState: {
+        nations: [],
+        resourceUpgrades: {},
+        resourceNodeClaims: {},
+        bots: { count: botCount || 0 },
+        settings: {
+          allowRefound: parseBoolean(allowRefound, DEFAULT_ALLOW_REFOUND),
+        },
+      },
       tickCount: 0,
     };
     const gameRoom = new GameRoom(gameRoomData);
@@ -443,13 +461,14 @@ router.post("/init", async (req, res, next) => {
           "Starting asynchronous map generation for game room:",
           gameRoom._id
         );
-        const mapData = await runMapGenerationWorker({
+        let mapData = await runMapGenerationWorker({
           width: w,
           height: h,
           erosion_passes: erosionPasses,
           num_blobs: numBlobs,
           seed: mapSeed,
         });
+        mapData = assignResourcesToMap(mapData, mapSeed);
         console.log("Map generation completed for game room:", gameRoom._id);
 
         // Save map chunks
@@ -543,6 +562,7 @@ router.post("/", async (req, res, next) => {
       creatorName,
       creatorPassword,
       botCount,
+      allowRefound,
     } = req.body;
     console.log(`[BOTS] create botCount=${botCount}`);
     if (!mapId) return res.status(400).json({ error: "mapId is required" });
@@ -596,6 +616,9 @@ router.post("/", async (req, res, next) => {
         resourceUpgrades: {},
         resourceNodeClaims: {},
         bots: { count: botCount || 0 },
+        settings: {
+          allowRefound: parseBoolean(allowRefound, DEFAULT_ALLOW_REFOUND),
+        },
       },
       tickCount: 0,
     });
@@ -618,9 +641,17 @@ router.post("/", async (req, res, next) => {
 router.get("/", async (req, res, next) => {
   try {
     const gameRooms = await GameRoom.find({ status: "open" })
-      .select("roomName joinCode map createdAt tickCount")
+      .select("roomName joinCode map createdAt tickCount gameState.settings.allowRefound")
       .populate("map", "name width height");
-    res.json(gameRooms);
+    const payload = gameRooms.map((room) => {
+      const allowRefound =
+        room.gameState?.settings?.allowRefound ?? DEFAULT_ALLOW_REFOUND;
+      return {
+        ...room.toObject(),
+        allowRefound,
+      };
+    });
+    res.json(payload);
   } catch (error) {
     next(error);
   }
@@ -635,7 +666,17 @@ router.get("/:id/metadata", async (req, res, next) => {
     );
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    res.json({ map: gameRoom.map, config: config });
+    const roomAllowRefound =
+      gameRoom.gameState?.settings?.allowRefound;
+    const mergedConfig = {
+      ...config,
+      territorial: {
+        ...(config?.territorial || {}),
+        allowRefound:
+          roomAllowRefound !== undefined ? roomAllowRefound : DEFAULT_ALLOW_REFOUND,
+      },
+    };
+    res.json({ map: gameRoom.map, config: mergedConfig });
   } catch (error) {
     next(error);
   }
@@ -728,13 +769,21 @@ router.get("/:id/data", async (req, res, next) => {
           console.error("Invalid cell:", cell);
           return [0, 0, 0, 0, 0, []];
         }
+        const rawResources = cell.resourceNode?.type
+          ? [cell.resourceNode.type]
+          : Array.isArray(cell.resources)
+          ? cell.resources
+          : [];
+        const resources = rawResources
+          .map((r) => (typeof r === "string" ? r : REVERSE_RESOURCES[r]))
+          .filter(Boolean);
         return [
           cell.elevation,
           cell.moisture,
           cell.temperature,
           BIOMES[cell.biome] || 0,
           cell.isRiver ? 1 : 0,
-          Array.isArray(cell.resources) ? cell.resources : [],
+          resources,
         ];
       });
     });
@@ -755,6 +804,20 @@ router.get("/:id/data", async (req, res, next) => {
         req.params.id
       }: rows ${start}-${Math.min(end, mapData.length)}`
     );
+
+    if (process.env.DEBUG_RESOURCES === "true" && start === 0) {
+      const counts = {};
+      for (const row of optimizedChunk) {
+        for (const cell of row) {
+          const resources = Array.isArray(cell[5]) ? cell[5] : [];
+          resources.forEach((r) => {
+            const name = typeof r === "string" ? r : REVERSE_RESOURCES[r] ?? r;
+            counts[name] = (counts[name] || 0) + 1;
+          });
+        }
+      }
+      console.log(`[RESOURCES] room=${req.params.id} counts`, counts);
+    }
 
     res.json({
       totalRows: mapData.length,
@@ -1022,13 +1085,24 @@ router.post("/:id/foundNation", async (req, res, next) => {
       gameRoom.gameState = { nations: [] };
     }
 
-    // 3. Check for existing nation
+    const allowRefound =
+      gameRoom.gameState?.settings?.allowRefound ?? DEFAULT_ALLOW_REFOUND;
+    const hasDefeatedNation = (gameRoom.gameState.nations || []).some(
+      (nation) => nation.owner === userId && nation.status === "defeated"
+    );
+    if (!allowRefound && hasDefeatedNation) {
+      return res.status(403).json({
+        error: "Refounding is disabled in this game. You may spectate only.",
+        code: "REFOUND_DISABLED",
+      });
+    }
 
-    gameRoom.gameState.nations = gameRoom.gameState.nations.filter(
+    // 3. Check for existing nation
+    const existingNations = (gameRoom.gameState.nations || []).filter(
       (nation) => nation.owner !== userId || nation.status !== "defeated"
     );
 
-    if (gameRoom.gameState.nations.some((n) => n.owner === userId)) {
+    if (existingNations.some((n) => n.owner === userId)) {
       return res
         .status(400)
         .json({ error: "Nation already exists for this user" });
@@ -1043,7 +1117,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
         .status(400)
         .json({ error: "Cannot found a nation on ocean tiles" });
     }
-    const isOccupied = (gameRoom.gameState.nations || []).some((nation) => {
+    const isOccupied = existingNations.some((nation) => {
       if (!nation.territory || !nation.territory.x || !nation.territory.y)
         return false;
       for (let i = 0; i < nation.territory.x.length; i++) {
@@ -1058,7 +1132,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
         .status(400)
         .json({ error: "Founding location is already claimed" });
     }
-    const tooClose = (gameRoom.gameState.nations || []).some((nation) => {
+    const tooClose = existingNations.some((nation) => {
       if (nation.startingCell) {
         if (
           manhattanDistance(
@@ -1120,7 +1194,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
     const updatedRoom = await GameRoom.findByIdAndUpdate(
       req.params.id,
       {
-        $push: { "gameState.nations": newNation },
+        $set: { "gameState.nations": existingNations.concat(newNation) },
       },
       { new: true }
     );
@@ -1153,8 +1227,8 @@ router.post("/:id/buildCity", async (req, res, next) => {
   try {
     if (config?.territorial?.enabled) {
       return res
-        .status(400)
-        .json({ error: "City building is disabled in this mode" });
+        .status(410)
+        .json({ error: "City building is legacy and disabled in this mode" });
     }
     const { userId, password, x, y, cityType, cityName } = req.body;
     if (!userId || !password || x == null || y == null || !cityType) {

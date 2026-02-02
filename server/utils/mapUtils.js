@@ -117,7 +117,11 @@ export function simulateErosion(heightMap, iterations = 10) {
   }
 }
 
-export function computeDistanceToSea(heightMap, seaLevel = 0.3) {
+export function computeDistanceToSea(
+  heightMap,
+  seaLevel = 0.3,
+  useDiagonal = false
+) {
   const height = heightMap.length;
   const width = heightMap[0].length;
   const distanceMap = Array.from({ length: height }, () =>
@@ -125,12 +129,23 @@ export function computeDistanceToSea(heightMap, seaLevel = 0.3) {
   );
   const queue = [];
   let queueIndex = 0;
-  const directions = [
-    { dx: 1, dy: 0 },
-    { dx: -1, dy: 0 },
-    { dx: 0, dy: 1 },
-    { dx: 0, dy: -1 },
-  ];
+  const directions = useDiagonal
+    ? [
+        { dx: 1, dy: 0 },
+        { dx: -1, dy: 0 },
+        { dx: 0, dy: 1 },
+        { dx: 0, dy: -1 },
+        { dx: 1, dy: 1 },
+        { dx: 1, dy: -1 },
+        { dx: -1, dy: 1 },
+        { dx: -1, dy: -1 },
+      ]
+    : [
+        { dx: 1, dy: 0 },
+        { dx: -1, dy: 0 },
+        { dx: 0, dy: 1 },
+        { dx: 0, dy: -1 },
+      ];
 
   // Seed the BFS with sea cells.
   for (let y = 0; y < height; y++) {
@@ -264,102 +279,202 @@ export function aStarRiverPath(start, heightMap, distanceMap, seaLevel = 0.3) {
 }
 
 // Generate rivers and build an erosion map
-export function generateRivers(heightMap, width, height) {
+export function generateRivers(heightMap, width, height, options = {}) {
   try {
+    const seaLevel = options.seaLevel ?? 0.3;
+    const noise2D = options.noise2D || null;
+    const flowThreshold =
+      options.flowThreshold ??
+      Math.max(80, Math.round(Math.sqrt(width * height) * 1.5));
+    const rainNoise = options.rainNoise ?? 0.45;
+    const rainElevationBonus = options.rainElevationBonus ?? 0.6;
+    const elevWeight = options.elevWeight ?? 1.4;
+    const distWeight = options.distWeight ?? 0.7;
+    const meanderWeight = options.meanderWeight ?? 0.35;
+    const dirFieldWeight = options.dirFieldWeight ?? 0.4;
+    const slopeWeight = options.slopeWeight ?? 0.6;
+    const candidateTop = Math.max(2, options.candidateTop ?? 4);
+    const dirNoiseScale = options.dirNoiseScale ?? 0.02;
+    const pickNoiseScale = options.pickNoiseScale ?? 0.12;
     const rivers = new Set();
     const erosionMap = Array(height)
       .fill(null)
       .map(() => Array(width).fill(0));
 
-    const potentialRiverSources = [];
+    const distanceMap = computeDistanceToSea(heightMap, seaLevel, true);
+    const total = width * height;
+    const flow = new Float32Array(total);
+    const effectiveElev = new Float32Array(total);
+    let maxDist = 0;
 
-    // Identify potential river sources based on elevation thresholds.
+    const buckets = [];
+
+    const neighborSteps = [
+      { dx: 1, dy: 0, dist: 1 },
+      { dx: -1, dy: 0, dist: 1 },
+      { dx: 0, dy: 1, dist: 1 },
+      { dx: 0, dy: -1, dist: 1 },
+      { dx: 1, dy: 1, dist: Math.SQRT2 },
+      { dx: 1, dy: -1, dist: Math.SQRT2 },
+      { dx: -1, dy: 1, dist: Math.SQRT2 },
+      { dx: -1, dy: -1, dist: Math.SQRT2 },
+    ];
+
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        const elev = heightMap[y][x].elevation;
-        if (elev > 0.75 && Math.random() < 0.001) {
-          potentialRiverSources.push({ x, y, elevation: elev });
-        } else if (elev > 0.55 && Math.random() < 0.0005) {
-          potentialRiverSources.push({ x, y, elevation: elev });
-        }
+        const dist = distanceMap[y][x];
+        if (dist > maxDist) maxDist = dist;
       }
     }
-    console.log(
-      `Identified ${potentialRiverSources.length} potential river sources.`
-    );
+    const bucketCount = 1001;
+    for (let i = 0; i < bucketCount; i++) buckets.push([]);
 
-    // Sort sources from highest to lowest.
-    potentialRiverSources.sort((a, b) => b.elevation - a.elevation);
-
-    // Define the sea level (cells below this elevation are considered water).
-    const seaLevel = 0.3;
-    // Precompute the distance-to-sea map once.
-    const distanceMap = computeDistanceToSea(heightMap, seaLevel);
-
-    // Process each river source.
-    potentialRiverSources.forEach((source, index) => {
-      // Skip if the source is already part of an existing river.
-      if (rivers.has(`${source.x},${source.y}`)) return;
-
-      // Use A* to compute a path from the source to the sea.
-      const path = aStarRiverPath(source, heightMap, distanceMap, seaLevel);
-      if (!path) {
-        console.log(
-          `No valid path to sea found from source at (${source.x}, ${source.y}).`
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const elev = heightMap[y][x].elevation;
+        const dist = distanceMap[y][x];
+        const elevNoise = noise2D ? noise2D(x * 0.08, y * 0.08) * 0.03 : 0;
+        const effElev = Math.min(1, Math.max(0, elev + elevNoise));
+        effectiveElev[idx] = effElev;
+        const bucket = Math.max(
+          0,
+          Math.min(bucketCount - 1, Math.floor(effElev * (bucketCount - 1)))
         );
-        return;
+        buckets[bucket].push(idx);
+
+        if (elev <= seaLevel) {
+          flow[idx] = 0;
+          continue;
+        }
+
+        const noiseVal = noise2D ? noise2D(x * 0.06, y * 0.06) : 0;
+        const rain = 1 + noiseVal * rainNoise;
+        const elevBonus = Math.max(0, elev - 0.4) * rainElevationBonus;
+        flow[idx] = Math.max(0.1, rain + elevBonus);
       }
+    }
 
-      // Initialize river parameters.
-      let riverWidth = 1;
-      let stepsToWiden = Math.floor(Math.random() * 10) + 45;
-      let flowStrength = 1.0;
+    const slopeExponent = 1.3;
+    for (let b = bucketCount - 1; b >= 0; b--) {
+      const bucket = buckets[b];
+      for (let i = 0; i < bucket.length; i++) {
+        const idx = bucket[i];
+        const x = idx % width;
+        const y = Math.floor(idx / width);
+        const elev = effectiveElev[idx];
+        if (elev <= seaLevel) continue;
+        const dist = distanceMap[y][x];
 
-      // Process each cell in the computed path.
-      path.forEach((pt, i) => {
-        const key = `${pt.x},${pt.y}`;
+        let dirX = 0;
+        let dirY = 0;
+        if (noise2D) {
+          const angle = (noise2D(x * dirNoiseScale, y * dirNoiseScale) + 1) * Math.PI;
+          dirX = Math.cos(angle);
+          dirY = Math.sin(angle);
+        }
 
-        // Stamp the river cells (using a square around the current cell based on riverWidth).
-        for (
-          let wx = -Math.floor(riverWidth / 2);
-          wx < Math.ceil(riverWidth / 2);
-          wx++
-        ) {
-          for (
-            let wy = -Math.floor(riverWidth / 2);
-            wy < Math.ceil(riverWidth / 2);
-            wy++
-          ) {
-            const rx = pt.x + wx;
-            const ry = pt.y + wy;
-            if (rx >= 0 && rx < width && ry >= 0 && ry < height) {
-              const cellKey = `${rx},${ry}`;
-              rivers.add(cellKey);
-              erosionMap[ry][rx] += flowStrength;
-            }
+        let slopeDirX = 0;
+        let slopeDirY = 0;
+        if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+          const elevL = effectiveElev[idx - 1];
+          const elevR = effectiveElev[idx + 1];
+          const elevU = effectiveElev[idx - width];
+          const elevD = effectiveElev[idx + width];
+          const gradX = (elevR - elevL) * 0.5;
+          const gradY = (elevD - elevU) * 0.5;
+          const len = Math.hypot(gradX, gradY);
+          if (len > 0) {
+            slopeDirX = -gradX / len;
+            slopeDirY = -gradY / len;
           }
         }
 
-        // Update flow strength based on elevation drop between current and next cell.
-        if (i < path.length - 1) {
-          const currentElev = heightMap[pt.y][pt.x].elevation;
-          const nextPt = path[i + 1];
-          const nextElev = heightMap[nextPt.y][nextPt.x].elevation;
-          const elevDiff = currentElev - nextElev;
-          flowStrength = Math.max(0.5, Math.min(1.5, flowStrength + elevDiff));
+        const downslope = [];
+        const fallback = [];
+        for (const step of neighborSteps) {
+          const nx = x + step.dx;
+          const ny = y + step.dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const nIdx = ny * width + nx;
+          const nElev = effectiveElev[nIdx];
+          const nDist = distanceMap[ny][nx];
+          const elevDrop = elev - nElev;
+          const distDrop = dist - nDist;
+          if (elevDrop > 0) {
+            const baseSlope = elevDrop / step.dist;
+            const jitter = noise2D ? noise2D(nx * 0.08, ny * 0.08) * 0.05 : 0;
+            const dirBias =
+              step.dx * dirX + step.dy * dirY;
+            const slopeBias =
+              step.dx * slopeDirX + step.dy * slopeDirY;
+            const score =
+              baseSlope * elevWeight +
+              distDrop * distWeight +
+              jitter * meanderWeight +
+              dirBias * dirFieldWeight +
+              slopeBias * slopeWeight;
+            downslope.push({ idx: nIdx, score, slope: baseSlope });
+          } else if (distDrop > 0) {
+            fallback.push({ idx: nIdx, score: distDrop });
+          }
         }
 
-        // Increase river width periodically.
-        stepsToWiden--;
-        if (stepsToWiden <= 0) {
-          riverWidth = Math.min(riverWidth + 0.5, 2);
-          stepsToWiden = Math.floor(Math.random() * 10) + 45;
-          console.log(
-            `Increased river width to ${riverWidth} at path step ${i}`
-          );
+        let pool = downslope;
+        if (pool.length === 0 && fallback.length > 0) {
+          fallback.sort((a, b) => b.score - a.score);
+          pool = fallback.slice(0, 1);
         }
-      });
-    });
+        if (pool.length === 0) continue;
+
+        pool.sort((a, b) => b.score - a.score);
+        const top = pool.slice(0, Math.min(candidateTop, pool.length));
+        let totalWeight = 0;
+        for (const entry of top) {
+          const w = Math.pow(Math.max(0.0001, entry.slope || entry.score), slopeExponent);
+          entry.weight = w;
+          totalWeight += w;
+        }
+        if (!Number.isFinite(totalWeight) || totalWeight <= 0) continue;
+
+        for (const entry of top) {
+          flow[entry.idx] += flow[idx] * (entry.weight / totalWeight);
+        }
+      }
+    }
+
+    let maxFlow = 0;
+    for (let i = 0; i < total; i++) {
+      if (flow[i] > maxFlow) maxFlow = flow[i];
+    }
+    const maxStrength = maxFlow > 0 ? maxFlow : 1;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const elev = heightMap[y][x].elevation;
+        if (elev <= seaLevel) continue;
+        const accum = flow[idx];
+        if (accum < flowThreshold) continue;
+
+        const strength = Math.min(1.6, (accum / maxStrength) * 2);
+        const widthLevel =
+          accum > flowThreshold * 6 ? 2 : accum > flowThreshold * 3 ? 1 : 0;
+
+        for (let dy = -widthLevel; dy <= widthLevel; dy++) {
+          for (let dx = -widthLevel; dx <= widthLevel; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+            const cellElev = heightMap[ny][nx].elevation;
+            if (cellElev <= seaLevel) continue;
+            const key = `${nx},${ny}`;
+            rivers.add(key);
+            erosionMap[ny][nx] += strength;
+          }
+        }
+      }
+    }
 
     return { rivers, erosionMap };
   } catch (error) {
@@ -395,58 +510,89 @@ export const calculateTemperature = (
 // Resource generation
 export const generateResources = (biome, elevation, moisture, temperature) => {
   try {
-    const resources = new Set();
-    const random = Math.random();
-    if (elevation > 0.8) {
-      if (random < 0.3) resources.add("iron ore");
-      if (random < 0.2) resources.add("precious metals");
-      if (random < 0.15) resources.add("gems");
-    } else if (elevation > 0.6) {
-      if (random < 0.2) resources.add("stone");
-      if (random < 0.15) resources.add("copper ore");
+    const nodeChanceByBiome = {
+      GRASSLAND: 0.012,
+      SAVANNA: 0.01,
+      RIVER: 0.014,
+      COASTAL: 0.012,
+      FOREST: 0.01,
+      WOODLAND: 0.01,
+      TROPICAL_FOREST: 0.01,
+      RAINFOREST: 0.01,
+      TAIGA: 0.009,
+      MOUNTAIN: 0.014,
+      DESERT: 0.005,
+      TUNDRA: 0.006,
+    };
+    const nodeChance = nodeChanceByBiome[biome] ?? 0;
+    if (nodeChance <= 0) return [];
+    if (Math.random() > nodeChance) return [];
+
+    let weights = [];
+    if (biome === "MOUNTAIN") {
+      weights = [
+        { type: "stone", w: 0.45 },
+        { type: "iron", w: elevation > 0.65 ? 0.25 : 0.18 },
+        { type: "gold", w: elevation > 0.8 ? 0.08 : 0.04 },
+        { type: "food", w: 0.12 },
+        { type: "wood", w: 0.1 },
+      ];
+    } else if (biome === "DESERT") {
+      weights = [
+        { type: "stone", w: 0.35 },
+        { type: "iron", w: elevation > 0.65 ? 0.2 : 0.12 },
+        { type: "gold", w: elevation > 0.8 ? 0.06 : 0.03 },
+        { type: "food", w: 0.12 },
+        { type: "wood", w: 0.08 },
+      ];
+    } else if (biome === "TUNDRA") {
+      weights = [
+        { type: "iron", w: 0.28 },
+        { type: "stone", w: 0.22 },
+        { type: "food", w: 0.18 },
+        { type: "wood", w: 0.12 },
+        { type: "gold", w: 0.05 },
+      ];
+    } else if (biome === "RIVER" || biome === "COASTAL") {
+      weights = [
+        { type: "food", w: 0.45 },
+        { type: "wood", w: 0.22 },
+        { type: "stone", w: 0.12 },
+        { type: "iron", w: 0.08 },
+        { type: "gold", w: 0.05 },
+      ];
+    } else if (
+      biome === "FOREST" ||
+      biome === "WOODLAND" ||
+      biome === "TROPICAL_FOREST" ||
+      biome === "RAINFOREST" ||
+      biome === "TAIGA"
+    ) {
+      weights = [
+        { type: "wood", w: 0.45 },
+        { type: "food", w: 0.2 },
+        { type: "stone", w: 0.12 },
+        { type: "iron", w: 0.1 },
+        { type: "gold", w: 0.05 },
+      ];
+    } else {
+      weights = [
+        { type: "food", w: 0.5 },
+        { type: "wood", w: 0.2 },
+        { type: "stone", w: 0.12 },
+        { type: "iron", w: 0.1 },
+        { type: "gold", w: 0.08 },
+      ];
     }
-    if (moisture > 0.6) {
-      resources.add("fresh water");
-      if (random < 0.3) resources.add("fish");
+
+    let total = 0;
+    for (const entry of weights) total += entry.w;
+    let roll = Math.random() * total;
+    for (const entry of weights) {
+      roll -= entry.w;
+      if (roll <= 0) return [entry.type];
     }
-    switch (biome) {
-      case "FOREST":
-      case "TROPICAL_FOREST":
-      case "RAINFOREST":
-        resources.add("timber");
-        if (random < 0.4) resources.add("medicinal plants");
-        if (random < 0.3) resources.add("wild fruits");
-        if (random < 0.5) resources.add("game animals");
-        break;
-      case "GRASSLAND":
-      case "SAVANNA":
-        resources.add("arable land");
-        resources.add("pastures");
-        if (random < 0.4) resources.add("grazing animals");
-        break;
-      case "WOODLAND":
-        resources.add("timber");
-        resources.add("arable land");
-        if (random < 0.3) resources.add("wild fruits");
-        if (random < 0.4) resources.add("game animals");
-        break;
-      case "DESERT":
-        if (random < 0.1) resources.add("salt");
-        if (moisture > 0.2) resources.add("date palm");
-        break;
-      case "TUNDRA":
-        if (random < 0.3) resources.add("fur animals");
-        break;
-      case "TAIGA":
-        resources.add("timber");
-        if (random < 0.4) resources.add("fur animals");
-        break;
-    }
-    if (temperature > 15 && temperature < 30 && moisture > 0.4) {
-      resources.add("fertile soil");
-      if (random < 0.3) resources.add("herbs");
-    }
-    return Array.from(resources);
+    return [weights[weights.length - 1]?.type || "food"];
   } catch (error) {
     console.error("Error in generateResources:", error, {
       biome,
@@ -521,7 +667,8 @@ function spawnSubBlobs(
   blobs,
   passes = 3,
   spawnChance = 0.5,
-  scaleFactor = 0.7
+  scaleFactor = 0.7,
+  maxSubBlobs = 4
 ) {
   let allBlobs = blobs.slice(); // start with initial blobs
   for (let pass = 0; pass < passes; pass++) {
@@ -531,7 +678,8 @@ function spawnSubBlobs(
       // With a given chance, spawn either 1 or 2 sub–blobs from this blob.
       if (Math.random() < spawnChance) {
         // Randomly decide to spawn 1 or 2 sub-blobs.
-        const numSubBlobs = Math.random() < 0.5 ? 1 : 4;
+        const maxCount = Math.max(1, maxSubBlobs);
+        const numSubBlobs = Math.random() < 0.5 ? 1 : Math.min(4, maxCount);
         for (let i = 0; i < numSubBlobs; i++) {
           const angle = Math.random() * Math.PI * 2;
           // Place the new blob exactly on the edge of the parent blob.
@@ -576,7 +724,14 @@ export function calculateBlobElevation(x, y, blobs, noise2D) {
   }
 }
 
-function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
+function generateMoistureMap(
+  heightMap,
+  width,
+  height,
+  noise2D,
+  rivers,
+  options = {}
+) {
   const waterThreshold = 0.3;
   const baseMoistureWater = 1.0;
   const baseMoistureLand = 0.3;
@@ -711,7 +866,7 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
   }
 
   // 6. Smooth the moisture map a few times to simulate diffusion.
-  const smoothIterations = 6;
+  const smoothIterations = Math.max(1, options.smoothIterations ?? 6);
   for (let iter = 0; iter < smoothIterations; iter++) {
     const newMap = Array.from({ length: height }, () => Array(width).fill(0));
     for (let y = 0; y < height; y++) {
@@ -738,7 +893,7 @@ function generateMoistureMap(heightMap, width, height, noise2D, rivers) {
   return moistureMap;
 }
 
-function smoothEligibleCells(mapData) {
+function smoothEligibleCells(mapData, radius = 2) {
   const height = mapData.length;
   const width = mapData[0].length;
   // Make a deep copy of the mapData to store the new elevation values.
@@ -756,8 +911,8 @@ function smoothEligibleCells(mapData) {
         let sum = 0;
         let count = 0;
         // Loop over the 3x3 neighborhood.
-        for (let dy = -2; dy <= 2; dy++) {
-          for (let dx = -2; dx <= 2; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
             const ny = y + dy;
             const nx = x + dx;
             if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
@@ -896,69 +1051,52 @@ function ensureElevationConnectivity(heightMap, landThreshold, noise2D) {
     }
   }
 
-  const carveLand = (x, y, base = landThreshold) => {
-    const cell = heightMap[y][x];
-    const noise =
-      noise2D && typeof noise2D === "function"
-        ? (noise2D(x * 0.08, y * 0.08) + 1) * 0.5
-        : 0.5;
-    const lift = base + 0.05 + noise * 0.08;
-    cell.elevation = Math.max(cell.elevation, Math.min(0.75, lift));
-  };
-
-  const carveNoisyPath = (fromIdx, toIdx) => {
-    let x = fromIdx % width;
-    let y = Math.floor(fromIdx / width);
-    const tx = toIdx % width;
-    const ty = Math.floor(toIdx / width);
-    let safety = width * height;
-
-    while (safety-- > 0) {
-      const dx = tx - x;
-      const dy = ty - y;
-      if (dx === 0 && dy === 0) break;
-      const angleToTarget = Math.atan2(dy, dx);
-      const noiseAngle =
-        noise2D && typeof noise2D === "function"
-          ? noise2D(x * 0.05, y * 0.05) * 0.6
-          : 0;
-      const angle = angleToTarget + noiseAngle;
-      let moveX = Math.round(Math.cos(angle));
-      let moveY = Math.round(Math.sin(angle));
-      if (moveX === 0 && moveY === 0) {
-        moveX = dx === 0 ? 0 : dx > 0 ? 1 : -1;
-        moveY = dy === 0 ? 0 : dy > 0 ? 1 : -1;
-      }
-      x = Math.min(width - 1, Math.max(0, x + moveX));
-      y = Math.min(height - 1, Math.max(0, y + moveY));
-
-      const noise =
-        noise2D && typeof noise2D === "function"
-          ? noise2D(x * 0.1, y * 0.1)
-          : 0;
-      const radiusBase = noise > 0.55 ? 2 : noise > -0.1 ? 1 : 0;
-      for (let ry = -radiusBase; ry <= radiusBase; ry++) {
-        for (let rx = -radiusBase; rx <= radiusBase; rx++) {
-          const nx = x + rx;
-          const ny = y + ry;
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          const dist = Math.hypot(rx, ry);
-          if (dist > radiusBase + 0.1) continue;
-          const edgeNoise =
-            noise2D && typeof noise2D === "function"
-              ? noise2D(nx * 0.08, ny * 0.08)
-              : 0;
-          if (dist > 0.5 && edgeNoise < -0.2) continue;
-          carveLand(nx, ny);
-        }
+  const addBlob = (cx, cy, radius, strength) => {
+    const r2 = radius * radius;
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const falloff = 1 - d2 / r2;
+        const lift = landThreshold + strength * falloff;
+        heightMap[ny][nx].elevation = Math.max(
+          heightMap[ny][nx].elevation,
+          Math.min(0.9, lift)
+        );
       }
     }
+  };
+
+  const jitter = (value, amount) => {
+    const n =
+      noise2D && typeof noise2D === "function"
+        ? noise2D(value * 0.07, value * 0.11)
+        : 0;
+    return value + n * amount;
   };
 
   for (let comp = 0; comp < componentCount; comp++) {
     if (comp === mainComponent) continue;
     if (bestIdx[comp] === -1 || bestTarget[comp] === -1) continue;
-    carveNoisyPath(bestIdx[comp], bestTarget[comp]);
+    const from = bestIdx[comp];
+    const to = bestTarget[comp];
+    const fx = from % width;
+    const fy = Math.floor(from / width);
+    const tx = to % width;
+    const ty = Math.floor(to / width);
+    const distCells = Math.max(1, bestDist[comp]);
+    const blobCount = Math.min(4, Math.max(2, Math.round(distCells / 18)));
+    for (let i = 1; i <= blobCount; i++) {
+      const t = i / (blobCount + 1);
+      const cx = Math.round(jitter(lerp(t, fx, tx), 3));
+      const cy = Math.round(jitter(lerp(t, fy, ty), 3));
+      const radius = Math.min(8, Math.max(3, Math.round(distCells / 12)));
+      const strength = 0.08 + (radius / 20);
+      addBlob(cx, cy, radius, strength);
+    }
   }
 
   return heightMap;
@@ -974,11 +1112,47 @@ export function generateWorldMap(
   try {
     if (DEBUG_MAP)
       console.log("Starting world map generation using blob-based elevation...");
+    const totalCells = width * height;
+    const largeMap = totalCells >= 800000;
+    const profile = {
+      subBlobPasses: largeMap ? 2 : 3,
+      subBlobSpawnChance: largeMap ? 0.35 : 0.5,
+      maxSubBlobs: largeMap ? 2 : 4,
+      maxBlobs: largeMap ? 160 : Infinity,
+      moistureSmoothIterations: largeMap ? 3 : 6,
+      smoothRadius: largeMap ? 1 : 2,
+      rivers: {
+        flowThreshold: Math.max(
+          40,
+          Math.round(Math.sqrt(totalCells) * (largeMap ? 0.18 : 0.14))
+        ),
+        rainNoise: largeMap ? 0.35 : 0.45,
+        rainElevationBonus: largeMap ? 0.5 : 0.65,
+        elevWeight: largeMap ? 1.1 : 1.3,
+        distWeight: largeMap ? 0.2 : 0.3,
+        meanderWeight: largeMap ? 0.5 : 0.45,
+        dirFieldWeight: largeMap ? 0.55 : 0.5,
+        slopeWeight: largeMap ? 0.85 : 0.75,
+        candidateTop: largeMap ? 4 : 5,
+        dirNoiseScale: largeMap ? 0.035 : 0.045,
+        pickNoiseScale: largeMap ? 0.16 : 0.2,
+      },
+    };
     const noise2D = createNoise2D(seed);
     if (DEBUG_MAP) console.log("Noise function created successfully.");
 
     const initialBlobs = generateInitialBlobs(num_blobs, width, height);
-    const allBlobs = spawnSubBlobs(initialBlobs);
+    let allBlobs = spawnSubBlobs(
+      initialBlobs,
+      profile.subBlobPasses,
+      profile.subBlobSpawnChance,
+      0.7,
+      profile.maxSubBlobs
+    );
+    if (Number.isFinite(profile.maxBlobs) && allBlobs.length > profile.maxBlobs) {
+      allBlobs.sort((a, b) => b.radius - a.radius);
+      allBlobs = allBlobs.slice(0, profile.maxBlobs);
+    }
     if (DEBUG_MAP) {
       console.log(
         `Generated ${allBlobs.length} blobs (including sub-blobs) for base elevation.`
@@ -1040,12 +1214,20 @@ export function generateWorldMap(
     // ----------------
     // River Generation
     // ----------------
-    const { rivers, erosionMap } = generateRivers(
-      heightMap,
-      //moistureMap,
-      width,
-      height
-    );
+    const { rivers, erosionMap } = generateRivers(heightMap, width, height, {
+      noise2D,
+      flowThreshold: profile.rivers.flowThreshold,
+      rainNoise: profile.rivers.rainNoise,
+      rainElevationBonus: profile.rivers.rainElevationBonus,
+      elevWeight: profile.rivers.elevWeight,
+      distWeight: profile.rivers.distWeight,
+      meanderWeight: profile.rivers.meanderWeight,
+      dirFieldWeight: profile.rivers.dirFieldWeight,
+      slopeWeight: profile.rivers.slopeWeight,
+      candidateTop: profile.rivers.candidateTop,
+      dirNoiseScale: profile.rivers.dirNoiseScale,
+      pickNoiseScale: profile.rivers.pickNoiseScale,
+    });
     if (DEBUG_MAP) console.log("Rivers generated successfully.");
     const riverErosionFactor = 0.04; // Tweak this value to control how strongly rivers lower the elevation
 
@@ -1109,7 +1291,8 @@ export function generateWorldMap(
       width,
       height,
       noise2D,
-      rivers
+      rivers,
+      { smoothIterations: profile.moistureSmoothIterations }
     );
 
     for (let y = 0; y < height; y++) {
@@ -1148,12 +1331,6 @@ export function generateWorldMap(
             y,
             noise2D
           );
-          const resources = generateResources(
-            biome,
-            elevation,
-            moisture,
-            temperature
-          );
           const features = [];
 
           if (elevation > 0.8) {
@@ -1178,6 +1355,12 @@ export function generateWorldMap(
             features.push("river");
             biome = "RIVER";
           }
+          const resources = generateResources(
+            biome,
+            elevation,
+            moisture,
+            temperature
+          );
 
           return {
             x,
@@ -1199,7 +1382,7 @@ export function generateWorldMap(
     );
     if (DEBUG_MAP) console.log("Map data generated successfully.");
 
-    const smoothedMapData = smoothEligibleCells(mapData);
+    const smoothedMapData = smoothEligibleCells(mapData, profile.smoothRadius);
     if (DEBUG_MAP) console.log("Smoothing pass completed.");
 
     if (DEBUG_MAP) console.log("World map generation completed.");

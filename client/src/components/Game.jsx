@@ -65,11 +65,13 @@ const Game = () => {
   const [placingTower, setPlacingTower] = useState(false);
   const [pressureMarkers, setPressureMarkers] = useState([]);
   const [isDefeated, setIsDefeated] = useState(false);
+  const [isSpectating, setIsSpectating] = useState(false);
   const [hasFounded, setHasFounded] = useState(false);
   const [attackPercent, setAttackPercent] = useState(0.25);
   const actionModalRef = useRef(actionModal);
   const isDefeatedRef = useRef(isDefeated);
   const hasFoundedRef = useRef(hasFounded);
+  const allowRefound = config?.territorial?.allowRefound !== false;
 
   useEffect(() => {
     actionModalRef.current = actionModal;
@@ -84,6 +86,7 @@ const Game = () => {
   }, [hasFounded]);
 
   const startFoundNation = () => {
+    setIsSpectating(false);
     setFoundingNation(true);
   };
 
@@ -165,6 +168,19 @@ const Game = () => {
 
   const applyDeltaGameState = (data) => {
     logNationOwners(data.gameState);
+    const allowRefound = config?.territorial?.allowRefound !== false;
+    const beginSpectate = () => {
+      setActionModal(null);
+      setFoundingNation(false);
+      setHasFounded(false);
+      setIsSpectating(true);
+    };
+    const beginRefound = () => {
+      setActionModal(null);
+      setFoundingNation(true);
+      setHasFounded(false);
+      setIsSpectating(false);
+    };
     setGameState((prevState) => {
       const previousNations = prevState?.gameState?.nations || [];
       const prevTerritories = previousNations.reduce((acc, nation) => {
@@ -231,6 +247,7 @@ const Game = () => {
           });
         }
         setUserState(winningNation);
+        setIsSpectating(false);
       } else {
         if (
           !actionModalRef.current ||
@@ -239,45 +256,55 @@ const Game = () => {
           setActionModal({
             type: "defeat",
             message: `${winningNation.owner} has won the game. Your nation has been defeated.`,
-            onClose: () => {
-              navigate("/");
-            },
+            onSpectate: beginSpectate,
           });
         }
         setUserState(null);
-        setFoundingNation(true);
+        setFoundingNation(false);
         setHasFounded(false);
+        setIsDefeated(true);
+        setIsSpectating(true);
       }
     } else {
       const playerNation = data.gameState.nations?.find(
         (n) => n.owner === userId && n.status !== "defeated"
       );
+      const defeatedNation = data.gameState.nations?.find(
+        (n) => n.owner === userId && n.status === "defeated"
+      );
+      const anyNationForUser = !!playerNation || !!defeatedNation;
       if (playerNation) {
         setUserState(playerNation);
         setIsDefeated(false);
         setHasFounded(true);
+        setIsSpectating(false);
       } else {
-        if (!isDefeatedRef.current && hasFoundedRef.current) {
-          const defeatedNation = data.gameState.nations?.find(
-            (n) => n.owner === userId && n.status === "defeated"
-          );
-          if (defeatedNation) {
-            setIsDefeated(true);
+        if (defeatedNation) {
+          setIsDefeated(true);
+          if (!allowRefound) {
+            setIsSpectating(true);
+          }
+          if (!isDefeatedRef.current && hasFoundedRef.current) {
             setActionModal({
               type: "defeat",
-              message:
-                "Your nation has been defeated! You can start over by founding a new nation.",
-              onClose: () => {
-                setActionModal(null);
-                setFoundingNation(true);
-                setHasFounded(false);
-              },
+              message: allowRefound
+                ? "Your nation has been defeated! You can start over by founding a new nation or spectate."
+                : "Your nation has been defeated. Refounding is disabled; you can spectate the match.",
+              onSpectate: beginSpectate,
+              onRefound: allowRefound ? beginRefound : null,
             });
           }
-          setUserState(null);
-          setFoundingNation(true);
-          setHasFounded(false);
+        } else {
+          setIsDefeated(false);
+          setIsSpectating(false);
         }
+        const canInitialFound = !anyNationForUser;
+        const canRefound = allowRefound && !!defeatedNation;
+        const shouldSpectate =
+          (!allowRefound && !!defeatedNation) || isSpectating;
+        setUserState(null);
+        setFoundingNation((canInitialFound || canRefound) && !shouldSpectate);
+        setHasFounded(false);
       }
     }
   };
@@ -655,11 +682,16 @@ const Game = () => {
 
       if (!response.ok) {
         const errData = await response.json();
+        if (errData?.code === "REFOUND_DISABLED") {
+          setIsSpectating(true);
+          setFoundingNation(false);
+        }
         throw new Error(errData.error || "Failed to found nation");
       }
 
       setFoundingNation(false);
       setIsDefeated(false);
+      setIsSpectating(false);
       setActionModal(null);
       setHasFounded(true);
     } catch (err) {
@@ -1009,6 +1041,8 @@ const Game = () => {
         onFoundNation={startFoundNation}
         userState={userState}
         hasFounded={hasFounded}
+        isSpectating={isSpectating}
+        allowRefound={allowRefound}
         attackPercent={attackPercent}
         setAttackPercent={setAttackPercent}
         onStartPlaceTower={() => setPlacingTower(true)}

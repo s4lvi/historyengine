@@ -7,9 +7,30 @@ const ActionBar = ({
   attackPercent,
   setAttackPercent,
   onStartPlaceTower,
+  isSpectating,
+  allowRefound,
 }) => {
   // If no userState, show the found-nation button.
   if (!hasFounded) {
+    if (isSpectating) {
+      return (
+        <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-4">
+          <div className="max-w-7xl mx-auto flex justify-center items-center gap-4">
+            <div className="text-sm text-gray-200">
+              Spectating — your nation has been defeated.
+            </div>
+            {allowRefound && (
+              <button
+                onClick={onFoundNation}
+                className="px-4 py-2 bg-gray-800 rounded hover:bg-gray-700"
+              >
+                Found New Nation
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-4">
         <div className="max-w-7xl mx-auto flex justify-center">

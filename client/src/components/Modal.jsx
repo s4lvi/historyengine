@@ -182,13 +182,31 @@ const Modal = ({
             <div>
               <h2 className="text-xl font-bold mb-4">Nation Defeated</h2>
               <p className="mb-4">{actionModal.message}</p>
-              <div className="flex justify-end">
-                <button
-                  onClick={actionModal.onClose}
-                  className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
-                >
-                  Continue
-                </button>
+              <div className="flex justify-end gap-2">
+                {actionModal.onSpectate && (
+                  <button
+                    onClick={actionModal.onSpectate}
+                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded"
+                  >
+                    Spectate
+                  </button>
+                )}
+                {actionModal.onRefound && (
+                  <button
+                    onClick={actionModal.onRefound}
+                    className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
+                  >
+                    Found New Nation
+                  </button>
+                )}
+                {!actionModal.onSpectate && !actionModal.onRefound && (
+                  <button
+                    onClick={actionModal.onClose}
+                    className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
+                  >
+                    Continue
+                  </button>
+                )}
               </div>
             </div>
           )}

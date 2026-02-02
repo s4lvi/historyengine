@@ -34,6 +34,7 @@
     "tickRateMs": 360,
     "broadcastIntervalMs": 160,
     "enabled": true,
+    "allowRefound": true,
     "baseGrowth": 0.6,
     "baseDefense": 1,
     "baseCost": 1,

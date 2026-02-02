@@ -24,6 +24,7 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
     creatorPassword: "",
     joinCode: "",
     botCount: 0,
+    allowRefound: true,
   });
 
   if (!isOpen) return null;
@@ -204,6 +205,23 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   </p>
                 </div>
 
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="allowRefound"
+                    name="allowRefound"
+                    checked={formData.allowRefound}
+                    onChange={handleChange}
+                    className="h-4 w-4"
+                  />
+                  <label
+                    htmlFor="allowRefound"
+                    className="text-sm font-medium text-gray-500"
+                  >
+                    Allow refounding after defeat
+                  </label>
+                </div>
+
                 {/* Form Buttons */}
                 <div className="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
                   <button
@@ -307,6 +325,7 @@ const GameRoomList = () => {
             erosion_passes: formData.erosion_passes,
             num_blobs: formData.num_blobs,
             botCount: Number(formData.botCount || 0),
+            allowRefound: !!formData.allowRefound,
           }),
         }
       );
@@ -424,6 +443,9 @@ const GameRoomList = () => {
                 </p>
                 <p className="text-gray-500 text-sm">
                   Players: {room.players?.length || 0}
+                </p>
+                <p className="text-gray-500 text-sm">
+                  Refounding: {room.allowRefound === false ? "Disabled" : "Allowed"}
                 </p>
               </div>
               <div className="flex gap-3">

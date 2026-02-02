@@ -109,6 +109,42 @@ function updateNationTerritorial(
     updatedNation.territoryDelta || { add: { x: [], y: [] }, sub: { x: [], y: [] } };
   updatedNation.pressureOrders = updatedNation.pressureOrders || [];
 
+  const clearTerritory = () => {
+    const tx = [...(updatedNation.territory?.x || [])];
+    const ty = [...(updatedNation.territory?.y || [])];
+    for (let i = 0; i < tx.length; i++) {
+      removeTerritoryCell(updatedNation, tx[i], ty[i]);
+      ownershipMap?.delete(`${tx[i]},${ty[i]}`);
+    }
+  };
+
+  const markDefeated = () => {
+    updatedNation.status = "defeated";
+    updatedNation.pressureOrders = [];
+    clearTerritory();
+  };
+
+  let skipActions = false;
+  if (updatedNation.status === "defeated") {
+    markDefeated();
+    skipActions = true;
+  } else {
+    const capital =
+      updatedNation.cities &&
+      updatedNation.cities.find((city) => city.type === "capital");
+    if (!capital) {
+      markDefeated();
+      skipActions = true;
+    } else {
+      const capitalKey = `${capital.x},${capital.y}`;
+      const capitalOwner = ownershipMap?.get(capitalKey);
+      if (!capitalOwner || capitalOwner.owner !== updatedNation.owner) {
+        markDefeated();
+        skipActions = true;
+      }
+    }
+  }
+
   const bonuses =
     bonusesByOwner?.[updatedNation.owner] || {
       expansionPower: 1,
@@ -118,83 +154,66 @@ function updateNationTerritorial(
       goldIncome: 0,
     };
 
-  // Population growth (casual territorial pacing)
-  const ownedTiles = updatedNation.territory?.x?.length || 0;
-  const baseGrowth = config?.territorial?.baseGrowth || 0.6;
-  const growth = baseGrowth * bonuses.production * Math.sqrt(ownedTiles || 1);
-  updatedNation.population = (updatedNation.population || 0) + growth;
+  if (!skipActions) {
+    // Population growth (casual territorial pacing)
+    const ownedTiles = updatedNation.territory?.x?.length || 0;
+    const baseGrowth = config?.territorial?.baseGrowth || 0.6;
+    const growth =
+      baseGrowth * bonuses.production * Math.sqrt(ownedTiles || 1);
+    updatedNation.population = (updatedNation.population || 0) + growth;
 
-  // Passive gold income from nodes
-  if (bonuses.goldIncome > 0) {
-    updatedNation.resources.gold =
-      (updatedNation.resources.gold || 0) + bonuses.goldIncome;
-  }
+    // Passive gold income from nodes
+    if (bonuses.goldIncome > 0) {
+      updatedNation.resources.gold =
+        (updatedNation.resources.gold || 0) + bonuses.goldIncome;
+    }
 
-  if (updatedNation.isBot) {
-    maybeEnqueueBotPressure(
-      updatedNation,
-      mapData,
-      ownershipMap,
-      bonusesByOwner,
-      currentTick,
-      gameState
-    );
-  }
+    if (updatedNation.isBot) {
+      maybeEnqueueBotPressure(
+        updatedNation,
+        mapData,
+        ownershipMap,
+        bonusesByOwner,
+        currentTick,
+        gameState
+      );
+    }
 
-  // Apply pressure orders (expansion/attack)
-  if (updatedNation.pressureOrders.length > 0) {
-    processPressureOrders(
-      updatedNation,
-      gameState,
-      mapData,
-      ownershipMap,
-      bonusesByOwner
-    );
-  }
+    // Apply pressure orders (expansion/attack)
+    if (updatedNation.pressureOrders.length > 0) {
+      processPressureOrders(
+        updatedNation,
+        gameState,
+        mapData,
+        ownershipMap,
+        bonusesByOwner
+      );
+    }
 
-  // Defeat if capital is overrun; neutralize disconnected territory.
-  const capital =
-    updatedNation.cities &&
-    updatedNation.cities.find((city) => city.type === "capital");
-  if (capital) {
-    const capitalKey = `${capital.x},${capital.y}`;
-    const capitalOwner = ownershipMap?.get(capitalKey);
-    if (!capitalOwner || capitalOwner.owner !== updatedNation.owner) {
-      updatedNation.status = "defeated";
-      const tx = [...(updatedNation.territory?.x || [])];
-      const ty = [...(updatedNation.territory?.y || [])];
-      for (let i = 0; i < tx.length; i++) {
-        removeTerritoryCell(updatedNation, tx[i], ty[i]);
-        ownershipMap?.delete(`${tx[i]},${ty[i]}`);
-      }
-      updatedNation.pressureOrders = [];
-    } else {
-      const connectivityInterval =
-        config?.territorial?.connectivityCheckIntervalTicks ?? 3;
-      const hasChanges =
-        (updatedNation.territoryDelta?.add?.x?.length || 0) > 0 ||
-        (updatedNation.territoryDelta?.sub?.x?.length || 0) > 0;
-      if (
-        hasChanges &&
-        Number.isFinite(connectivityInterval) &&
-        (currentTick ?? 0) % connectivityInterval === 0
-      ) {
-        const connected = computeConnectedTerritorySet(updatedNation, mapData);
-        if (connected) {
-          const tx = [...(updatedNation.territory?.x || [])];
-          const ty = [...(updatedNation.territory?.y || [])];
-          for (let i = 0; i < tx.length; i++) {
-            const key = `${tx[i]},${ty[i]}`;
-            if (!connected.has(key)) {
-              removeTerritoryCell(updatedNation, tx[i], ty[i]);
-              ownershipMap?.delete(key);
-            }
+    const connectivityInterval =
+      config?.territorial?.connectivityCheckIntervalTicks ?? 3;
+    const hasChanges =
+      (updatedNation.territoryDelta?.add?.x?.length || 0) > 0 ||
+      (updatedNation.territoryDelta?.sub?.x?.length || 0) > 0;
+    const shouldCheckConnectivity =
+      hasChanges ||
+      (Number.isFinite(connectivityInterval) &&
+        connectivityInterval > 0 &&
+        (currentTick ?? 0) % connectivityInterval === 0);
+    if (shouldCheckConnectivity) {
+      const connected = computeConnectedTerritorySet(updatedNation, mapData);
+      if (connected) {
+        const tx = [...(updatedNation.territory?.x || [])];
+        const ty = [...(updatedNation.territory?.y || [])];
+        for (let i = 0; i < tx.length; i++) {
+          const key = `${tx[i]},${ty[i]}`;
+          if (!connected.has(key)) {
+            removeTerritoryCell(updatedNation, tx[i], ty[i]);
+            ownershipMap?.delete(key);
           }
         }
       }
     }
-  } else {
-    updatedNation.status = "defeated";
   }
 
   if (updatedNation.territoryDelta) {
