@@ -293,7 +293,6 @@ export function generateRivers(heightMap, width, height, options = {}) {
     const meanderWeight = options.meanderWeight ?? 0.35;
     const dirFieldWeight = options.dirFieldWeight ?? 0.4;
     const slopeWeight = options.slopeWeight ?? 0.6;
-    const candidateTop = Math.max(2, options.candidateTop ?? 4);
     const dirNoiseScale = options.dirNoiseScale ?? 0.02;
     const pickNoiseScale = options.pickNoiseScale ?? 0.12;
     const rivers = new Set();
@@ -305,10 +304,7 @@ export function generateRivers(heightMap, width, height, options = {}) {
     const total = width * height;
     const flow = new Float32Array(total);
     const effectiveElev = new Float32Array(total);
-    let maxDist = 0;
-
-    const buckets = [];
-
+    const order = new Array(total);
     const neighborSteps = [
       { dx: 1, dy: 0, dist: 1 },
       { dx: -1, dy: 0, dist: 1 },
@@ -322,26 +318,12 @@ export function generateRivers(heightMap, width, height, options = {}) {
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        const dist = distanceMap[y][x];
-        if (dist > maxDist) maxDist = dist;
-      }
-    }
-    const bucketCount = 1001;
-    for (let i = 0; i < bucketCount; i++) buckets.push([]);
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
         const idx = y * width + x;
         const elev = heightMap[y][x].elevation;
-        const dist = distanceMap[y][x];
         const elevNoise = noise2D ? noise2D(x * 0.08, y * 0.08) * 0.03 : 0;
         const effElev = Math.min(1, Math.max(0, elev + elevNoise));
         effectiveElev[idx] = effElev;
-        const bucket = Math.max(
-          0,
-          Math.min(bucketCount - 1, Math.floor(effElev * (bucketCount - 1)))
-        );
-        buckets[bucket].push(idx);
+        order[idx] = idx;
 
         if (elev <= seaLevel) {
           flow[idx] = 0;
@@ -356,10 +338,9 @@ export function generateRivers(heightMap, width, height, options = {}) {
     }
 
     const slopeExponent = 1.3;
-    for (let b = bucketCount - 1; b >= 0; b--) {
-      const bucket = buckets[b];
-      for (let i = 0; i < bucket.length; i++) {
-        const idx = bucket[i];
+    order.sort((a, b) => effectiveElev[b] - effectiveElev[a]);
+    for (let i = 0; i < order.length; i++) {
+      const idx = order[i];
         const x = idx % width;
         const y = Math.floor(idx / width);
         const elev = effectiveElev[idx];
@@ -428,10 +409,15 @@ export function generateRivers(heightMap, width, height, options = {}) {
         if (pool.length === 0) continue;
 
         pool.sort((a, b) => b.score - a.score);
-        const top = pool.slice(0, Math.min(candidateTop, pool.length));
+        const top = pool;
         let totalWeight = 0;
         for (const entry of top) {
-          const w = Math.pow(Math.max(0.0001, entry.slope || entry.score), slopeExponent);
+          const base = Math.max(0.0001, entry.slope || entry.score);
+          const bias =
+            1 +
+            (entry.score * 0.15) +
+            (noise2D ? noise2D(entry.idx * 0.0001, entry.idx * 0.00013) * 0.1 : 0);
+          const w = Math.pow(base * Math.max(0.2, bias), slopeExponent);
           entry.weight = w;
           totalWeight += w;
         }
@@ -1123,19 +1109,18 @@ export function generateWorldMap(
       smoothRadius: largeMap ? 1 : 2,
       rivers: {
         flowThreshold: Math.max(
-          40,
-          Math.round(Math.sqrt(totalCells) * (largeMap ? 0.18 : 0.14))
+          30,
+          Math.round(Math.sqrt(totalCells) * (largeMap ? 0.08 : 0.06))
         ),
         rainNoise: largeMap ? 0.35 : 0.45,
         rainElevationBonus: largeMap ? 0.5 : 0.65,
         elevWeight: largeMap ? 1.1 : 1.3,
-        distWeight: largeMap ? 0.2 : 0.3,
-        meanderWeight: largeMap ? 0.5 : 0.45,
-        dirFieldWeight: largeMap ? 0.55 : 0.5,
-        slopeWeight: largeMap ? 0.85 : 0.75,
-        candidateTop: largeMap ? 4 : 5,
-        dirNoiseScale: largeMap ? 0.035 : 0.045,
-        pickNoiseScale: largeMap ? 0.16 : 0.2,
+        distWeight: largeMap ? 0.1 : 0.2,
+        meanderWeight: largeMap ? 0.4 : 0.35,
+        dirFieldWeight: largeMap ? 0.45 : 0.4,
+        slopeWeight: largeMap ? 1.0 : 0.9,
+        dirNoiseScale: largeMap ? 0.03 : 0.04,
+        pickNoiseScale: largeMap ? 0.14 : 0.18,
       },
     };
     const noise2D = createNoise2D(seed);
