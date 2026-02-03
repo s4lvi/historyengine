@@ -89,10 +89,15 @@ const renderResourceCaptureOverlays = (
     const size = cellSize * 1.05;
     const cx = x * cellSize + cellSize / 2;
     const cy = y * cellSize + cellSize / 2;
+
+    // Use resource-specific icon instead of generic fort
+    const resourceType = cell[5][0];
+    const iconName = resourceIconMap[resourceType] || resourceType;
+
     overlays.push(
       <BorderedSprite
         key={`capture-building-${key}`}
-        texture="/fort.png"
+        texture={`/${iconName}.png`}
         x={cx}
         y={cy + size * 0.05}
         width={size * 0.9}
@@ -110,18 +115,20 @@ const renderResourceCaptureOverlays = (
         zIndex={115}
         draw={(g) => {
           g.clear();
-          // pie timer
-          const radius = size * 0.38;
-          const pieY = cy - size * 0.15;
-          g.beginFill(0x1c2331, 0.5);
+          // pie timer - increased radius for better visibility
+          const radius = size * 0.75;
+          const pieY = cy;
+          // Draw outline first
+          g.lineStyle(2, 0xffffff, 0.8);
+          g.drawCircle(cx, pieY, radius);
+          // Then draw pie fill on top
+          g.beginFill(0x1c2331, 0.6);
           g.moveTo(cx, pieY);
           const start = -Math.PI / 2;
           const end = start + progress * Math.PI * 2;
           g.arc(cx, pieY, radius, start, end);
           g.lineTo(cx, pieY);
           g.endFill();
-          g.lineStyle(1, 0xffffff, 0.6);
-          g.drawCircle(cx, pieY, radius);
         }}
       />
     );
@@ -129,68 +136,168 @@ const renderResourceCaptureOverlays = (
   return overlays;
 };
 
-const renderPressureMarkers = (markers, cellSize) => {
-  if (!markers || markers.length === 0) return null;
-  return markers.map((marker) => {
-    const cx = marker.x * cellSize + cellSize / 2;
-    const cy = marker.y * cellSize + cellSize / 2;
-    const size = cellSize * 0.8;
-    return (
-      <Graphics
-        key={`flag-${marker.id}`}
-        zIndex={160}
-        draw={(g) => {
-          g.clear();
-          g.lineStyle(2, 0x1a1a1a, 0.9);
-          g.moveTo(cx - size * 0.15, cy + size * 0.25);
-          g.lineTo(cx - size * 0.15, cy - size * 0.4);
-          g.beginFill(0xffe066, 0.9);
-          g.moveTo(cx - size * 0.15, cy - size * 0.38);
-          g.lineTo(cx + size * 0.35, cy - size * 0.25);
-          g.lineTo(cx - size * 0.15, cy - size * 0.12);
-          g.lineTo(cx - size * 0.15, cy - size * 0.38);
-          g.endFill();
-        }}
-      />
-    );
-  });
+// Simplify arrow path by keeping every Nth point plus start/end
+const simplifyArrowPath = (path, n = 3) => {
+  if (!path || path.length < 2) return path;
+  const result = [path[0]];
+  for (let i = n; i < path.length - 1; i += n) {
+    result.push(path[i]);
+  }
+  if (path.length > 1) {
+    result.push(path[path.length - 1]);
+  }
+  return result;
 };
 
-const renderTowers = (resourceUpgrades, visibleMapGrid, cellSize, scale) => {
-  if (!resourceUpgrades || Object.keys(resourceUpgrades).length === 0) {
-    return null;
-  }
-  const visibleCells = new Set(
-    visibleMapGrid.map(({ x, y }) => `${x},${y}`)
-  );
-  const zoomBoost = Math.min(
-    3,
-    Math.max(1, Math.pow(1 / Math.max(scale || 1, 0.15), 1.2))
-  );
-  const iconSize = cellSize * 1.1 * zoomBoost;
-  const towers = [];
-  Object.entries(resourceUpgrades).forEach(([key]) => {
-    if (!visibleCells.has(key)) return;
-    const [xStr, yStr] = key.split(",");
-    const x = Number(xStr);
-    const y = Number(yStr);
-    if (Number.isNaN(x) || Number.isNaN(y)) return;
-    towers.push(
-      <BorderedSprite
-        key={`tower-${key}`}
-        texture="/fort.png"
-        x={x * cellSize + cellSize / 2}
-        y={y * cellSize + cellSize / 2}
-        width={iconSize}
-        height={iconSize}
-        borderColor={0x111111}
-        borderWidth={2 * Math.sqrt(scale)}
-        baseZ={120}
+// Render an arrow path with arrowhead and troop count
+const renderArrowPath = (path, cellSize, type, isActive, key, troopCount = null) => {
+  if (!path || path.length < 2) return null;
+
+  const color = type === "attack" ? 0xff4444 : 0x4444ff;
+  const alpha = isActive ? 0.8 : 0.6;
+
+  // Calculate midpoint for troop display
+  const midIndex = Math.floor(path.length / 2);
+  const midPoint = path[midIndex];
+  const midX = midPoint.x * cellSize + cellSize / 2;
+  const midY = midPoint.y * cellSize + cellSize / 2;
+
+  return (
+    <React.Fragment key={key}>
+      <Graphics
+        zIndex={200}
+        draw={(g) => {
+          g.clear();
+          g.lineStyle(4, color, alpha);
+
+          // Draw the path
+          const startX = path[0].x * cellSize + cellSize / 2;
+          const startY = path[0].y * cellSize + cellSize / 2;
+          g.moveTo(startX, startY);
+
+          for (let i = 1; i < path.length; i++) {
+            const px = path[i].x * cellSize + cellSize / 2;
+            const py = path[i].y * cellSize + cellSize / 2;
+            g.lineTo(px, py);
+          }
+
+          // Draw arrowhead at the end
+          if (path.length >= 2) {
+            const last = path[path.length - 1];
+            const prev = path[path.length - 2];
+            const endX = last.x * cellSize + cellSize / 2;
+            const endY = last.y * cellSize + cellSize / 2;
+            const prevX = prev.x * cellSize + cellSize / 2;
+            const prevY = prev.y * cellSize + cellSize / 2;
+
+            const angle = Math.atan2(endY - prevY, endX - prevX);
+            const arrowSize = cellSize * 0.8;
+
+            g.beginFill(color, alpha);
+            g.moveTo(endX, endY);
+            g.lineTo(
+              endX - arrowSize * Math.cos(angle - Math.PI / 6),
+              endY - arrowSize * Math.sin(angle - Math.PI / 6)
+            );
+            g.lineTo(
+              endX - arrowSize * 0.5 * Math.cos(angle),
+              endY - arrowSize * 0.5 * Math.sin(angle)
+            );
+            g.lineTo(
+              endX - arrowSize * Math.cos(angle + Math.PI / 6),
+              endY - arrowSize * Math.sin(angle + Math.PI / 6)
+            );
+            g.lineTo(endX, endY);
+            g.endFill();
+          }
+        }}
       />
-    );
-  });
-  return towers;
+      {troopCount !== null && (
+        <>
+          {/* Background circle for troop count */}
+          <Graphics
+            zIndex={201}
+            draw={(g) => {
+              g.clear();
+              g.beginFill(0x000000, 0.7);
+              g.drawCircle(midX, midY - cellSize * 0.8, cellSize * 0.6);
+              g.endFill();
+              g.lineStyle(2, color, 1);
+              g.drawCircle(midX, midY - cellSize * 0.8, cellSize * 0.6);
+            }}
+          />
+          <Text
+            text={Math.round(troopCount).toString()}
+            x={midX}
+            y={midY - cellSize * 0.8}
+            anchor={0.5}
+            zIndex={202}
+            style={{
+              fontFamily: "system-ui",
+              fill: "#ffffff",
+              fontSize: Math.max(10, cellSize * 0.5),
+              fontWeight: "bold",
+            }}
+          />
+        </>
+      )}
+    </React.Fragment>
+  );
 };
+
+// Render completed arrow with fade out animation
+const renderCompletedArrow = (arrow, cellSize, elapsedMs) => {
+  if (!arrow.path || arrow.path.length < 2) return null;
+
+  const progress = Math.min(1, elapsedMs / 2000); // 2 second animation
+  const alpha = 1 - progress;
+  const floatOffset = progress * cellSize * 2; // Float upward
+
+  const color = arrow.success ? 0x44ff44 : 0xff4444;
+  const displayTroops = arrow.success ? arrow.troops : 0;
+
+  // Calculate midpoint for display
+  const midIndex = Math.floor(arrow.path.length / 2);
+  const midPoint = arrow.path[midIndex];
+  const midX = midPoint.x * cellSize + cellSize / 2;
+  const midY = midPoint.y * cellSize + cellSize / 2 - floatOffset;
+
+  return (
+    <React.Fragment key={arrow.id}>
+      {/* Fading troop count */}
+      <Graphics
+        zIndex={300}
+        draw={(g) => {
+          g.clear();
+          g.beginFill(0x000000, 0.7 * alpha);
+          g.drawCircle(midX, midY, cellSize * 0.8);
+          g.endFill();
+          g.lineStyle(3, color, alpha);
+          g.drawCircle(midX, midY, cellSize * 0.8);
+        }}
+      />
+      <Text
+        text={displayTroops.toString()}
+        x={midX}
+        y={midY}
+        anchor={0.5}
+        zIndex={301}
+        alpha={alpha}
+        style={{
+          fontFamily: "system-ui",
+          fill: arrow.success ? "#44ff44" : "#ff4444",
+          fontSize: Math.max(14, cellSize * 0.7),
+          fontWeight: "bold",
+          stroke: "#000000",
+          strokeThickness: 2,
+        }}
+      />
+    </React.Fragment>
+  );
+};
+
+// Note: renderTowers for resource upgrades has been removed
+// Towers are now handled as structures within nations.cities
 
 /* -------------------------------------------------------------------------- */
 /*                           Custom Hooks                                    */
@@ -588,23 +695,42 @@ const NationOverlay = ({
           const iconSize = cellSize;
           const centerX = city.x * cellSize + cellSize / 2;
           const centerY = city.y * cellSize + cellSize / 2;
+          const showName = scale > 1.5 && city.name;
           return (
-            <BorderedSprite
-              key={`city-${nation.owner}-${idx}`}
-              texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
-              x={centerX}
-              y={centerY}
-              width={iconSize}
-              height={iconSize}
-              borderColor={baseColor}
-              borderWidth={2 * Math.sqrt(scale)}
-              interactive={true}
-              pointerdown={(e) => {
-                e.stopPropagation();
-                console.log("City clicked:", city);
-              }}
-              baseZ={150 + centerY}
-            />
+            <React.Fragment key={`city-${nation.owner}-${idx}`}>
+              <BorderedSprite
+                texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
+                x={centerX}
+                y={centerY}
+                width={iconSize}
+                height={iconSize}
+                borderColor={baseColor}
+                borderWidth={2 * Math.sqrt(scale)}
+                interactive={true}
+                pointerdown={(e) => {
+                  e.stopPropagation();
+                  console.log("City clicked:", city);
+                }}
+                baseZ={150 + centerY}
+              />
+              {showName && (
+                <Text
+                  text={city.name}
+                  x={centerX}
+                  y={centerY + iconSize * 0.6}
+                  anchor={0.5}
+                  zIndex={151 + centerY}
+                  style={{
+                    fontFamily: "system-ui",
+                    fill: "#ffffff",
+                    fontSize: Math.max(8, 10 / Math.max(scale, 0.8)),
+                    stroke: "#000000",
+                    strokeThickness: 2,
+                  }}
+                  alpha={0.9}
+                />
+              )}
+            </React.Fragment>
           );
         })}
     </>
@@ -622,16 +748,22 @@ const GameCanvas = ({
   gameState,
   userId,
   nationColors,
-  pressureMarkers,
   config,
   foundingNation,
   onFoundNation,
   buildingStructure,
   onBuildCity,
   onCancelBuild,
-  onSendPressure,
   placingTower,
   onPlaceTower,
+  drawingArrowType,
+  currentArrowPath,
+  onArrowPathUpdate,
+  onSendArrow,
+  onCancelArrow,
+  activeAttackArrow,
+  activeDefendArrow,
+  completedArrows,
 }) => {
   const stageWidth = window.innerWidth;
   const stageHeight = window.innerHeight;
@@ -753,6 +885,23 @@ const GameCanvas = ({
   const pointersRef = useRef(new Map());
   const pinchRef = useRef(null);
 
+  /* ----- Arrow Drawing State ----- */
+  const isDrawingArrowRef = useRef(false);
+  const arrowPathRef = useRef([]);
+  const lastArrowPointRef = useRef(null);
+
+  /* ----- Arrow Animation State ----- */
+  const [animationTick, setAnimationTick] = useState(0);
+
+  // Force re-renders for completed arrow animations
+  useEffect(() => {
+    if (!completedArrows || completedArrows.length === 0) return;
+    const interval = setInterval(() => {
+      setAnimationTick((t) => t + 1);
+    }, 50); // 20fps animation
+    return () => clearInterval(interval);
+  }, [completedArrows?.length]);
+
   /* ----- Smoother WASD Panning via Animation Frame ----- */
   const keysRef = useRef({ w: false, a: false, s: false, d: false });
   useEffect(() => {
@@ -840,6 +989,22 @@ const GameCanvas = ({
         panStartOffsetRef.current = { ...offset };
         return;
       }
+      // Arrow drawing mode
+      if (button === 0 && drawingArrowType) {
+        const cell = getCellCoordinates(x, y);
+        if (
+          cell.x >= 0 &&
+          cell.x < mapMetadata.width &&
+          cell.y >= 0 &&
+          cell.y < mapMetadata.height
+        ) {
+          isDrawingArrowRef.current = true;
+          arrowPathRef.current = [{ x: cell.x, y: cell.y }];
+          lastArrowPointRef.current = { x: cell.x, y: cell.y };
+          onArrowPathUpdate?.([{ x: cell.x, y: cell.y }]);
+        }
+        return;
+      }
       // Left-drag to pan when not in action modes.
       if (button === 0 && !foundingNation && !buildingStructure && !placingTower) {
         dragStartRef.current = { x, y };
@@ -848,7 +1013,7 @@ const GameCanvas = ({
         suppressClickRef.current = false;
       }
     },
-    [foundingNation, buildingStructure, placingTower, offset, scale]
+    [foundingNation, buildingStructure, placingTower, drawingArrowType, offset, scale, getCellCoordinates, mapMetadata, onArrowPathUpdate]
   );
 
   const handlePointerMove = useCallback(
@@ -881,6 +1046,25 @@ const GameCanvas = ({
         const midX = (points[0].x + points[1].x) / 2;
         const midY = (points[0].y + points[1].y) / 2;
         zoomAtPoint(midX, midY, pinchRef.current.scale * ratio);
+        return;
+      }
+      // Arrow drawing - add points to path
+      if (isDrawingArrowRef.current && drawingArrowType) {
+        const cell = getCellCoordinates(x, y);
+        if (
+          cell.x >= 0 &&
+          cell.x < mapMetadata.width &&
+          cell.y >= 0 &&
+          cell.y < mapMetadata.height
+        ) {
+          const last = lastArrowPointRef.current;
+          // Only add if moved to a different cell (and throttle to every few cells)
+          if (!last || cell.x !== last.x || cell.y !== last.y) {
+            arrowPathRef.current.push({ x: cell.x, y: cell.y });
+            lastArrowPointRef.current = { x: cell.x, y: cell.y };
+            onArrowPathUpdate?.([...arrowPathRef.current]);
+          }
+        }
         return;
       }
       // If middle mouse panning is active, update offset based on pointer movement.
@@ -931,6 +1115,8 @@ const GameCanvas = ({
       getCellCoordinates,
       mapMetadata,
       setOffset,
+      drawingArrowType,
+      onArrowPathUpdate,
     ]
   );
 
@@ -943,6 +1129,23 @@ const GameCanvas = ({
       }
       if (pointersRef.current.size < 2) {
         pinchRef.current = null;
+      }
+      // Arrow drawing completed
+      if (isDrawingArrowRef.current && drawingArrowType) {
+        isDrawingArrowRef.current = false;
+        const path = [...arrowPathRef.current];
+        arrowPathRef.current = [];
+        lastArrowPointRef.current = null;
+
+        // Simplify path - keep only every Nth point plus endpoints
+        const simplifiedPath = simplifyArrowPath(path, 3);
+
+        if (simplifiedPath.length >= 2) {
+          onSendArrow?.(drawingArrowType, simplifiedPath);
+        } else {
+          onCancelArrow?.();
+        }
+        return;
       }
       // End panning/dragging.
       if (isPanning) {
@@ -1028,9 +1231,6 @@ const GameCanvas = ({
         }
         return;
       }
-      if (!buildingStructure) {
-        onSendPressure?.(cell.x, cell.y);
-      }
     },
     [
       getCellCoordinates,
@@ -1045,7 +1245,9 @@ const GameCanvas = ({
       onCancelBuild,
       placingTower,
       onPlaceTower,
-      onSendPressure,
+      drawingArrowType,
+      onSendArrow,
+      onCancelArrow,
     ]
   );
 
@@ -1157,15 +1359,7 @@ const GameCanvas = ({
       captureTicks
     );
   }, [visibleMapGrid, cellSize, scale, ownershipMap, resourceNodeClaims, captureTicks]);
-  const memoizedTowers = useMemo(() => {
-    if (scale < 0.45) return null;
-    return renderTowers(
-      gameState?.gameState?.resourceUpgrades || {},
-      visibleMapGrid,
-      cellSize,
-      scale
-    );
-  }, [gameState, visibleMapGrid, cellSize, scale]);
+  // Note: memoizedTowers removed - towers are now rendered as structures in NationOverlay
 
   const visibleTileCount = useMemo(() => {
     if (!visibleBounds || !mapMetadata) return 0;
@@ -1208,7 +1402,7 @@ const GameCanvas = ({
       userNation.territory.x.includes(hoveredCell.x) &&
       userNation.territory.y.includes(hoveredCell.y);
     resourceValid =
-      resourceValid || ["town", "capital", "fort"].includes(buildingStructure);
+      resourceValid || ["town", "capital", "fort", "tower"].includes(buildingStructure);
     const valid = resourceValid && territoryValid;
     const borderColor = valid ? 0x00ff00 : 0xff0000;
     buildPreview = (
@@ -1282,7 +1476,7 @@ const GameCanvas = ({
       style={{
         width: "100%",
         height: "100%",
-        cursor: buildingStructure || foundingNation || placingTower
+        cursor: buildingStructure || foundingNation || placingTower || drawingArrowType
           ? "crosshair"
           : isPanning
           ? "grabbing"
@@ -1316,8 +1510,31 @@ const GameCanvas = ({
           </>
         )}
         {renderNationOverlays}
-        {memoizedTowers}
-        {renderPressureMarkers(pressureMarkers, cellSize)}
+        {/* Render active arrows with troop counts */}
+        {activeAttackArrow && activeAttackArrow.path && renderArrowPath(
+          activeAttackArrow.path,
+          cellSize,
+          "attack",
+          true,
+          "active-attack-arrow",
+          activeAttackArrow.remainingPower
+        )}
+        {activeDefendArrow && activeDefendArrow.path && renderArrowPath(
+          activeDefendArrow.path,
+          cellSize,
+          "defend",
+          true,
+          "active-defend-arrow",
+          activeDefendArrow.remainingPower
+        )}
+        {/* Render current drawing arrow */}
+        {drawingArrowType && currentArrowPath && currentArrowPath.length > 0 &&
+          renderArrowPath(currentArrowPath, cellSize, drawingArrowType, false, "drawing-arrow", null)}
+        {/* Render completed arrow animations */}
+        {completedArrows && completedArrows.map((arrow) => {
+          const elapsed = Date.now() - arrow.createdAt;
+          return renderCompletedArrow(arrow, cellSize, elapsed);
+        })}
         {buildPreview}
         {towerPreview}
       </Container>

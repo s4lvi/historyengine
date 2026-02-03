@@ -341,91 +341,89 @@ export function generateRivers(heightMap, width, height, options = {}) {
     order.sort((a, b) => effectiveElev[b] - effectiveElev[a]);
     for (let i = 0; i < order.length; i++) {
       const idx = order[i];
-        const x = idx % width;
-        const y = Math.floor(idx / width);
-        const elev = effectiveElev[idx];
-        if (elev <= seaLevel) continue;
-        const dist = distanceMap[y][x];
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      const elev = effectiveElev[idx];
+      if (elev <= seaLevel) continue;
+      const dist = distanceMap[y][x];
 
-        let dirX = 0;
-        let dirY = 0;
-        if (noise2D) {
-          const angle = (noise2D(x * dirNoiseScale, y * dirNoiseScale) + 1) * Math.PI;
-          dirX = Math.cos(angle);
-          dirY = Math.sin(angle);
-        }
+      let dirX = 0;
+      let dirY = 0;
+      if (noise2D) {
+        const angle =
+          (noise2D(x * dirNoiseScale, y * dirNoiseScale) + 1) * Math.PI;
+        dirX = Math.cos(angle);
+        dirY = Math.sin(angle);
+      }
 
-        let slopeDirX = 0;
-        let slopeDirY = 0;
-        if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-          const elevL = effectiveElev[idx - 1];
-          const elevR = effectiveElev[idx + 1];
-          const elevU = effectiveElev[idx - width];
-          const elevD = effectiveElev[idx + width];
-          const gradX = (elevR - elevL) * 0.5;
-          const gradY = (elevD - elevU) * 0.5;
-          const len = Math.hypot(gradX, gradY);
-          if (len > 0) {
-            slopeDirX = -gradX / len;
-            slopeDirY = -gradY / len;
-          }
+      let slopeDirX = 0;
+      let slopeDirY = 0;
+      if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+        const elevL = effectiveElev[idx - 1];
+        const elevR = effectiveElev[idx + 1];
+        const elevU = effectiveElev[idx - width];
+        const elevD = effectiveElev[idx + width];
+        const gradX = (elevR - elevL) * 0.5;
+        const gradY = (elevD - elevU) * 0.5;
+        const len = Math.hypot(gradX, gradY);
+        if (len > 0) {
+          slopeDirX = -gradX / len;
+          slopeDirY = -gradY / len;
         }
+      }
 
-        const downslope = [];
-        const fallback = [];
-        for (const step of neighborSteps) {
-          const nx = x + step.dx;
-          const ny = y + step.dy;
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          const nIdx = ny * width + nx;
-          const nElev = effectiveElev[nIdx];
-          const nDist = distanceMap[ny][nx];
-          const elevDrop = elev - nElev;
-          const distDrop = dist - nDist;
-          if (elevDrop > 0) {
-            const baseSlope = elevDrop / step.dist;
-            const jitter = noise2D ? noise2D(nx * 0.08, ny * 0.08) * 0.05 : 0;
-            const dirBias =
-              step.dx * dirX + step.dy * dirY;
-            const slopeBias =
-              step.dx * slopeDirX + step.dy * slopeDirY;
-            const score =
-              baseSlope * elevWeight +
-              distDrop * distWeight +
-              jitter * meanderWeight +
-              dirBias * dirFieldWeight +
-              slopeBias * slopeWeight;
-            downslope.push({ idx: nIdx, score, slope: baseSlope });
-          } else if (distDrop > 0) {
-            fallback.push({ idx: nIdx, score: distDrop });
-          }
+      const downslope = [];
+      const fallback = [];
+      for (const step of neighborSteps) {
+        const nx = x + step.dx;
+        const ny = y + step.dy;
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        const nIdx = ny * width + nx;
+        const nElev = effectiveElev[nIdx];
+        const nDist = distanceMap[ny][nx];
+        const elevDrop = elev - nElev;
+        const distDrop = dist - nDist;
+        if (elevDrop > 0) {
+          const baseSlope = elevDrop / step.dist;
+          const jitter = noise2D ? noise2D(nx * 0.08, ny * 0.08) * 0.05 : 0;
+          const dirBias = step.dx * dirX + step.dy * dirY;
+          const slopeBias = step.dx * slopeDirX + step.dy * slopeDirY;
+          const score =
+            baseSlope * elevWeight +
+            distDrop * distWeight +
+            jitter * meanderWeight +
+            dirBias * dirFieldWeight +
+            slopeBias * slopeWeight;
+          downslope.push({ idx: nIdx, score, slope: baseSlope });
+        } else if (distDrop > 0) {
+          fallback.push({ idx: nIdx, score: distDrop });
         }
+      }
 
-        let pool = downslope;
-        if (pool.length === 0 && fallback.length > 0) {
-          fallback.sort((a, b) => b.score - a.score);
-          pool = fallback.slice(0, 1);
-        }
-        if (pool.length === 0) continue;
+      let pool = downslope;
+      if (pool.length === 0 && fallback.length > 0) {
+        fallback.sort((a, b) => b.score - a.score);
+        pool = fallback.slice(0, 1);
+      }
+      if (pool.length === 0) continue;
 
-        pool.sort((a, b) => b.score - a.score);
-        const top = pool;
-        let totalWeight = 0;
-        for (const entry of top) {
-          const base = Math.max(0.0001, entry.slope || entry.score);
-          const bias =
-            1 +
-            (entry.score * 0.15) +
-            (noise2D ? noise2D(entry.idx * 0.0001, entry.idx * 0.00013) * 0.1 : 0);
-          const w = Math.pow(base * Math.max(0.2, bias), slopeExponent);
-          entry.weight = w;
-          totalWeight += w;
-        }
-        if (!Number.isFinite(totalWeight) || totalWeight <= 0) continue;
+      pool.sort((a, b) => b.score - a.score);
+      const top = pool;
+      let totalWeight = 0;
+      for (const entry of top) {
+        const base = Math.max(0.0001, entry.slope || entry.score);
+        const bias =
+          1 +
+          entry.score * 0.15 +
+          (noise2D ? noise2D(entry.idx * 0.0001, entry.idx * 0.00013) * 0.1 : 0);
+        const w = Math.pow(base * Math.max(0.2, bias), slopeExponent);
+        entry.weight = w;
+        totalWeight += w;
+      }
+      if (!Number.isFinite(totalWeight) || totalWeight <= 0) continue;
 
-        for (const entry of top) {
-          flow[entry.idx] += flow[idx] * (entry.weight / totalWeight);
-        }
+      for (const entry of top) {
+        flow[entry.idx] += flow[idx] * (entry.weight / totalWeight);
       }
     }
 
@@ -435,30 +433,242 @@ export function generateRivers(heightMap, width, height, options = {}) {
     }
     const maxStrength = maxFlow > 0 ? maxFlow : 1;
 
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx = y * width + x;
-        const elev = heightMap[y][x].elevation;
-        if (elev <= seaLevel) continue;
-        const accum = flow[idx];
-        if (accum < flowThreshold) continue;
+    const riverTargets = Math.max(10, Math.floor(total * 0.00008));
+    let sourceThreshold = flowThreshold * 1.6;
+    const sourceSpacing = Math.max(8, Math.floor(Math.min(width, height) * 0.02));
+    const gridW = Math.ceil(width / sourceSpacing);
+    const gridH = Math.ceil(height / sourceSpacing);
+    const sourceGrid = new Int8Array(gridW * gridH);
+    const candidates = [];
 
-        const strength = Math.min(1.6, (accum / maxStrength) * 2);
-        const widthLevel =
-          accum > flowThreshold * 6 ? 2 : accum > flowThreshold * 3 ? 1 : 0;
+    const collectCandidates = (threshold) => {
+      candidates.length = 0;
+      for (let i = 0; i < total; i++) {
+        const elev = heightMap[Math.floor(i / width)][i % width].elevation;
+        if (elev <= seaLevel + 0.08) continue;
+        if (flow[i] < threshold) continue;
+        candidates.push(i);
+      }
+    };
 
-        for (let dy = -widthLevel; dy <= widthLevel; dy++) {
-          for (let dx = -widthLevel; dx <= widthLevel; dx++) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-            const cellElev = heightMap[ny][nx].elevation;
-            if (cellElev <= seaLevel) continue;
-            const key = `${nx},${ny}`;
-            rivers.add(key);
-            erosionMap[ny][nx] += strength;
+    collectCandidates(sourceThreshold);
+    if (candidates.length < Math.min(6, riverTargets)) {
+      sourceThreshold = flowThreshold * 1.1;
+      collectCandidates(sourceThreshold);
+    }
+    candidates.sort((a, b) => flow[b] - flow[a]);
+
+    const sources = [];
+    for (let i = 0; i < candidates.length && sources.length < riverTargets; i++) {
+      const idx = candidates[i];
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      const gx = Math.floor(x / sourceSpacing);
+      const gy = Math.floor(y / sourceSpacing);
+      let blocked = false;
+      for (let oy = -1; oy <= 1 && !blocked; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          const nx = gx + ox;
+          const ny = gy + oy;
+          if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
+          if (sourceGrid[ny * gridW + nx]) {
+            blocked = true;
+            break;
           }
         }
+      }
+      if (blocked) continue;
+      sourceGrid[gy * gridW + gx] = 1;
+      sources.push(idx);
+    }
+
+    const visitStamp = new Int32Array(total);
+    let stamp = 1;
+    const maxSteps = width + height;
+
+    const addRiverCell = (x, y, strength) => {
+      if (x < 0 || x >= width || y < 0 || y >= height) return;
+      if (heightMap[y][x].elevation <= seaLevel) return;
+      const key = `${x},${y}`;
+      rivers.add(key);
+      erosionMap[y][x] += strength;
+    };
+
+    const pickNext = (x, y, prevDx, prevDy) => {
+      const idx = y * width + x;
+      const elev = effectiveElev[idx];
+      const dist = distanceMap[y][x];
+      if (!Number.isFinite(dist)) return -1;
+      let dirX = 0;
+      let dirY = 0;
+      if (noise2D) {
+        const angle =
+          (noise2D(x * dirNoiseScale, y * dirNoiseScale) + 1) * Math.PI;
+        dirX = Math.cos(angle);
+        dirY = Math.sin(angle);
+      }
+
+      let slopeDirX = 0;
+      let slopeDirY = 0;
+      if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+        const elevL = effectiveElev[idx - 1];
+        const elevR = effectiveElev[idx + 1];
+        const elevU = effectiveElev[idx - width];
+        const elevD = effectiveElev[idx + width];
+        const gradX = (elevR - elevL) * 0.5;
+        const gradY = (elevD - elevU) * 0.5;
+        const len = Math.hypot(gradX, gradY);
+        if (len > 0) {
+          slopeDirX = -gradX / len;
+          slopeDirY = -gradY / len;
+        }
+      }
+
+      const cardinalCandidates = [];
+      const diagonalCandidates = [];
+      for (const step of neighborSteps) {
+        const nx = x + step.dx;
+        const ny = y + step.dy;
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        const nIdx = ny * width + nx;
+        const nElev = effectiveElev[nIdx];
+        const nDist = distanceMap[ny][nx];
+        const elevDrop = elev - nElev;
+        const distDrop = dist - nDist;
+        if (!Number.isFinite(nDist)) continue;
+        if (distDrop <= 0) continue;
+        const baseSlope = elevDrop > 0 ? elevDrop / step.dist : 0.0001;
+        const jitter = noise2D ? noise2D(nx * 0.08, ny * 0.08) * 0.05 : 0;
+        const dirBias = step.dx * dirX + step.dy * dirY;
+        const slopeBias = step.dx * slopeDirX + step.dy * slopeDirY;
+        let score =
+          baseSlope * elevWeight +
+          distDrop * distWeight +
+          jitter * meanderWeight +
+          dirBias * dirFieldWeight +
+          slopeBias * slopeWeight;
+        const isDiagonal = step.dist > 1;
+        if (isDiagonal) {
+          score *= 0.6;
+        } else {
+          score += 0.12;
+        }
+        if (prevDx !== 0 || prevDy !== 0) {
+          const alignment = step.dx * prevDx + step.dy * prevDy;
+          if (alignment > 0) {
+            score -= alignment * 0.25;
+          }
+        }
+        const entry = { idx: nIdx, score };
+        if (isDiagonal) {
+          diagonalCandidates.push(entry);
+        } else {
+          cardinalCandidates.push(entry);
+        }
+      }
+      const hasCardinal = cardinalCandidates.length > 0;
+      const hasDiagonal = diagonalCandidates.length > 0;
+      let selectionPool = null;
+      if (hasCardinal && hasDiagonal) {
+        cardinalCandidates.sort((a, b) => b.score - a.score);
+        diagonalCandidates.sort((a, b) => b.score - a.score);
+        const bestCardinal = cardinalCandidates[0].score;
+        const bestDiagonal = diagonalCandidates[0].score;
+        selectionPool =
+          bestDiagonal > bestCardinal * 1.25 ? diagonalCandidates : cardinalCandidates;
+      } else if (hasCardinal) {
+        cardinalCandidates.sort((a, b) => b.score - a.score);
+        selectionPool = cardinalCandidates;
+      } else if (hasDiagonal) {
+        diagonalCandidates.sort((a, b) => b.score - a.score);
+        selectionPool = diagonalCandidates;
+      }
+      if (selectionPool && selectionPool.length > 0) {
+        const topCount = Math.min(4, selectionPool.length);
+        let totalWeight = 0;
+        const weights = [];
+        for (let i = 0; i < topCount; i++) {
+          const weight = Math.max(0.0001, selectionPool[i].score);
+          weights.push(weight);
+          totalWeight += weight;
+        }
+        const pick =
+          ((noise2D ? noise2D(x * pickNoiseScale, y * pickNoiseScale) : 0) + 1) /
+          2;
+        let target = pick * totalWeight;
+        for (let i = 0; i < topCount; i++) {
+          target -= weights[i];
+          if (target <= 0) {
+            return selectionPool[i].idx;
+          }
+        }
+        return selectionPool[0].idx;
+      }
+
+      let fallbackIdx = -1;
+      let fallbackDist = Infinity;
+      for (const step of neighborSteps) {
+        if (step.dist > 1) continue;
+        const nx = x + step.dx;
+        const ny = y + step.dy;
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        const nIdx = ny * width + nx;
+        const nDist = distanceMap[ny][nx];
+        if (!Number.isFinite(nDist)) continue;
+        if (nDist < fallbackDist) {
+          fallbackDist = nDist;
+          fallbackIdx = nIdx;
+        }
+      }
+      if (fallbackIdx >= 0) return fallbackIdx;
+      for (const step of neighborSteps) {
+        const nx = x + step.dx;
+        const ny = y + step.dy;
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        const nIdx = ny * width + nx;
+        const nDist = distanceMap[ny][nx];
+        if (!Number.isFinite(nDist)) continue;
+        if (nDist < fallbackDist) {
+          fallbackDist = nDist;
+          fallbackIdx = nIdx;
+        }
+      }
+      return fallbackIdx;
+    };
+
+    for (let i = 0; i < sources.length; i++) {
+      let idx = sources[i];
+      stamp += 1;
+      let steps = 0;
+      let prevDx = 0;
+      let prevDy = 0;
+      while (idx >= 0 && steps < maxSteps) {
+        if (visitStamp[idx] === stamp) break;
+        visitStamp[idx] = stamp;
+        const x = idx % width;
+        const y = Math.floor(idx / width);
+        if (heightMap[y][x].elevation <= seaLevel) break;
+
+        const accum = flow[idx];
+        const strength = Math.min(1.6, (accum / maxStrength) * 2);
+        const widthLevel =
+          accum > flowThreshold * 6
+            ? 2
+            : accum > flowThreshold * 2
+            ? 1
+            : 0;
+        for (let dy = -widthLevel; dy <= widthLevel; dy++) {
+          for (let dx = -widthLevel; dx <= widthLevel; dx++) {
+            addRiverCell(x + dx, y + dy, strength);
+          }
+        }
+
+        const next = pickNext(x, y, prevDx, prevDy);
+        if (next < 0) break;
+        prevDx = (next % width) - x;
+        prevDy = Math.floor(next / width) - y;
+        idx = next;
+        steps += 1;
       }
     }
 

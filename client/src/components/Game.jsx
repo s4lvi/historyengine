@@ -63,7 +63,6 @@ const Game = () => {
   const [foundingNation, setFoundingNation] = useState(false);
   const [buildingStructure, setBuildingStructure] = useState(null);
   const [placingTower, setPlacingTower] = useState(false);
-  const [pressureMarkers, setPressureMarkers] = useState([]);
   const [isDefeated, setIsDefeated] = useState(false);
   const [isSpectating, setIsSpectating] = useState(false);
   const [hasFounded, setHasFounded] = useState(false);
@@ -72,6 +71,16 @@ const Game = () => {
   const isDefeatedRef = useRef(isDefeated);
   const hasFoundedRef = useRef(hasFounded);
   const allowRefound = config?.territorial?.allowRefound !== false;
+
+  // ----------------------------
+  // Big Arrow system state
+  // ----------------------------
+  const [drawingArrowType, setDrawingArrowType] = useState(null); // "attack" or "defend"
+  const [currentArrowPath, setCurrentArrowPath] = useState([]); // [{x, y}, ...]
+  const [activeAttackArrow, setActiveAttackArrow] = useState(null); // {path: [{x,y}...], remainingPower, ...}
+  const [activeDefendArrow, setActiveDefendArrow] = useState(null); // {path: [{x,y}...], remainingPower, ...}
+  const [completedArrows, setCompletedArrows] = useState([]); // [{type, path, success, troops, id, createdAt}]
+  const prevArrowsRef = useRef({ attack: null, defend: null });
 
   useEffect(() => {
     actionModalRef.current = actionModal;
@@ -830,67 +839,187 @@ const Game = () => {
     }
   };
 
-  const handleSendPressure = async (x, y) => {
+  // ----------------------------
+  // Big Arrow handlers
+  // ----------------------------
+  const handleStartDrawArrow = (type) => {
+    // Clear any existing drawing state
+    setCurrentArrowPath([]);
+    setDrawingArrowType(type);
+    // Cancel any other placement modes
+    setBuildingStructure(null);
+    setPlacingTower(false);
+    setFoundingNation(false);
+  };
+
+  const handleCancelArrow = () => {
+    setDrawingArrowType(null);
+    setCurrentArrowPath([]);
+  };
+
+  const handleArrowPathUpdate = (path) => {
+    setCurrentArrowPath(path);
+  };
+
+  const handleSendArrow = async (type, path) => {
     if (!userId || !storedPassword) return;
-    if (!config?.territorial?.enabled) return;
-    const userNation = gameState?.gameState?.nations?.find(
+    if (!path || path.length < 2) return;
+
+    // Calculate initial troop count for immediate display
+    const playerNation = gameState?.gameState?.nations?.find(
       (n) => n.owner === userId
     );
-    if (!userNation) return;
-    const anchor =
-      userNation.cities?.find((c) => c.type === "capital") ||
-      userNation.startingCell ||
-      (userNation.territory?.x?.length
-        ? { x: userNation.territory.x[0], y: userNation.territory.y[0] }
-        : null);
-    if (!anchor) return;
-    const direction = { x: x - anchor.x, y: y - anchor.y };
-    if (direction.x === 0 && direction.y === 0) return;
+    const population = playerNation?.population || 0;
+    const initialPower = population * attackPercent;
 
     try {
-      const markerId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      setPressureMarkers((prev) => [
-        ...prev,
-        {
-          id: markerId,
-          x,
-          y,
-          expiresAt: Date.now() + 1400,
-        },
-      ]);
       const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/pressure`,
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/arrow`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             userId,
             password: storedPassword,
-            direction,
-            target: { x, y },
+            type, // "attack" or "defend"
+            path, // [{x, y}, ...]
             percent: attackPercent,
           }),
         }
       );
       if (!response.ok) {
         const errData = await response.json();
-        throw new Error(errData.error || "Failed to send pressure");
+        throw new Error(errData.error || "Failed to send arrow command");
       }
+
+      // Set the active arrow with initial power estimate
+      const arrowData = {
+        path,
+        percent: attackPercent,
+        remainingPower: initialPower,
+        currentIndex: 0,
+      };
+
+      if (type === "attack") {
+        setActiveAttackArrow(arrowData);
+      } else if (type === "defend") {
+        setActiveDefendArrow(arrowData);
+      }
+
+      // Clear drawing state
+      setDrawingArrowType(null);
+      setCurrentArrowPath([]);
     } catch (err) {
       setError(err.message);
     }
   };
 
-  useEffect(() => {
-    if (!pressureMarkers.length) return;
-    const interval = setInterval(() => {
-      const now = Date.now();
-      setPressureMarkers((prev) =>
-        prev.filter((marker) => marker.expiresAt > now)
+  const handleClearActiveArrow = async (type) => {
+    if (!userId || !storedPassword) return;
+
+    try {
+      await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/clearArrow`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId,
+            password: storedPassword,
+            type,
+          }),
+        }
       );
-    }, 300);
-    return () => clearInterval(interval);
-  }, [pressureMarkers.length]);
+
+      if (type === "attack") {
+        setActiveAttackArrow(null);
+      } else if (type === "defend") {
+        setActiveDefendArrow(null);
+      }
+    } catch (err) {
+      console.error("Failed to clear arrow:", err);
+    }
+  };
+
+  // Track arrow state from server and detect completions
+  useEffect(() => {
+    const playerNation = gameState?.gameState?.nations?.find(
+      (n) => n.owner === userId && n.status !== "defeated"
+    );
+    const serverArrows = playerNation?.arrowOrders || {};
+
+    // Detect when arrows complete (check before updating state)
+    const prevAttack = prevArrowsRef.current.attack;
+    const prevDefend = prevArrowsRef.current.defend;
+
+    // Check if attack arrow completed (had arrow before, doesn't now on server)
+    if (prevAttack && prevAttack.path && !serverArrows.attack) {
+      const wasSuccessful = (prevAttack.currentIndex || 0) >= (prevAttack.path?.length || 1) - 1;
+      const remainingTroops = Math.round(prevAttack.remainingPower || 0);
+      setCompletedArrows((prev) => [
+        ...prev,
+        {
+          type: "attack",
+          path: prevAttack.path,
+          success: wasSuccessful && remainingTroops > 0,
+          troops: remainingTroops,
+          id: `attack-${Date.now()}`,
+          createdAt: Date.now(),
+        },
+      ]);
+      setActiveAttackArrow(null);
+    }
+
+    // Check if defend arrow completed
+    if (prevDefend && prevDefend.path && !serverArrows.defend) {
+      const remainingTroops = Math.round(prevDefend.remainingPower || 0);
+      setCompletedArrows((prev) => [
+        ...prev,
+        {
+          type: "defend",
+          path: prevDefend.path,
+          success: true, // Defend arrows always "succeed" (troops returned)
+          troops: remainingTroops,
+          id: `defend-${Date.now()}`,
+          createdAt: Date.now(),
+        },
+      ]);
+      setActiveDefendArrow(null);
+    }
+
+    // Update active arrows from server state (only if server has arrow data)
+    if (serverArrows.attack && serverArrows.attack.path) {
+      setActiveAttackArrow(serverArrows.attack);
+    } else if (!serverArrows.attack && activeAttackArrow) {
+      // Server doesn't have arrow but we still do - clear it
+      setActiveAttackArrow(null);
+    }
+
+    if (serverArrows.defend && serverArrows.defend.path) {
+      setActiveDefendArrow(serverArrows.defend);
+    } else if (!serverArrows.defend && activeDefendArrow) {
+      // Server doesn't have arrow but we still do - clear it
+      setActiveDefendArrow(null);
+    }
+
+    // Update refs for next comparison
+    prevArrowsRef.current = {
+      attack: serverArrows.attack || null,
+      defend: serverArrows.defend || null,
+    };
+  }, [gameState, userId, activeAttackArrow, activeDefendArrow]);
+
+  // Clean up old completed arrows after animation
+  useEffect(() => {
+    if (completedArrows.length === 0) return;
+    const timer = setInterval(() => {
+      const now = Date.now();
+      setCompletedArrows((prev) =>
+        prev.filter((arrow) => now - arrow.createdAt < 2000)
+      );
+    }, 500);
+    return () => clearInterval(timer);
+  }, [completedArrows.length]);
 
   const handlePlaceTower = async (x, y) => {
     if (!userId || !storedPassword) return;
@@ -1024,16 +1153,22 @@ const Game = () => {
             gameState={gameState}
             userId={userId}
             nationColors={nationColors}
-            pressureMarkers={pressureMarkers}
             config={config}
             foundingNation={foundingNation}
             onFoundNation={handleFoundNation}
             buildingStructure={buildingStructure}
             onBuildCity={handleBuildCity}
             onCancelBuild={handleCancelBuild}
-            onSendPressure={handleSendPressure}
             placingTower={placingTower}
             onPlaceTower={handlePlaceTower}
+            drawingArrowType={drawingArrowType}
+            currentArrowPath={currentArrowPath}
+            onArrowPathUpdate={handleArrowPathUpdate}
+            onSendArrow={handleSendArrow}
+            onCancelArrow={handleCancelArrow}
+            activeAttackArrow={activeAttackArrow}
+            activeDefendArrow={activeDefendArrow}
+            completedArrows={completedArrows}
           />
         )}
       </div>
@@ -1046,6 +1181,11 @@ const Game = () => {
         attackPercent={attackPercent}
         setAttackPercent={setAttackPercent}
         onStartPlaceTower={() => setPlacingTower(true)}
+        drawingArrowType={drawingArrowType}
+        onStartDrawArrow={handleStartDrawArrow}
+        onCancelArrow={handleCancelArrow}
+        activeAttackArrow={activeAttackArrow}
+        activeDefendArrow={activeDefendArrow}
       />
       {/* The join/login modal now appears only if the map is loaded */}
       <Modal

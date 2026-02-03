@@ -140,12 +140,22 @@ export function initWebSocket(server) {
 
 export function broadcastRoomUpdate(roomId, gameRoom) {
   const set = rooms.get(roomId);
-  if (!set || set.size === 0) return;
+  if (!set || set.size === 0) {
+    if (process.env.DEBUG_WS === "true") {
+      console.log(`[WS] No clients for room ${roomId}`);
+    }
+    return;
+  }
+  let sentCount = 0;
   set.forEach((ws) => {
     if (!ws.userId) return;
     safeSend(ws, {
       type: "state",
       ...buildGameStateResponse(gameRoom, ws.userId, ws.full),
     });
+    sentCount++;
   });
+  if (process.env.DEBUG_WS === "true") {
+    console.log(`[WS] Broadcast to ${sentCount} clients in room ${roomId} (tick ${gameRoom.tickCount})`);
+  }
 }

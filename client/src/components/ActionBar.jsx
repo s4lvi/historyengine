@@ -1,5 +1,82 @@
 import React from "react";
 
+// Build costs configuration (should match server config)
+const BUILD_COSTS = {
+  town: { wood: 200, stone: 100, food: 500 },
+  tower: { stone: 500, wood: 200 },
+};
+
+// Resource icon mapping
+const RESOURCE_ICONS = {
+  wood: "/wood.png",
+  stone: "/stone.png",
+  food: "/food.png",
+  iron: "/steel.png",
+  gold: "/bronze.png",
+};
+
+const BuildButton = ({ type, icon, costs, resources, disabled, onClick }) => {
+  const canAfford = Object.entries(costs).every(
+    ([resource, amount]) => (resources?.[resource] || 0) >= amount
+  );
+  const isDisabled = disabled || !canAfford;
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={isDisabled}
+      className={`px-3 py-2 rounded flex flex-col items-center gap-1 transition-all ${
+        isDisabled
+          ? "bg-gray-700 opacity-50 cursor-not-allowed"
+          : "bg-gray-800 hover:bg-gray-700 cursor-pointer"
+      }`}
+      title={`Build ${type}`}
+    >
+      <img src={icon} alt={type} className="w-8 h-8" />
+      <span className="text-xs capitalize">{type}</span>
+      <div className="flex gap-1 flex-wrap justify-center">
+        {Object.entries(costs).map(([resource, amount]) => {
+          const hasEnough = (resources?.[resource] || 0) >= amount;
+          return (
+            <div
+              key={resource}
+              className={`flex items-center gap-0.5 text-xs ${
+                hasEnough ? "text-gray-300" : "text-red-400"
+              }`}
+            >
+              <img
+                src={RESOURCE_ICONS[resource] || `/${resource}.png`}
+                alt={resource}
+                className="w-3 h-3"
+              />
+              <span>{amount}</span>
+            </div>
+          );
+        })}
+      </div>
+    </button>
+  );
+};
+
+const ArrowButton = ({ type, icon, label, active, onClick }) => {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-2 rounded flex flex-col items-center gap-1 transition-all ${
+        active
+          ? "bg-yellow-600 ring-2 ring-yellow-400"
+          : "bg-gray-800 hover:bg-gray-700"
+      }`}
+      title={`Draw ${label} Arrow`}
+    >
+      <div className="w-8 h-8 flex items-center justify-center text-2xl">
+        {icon}
+      </div>
+      <span className="text-xs">{label}</span>
+    </button>
+  );
+};
+
 const ActionBar = ({
   onFoundNation,
   userState,
@@ -7,8 +84,15 @@ const ActionBar = ({
   attackPercent,
   setAttackPercent,
   onStartPlaceTower,
+  onBuildStructure,
+  playerResources,
   isSpectating,
   allowRefound,
+  drawingArrowType,
+  onStartDrawArrow,
+  onCancelArrow,
+  activeAttackArrow,
+  activeDefendArrow,
 }) => {
   // If no userState, show the found-nation button.
   if (!hasFounded) {
@@ -64,9 +148,49 @@ const ActionBar = ({
       <div className="relative bg-gray-900 bg-opacity-50 text-white p-4">
         <div className="max-w-7xl mx-auto">
           <div className="flex flex-row gap-8 items-center">
+            {/* Arrow Commands Section */}
+            <div className="flex flex-col gap-1">
+              <h3 className="text-sm font-medium text-gray-300">Commands</h3>
+              <div className="flex gap-2">
+                <ArrowButton
+                  type="attack"
+                  icon="⚔️"
+                  label="Attack"
+                  active={drawingArrowType === "attack" || activeAttackArrow}
+                  onClick={() => {
+                    if (drawingArrowType === "attack") {
+                      onCancelArrow?.();
+                    } else {
+                      onStartDrawArrow?.("attack");
+                    }
+                  }}
+                />
+                <ArrowButton
+                  type="defend"
+                  icon="🛡️"
+                  label="Defend"
+                  active={drawingArrowType === "defend" || activeDefendArrow}
+                  onClick={() => {
+                    if (drawingArrowType === "defend") {
+                      onCancelArrow?.();
+                    } else {
+                      onStartDrawArrow?.("defend");
+                    }
+                  }}
+                />
+              </div>
+              {(activeAttackArrow || activeDefendArrow) && (
+                <div className="text-xs text-yellow-400 mt-1">
+                  {activeAttackArrow && "Attack arrow active"}
+                  {activeAttackArrow && activeDefendArrow && " • "}
+                  {activeDefendArrow && "Defend arrow active"}
+                </div>
+              )}
+            </div>
+
             <div className="flex flex-col gap-2">
               <h3 className="text-sm font-medium text-gray-300">
-                Attack / Expand %
+                Troop Commitment %
               </h3>
               <input
                 type="range"
@@ -81,14 +205,26 @@ const ActionBar = ({
                 {Math.round((attackPercent || 0.25) * 100)}%
               </div>
             </div>
-            <div>
-              <button
-                onClick={onStartPlaceTower}
-                className="px-4 py-2 bg-gray-800 rounded hover:bg-gray-700 flex items-center gap-2"
-              >
-                <img src="/fort.png" alt="Tower" className="w-5 h-5" />
-                Place Tower
-              </button>
+
+            {/* Build Structures Section */}
+            <div className="flex flex-col gap-1">
+              <h3 className="text-sm font-medium text-gray-300">Build</h3>
+              <div className="flex gap-2">
+                <BuildButton
+                  type="town"
+                  icon="/town.png"
+                  costs={BUILD_COSTS.town}
+                  resources={playerResources}
+                  onClick={() => onBuildStructure?.("town")}
+                />
+                <BuildButton
+                  type="tower"
+                  icon="/fort.png"
+                  costs={BUILD_COSTS.tower}
+                  resources={playerResources}
+                  onClick={() => onBuildStructure?.("tower")}
+                />
+              </div>
             </div>
           </div>
         </div>
