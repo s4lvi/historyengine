@@ -378,6 +378,8 @@ async function spawnBotsForRoom(roomId, mapData, desiredCount) {
         console.log(
           `[BOTS] spawned ${created.length} bots room=${roomId} totalNations=${updatedRoom.gameState.nations.length}`
         );
+        // Refresh game loop's in-memory cache with the new bots
+        await gameLoop.refreshRoomCache(roomId);
         broadcastRoomUpdate(roomId.toString(), updatedRoom);
       } else {
         console.warn(`[BOTS] failed to update room ${roomId}`);
@@ -1287,6 +1289,9 @@ router.post("/:id/foundNation", async (req, res, next) => {
       { new: true }
     );
     if (updatedRoom) {
+      // Refresh game loop's in-memory cache with the new nation
+      await gameLoop.refreshRoomCache(req.params.id);
+
       const mapData = await gameLoop.getMapData(req.params.id);
       if (mapData) {
         await spawnBotsForRoom(
@@ -1479,6 +1484,8 @@ router.post("/:id/buildCity", async (req, res, next) => {
       { new: true }
     );
     if (updatedRoom) {
+      // Refresh game loop's in-memory cache
+      await gameLoop.refreshRoomCache(req.params.id);
       broadcastRoomUpdate(req.params.id.toString(), updatedRoom);
     }
 
@@ -1612,6 +1619,8 @@ router.post("/:id/arrow", async (req, res, next) => {
       { new: true }
     );
     if (updatedRoom) {
+      // Refresh game loop's in-memory cache with the new arrow
+      await gameLoop.refreshRoomCache(req.params.id);
       broadcastRoomUpdate(req.params.id.toString(), updatedRoom);
     }
 
@@ -1673,6 +1682,8 @@ router.post("/:id/clearArrow", async (req, res, next) => {
       { new: true }
     );
     if (updatedRoom) {
+      // Refresh game loop's in-memory cache
+      await gameLoop.refreshRoomCache(req.params.id);
       broadcastRoomUpdate(req.params.id.toString(), updatedRoom);
     }
 

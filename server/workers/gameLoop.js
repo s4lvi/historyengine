@@ -473,11 +473,16 @@ class GameLoop {
     this.timers = new Map(); // roomId -> timer
     this.cachedMapData = new Map(); // roomId -> cached mapData
     this.cachedMapStats = new Map(); // roomId -> { totalClaimable }
+    this.cachedGameRoom = new Map(); // roomId -> cached gameRoom document (avoid DB fetch each tick)
     this.cachedOwnershipMap = new Map(); // roomId -> Map<"x,y", nation> (OPTIMIZATION 1)
     this.cachedNationCount = new Map(); // roomId -> nation count for cache invalidation
     this.cachedFrontierSets = new Map(); // roomId -> Map<owner, Set<"x,y">> (OPTIMIZATION 3)
     this.lastSaveTick = new Map(); // roomId -> tick number (OPTIMIZATION 2)
-    this.roomDirtyFlags = new Map(); // roomId -> boolean (OPTIMIZATION 2)
+    this.savingRooms = new Set(); // Rooms with a save in progress (prevent parallel saves)
+    this.pendingRooms = new Set(); // Rooms being initialized (race condition prevention)
+    this.processingRooms = new Set(); // Rooms currently being processed (prevents duplicate processing)
+    this.loopIds = new Map(); // roomId -> current loopId (kills duplicate loops)
+    this.roomTickCount = new Map(); // roomId -> current tick count (in-memory, not from stale DB)
     const tickRate =
       Number(process.env.TICK_RATE_MS) ||
       Number(config?.territorial?.tickRateMs);
@@ -888,10 +893,25 @@ class GameLoop {
 
   async processRoom(roomId) {
     const roomKey = roomId?.toString();
+
+    // Prevent concurrent processing of the same room
+    if (this.processingRooms.has(roomKey)) {
+      console.warn(`[LOCK] Skipping room ${roomKey} - already being processed`);
+      return 0;
+    }
+    this.processingRooms.add(roomKey);
+
     const startTime = process.hrtime();
     try {
-      const GameRoom = mongoose.model("GameRoom");
-      const gameRoom = await GameRoom.findById(roomKey);
+      // Use cached gameRoom to avoid DB fetch each tick (eliminates version conflicts)
+      let gameRoom = this.cachedGameRoom.get(roomKey);
+      if (!gameRoom) {
+        const GameRoom = mongoose.model("GameRoom");
+        gameRoom = await GameRoom.findById(roomKey);
+        if (gameRoom) {
+          this.cachedGameRoom.set(roomKey, gameRoom);
+        }
+      }
       if (
         !gameRoom ||
         gameRoom.status !== "open" ||
@@ -899,6 +919,12 @@ class GameLoop {
       ) {
         return;
       }
+
+      // Use in-memory tick count
+      if (!this.roomTickCount.has(roomKey)) {
+        this.roomTickCount.set(roomKey, gameRoom.tickCount || 0);
+      }
+      const currentTick = this.roomTickCount.get(roomKey);
 
       // Get or initialize the cached mapData
       let mapData = await this.getMapData(roomKey);
@@ -923,10 +949,12 @@ class GameLoop {
       const nationOrder = [...gameRoom.gameState.nations];
       const botCount = nationOrder.filter(n => n.isBot && n.status !== 'defeated').length;
       const activeArrows = nationOrder.filter(n => n.arrowOrders?.attack || n.arrowOrders?.defend).length;
+      const botArrows = nationOrder.filter(n => n.isBot && n.arrowOrders?.attack).length;
 
-      // Log nation counts every 50 ticks
-      if (gameRoom.tickCount % 50 === 0) {
-        console.log(`[TICK ${gameRoom.tickCount}] Nations: ${nationOrder.length}, Active bots: ${botCount}, Active arrows: ${activeArrows}`);
+      // Log nation counts every 50 ticks (or every 10 when debugging)
+      const logInterval = process.env.DEBUG_TICKS === "true" ? 10 : 50;
+      if (currentTick % logInterval === 0) {
+        console.log(`[TICK ${currentTick}] Nations: ${nationOrder.length}, Bots: ${botCount}, BotArrows: ${botArrows}, PlayerArrows: ${activeArrows - botArrows}`);
       }
 
       for (let i = nationOrder.length - 1; i > 0; i--) {
@@ -941,7 +969,7 @@ class GameLoop {
           gameRoom.gameState,
           ownershipMap,
           bonusesByOwner,
-          gameRoom.tickCount,
+          currentTick,
           frontierSets.get(nation.owner) // OPTIMIZATION 3: Pass frontier set
         )
       );
@@ -950,13 +978,23 @@ class GameLoop {
       this.updateOwnershipMapFromDeltas(ownershipMap, updatedNations);
       this.updateFrontierSetsFromDeltas(frontierSets, updatedNations, mapData, ownershipMap);
 
-      // Track if any changes occurred (OPTIMIZATION 2) - must check BEFORE resetting deltas
+      // Track if any changes occurred - used for encirclement/structure checks
       const hasChanges = updatedNations.some(n =>
         (n.territoryDelta?.add?.x?.length || 0) > 0 ||
         (n.territoryDelta?.sub?.x?.length || 0) > 0
       );
-      if (hasChanges) {
-        this.roomDirtyFlags.set(roomKey, true);
+
+      // Debug: Log changes per nation
+      if (process.env.DEBUG_TICKS === "true" && currentTick % 10 === 0) {
+        const changeDetails = updatedNations
+          .filter(n => (n.territoryDelta?.add?.x?.length || 0) > 0)
+          .map(n => `${n.isBot ? 'BOT' : 'PLAYER'}:${n.owner?.substring(0,8)}(+${n.territoryDelta.add.x.length})`)
+          .join(', ');
+        if (changeDetails) {
+          console.log(`[TICK ${currentTick}] Territory changes: ${changeDetails}`);
+        } else {
+          console.log(`[TICK ${currentTick}] No territory changes`);
+        }
       }
 
       // Reset territory deltas after they've been used for cache updates and change detection
@@ -984,7 +1022,7 @@ class GameLoop {
       const encirclementInterval = config?.territorial?.encirclementCheckIntervalTicks ?? 6;
       if (
         hasChanges &&
-        gameRoom.tickCount % encirclementInterval === 0
+        currentTick % encirclementInterval === 0
       ) {
         updateEncircledTerritory(
           gameRoom.gameState,
@@ -1006,7 +1044,7 @@ class GameLoop {
 
       const winCheckInterval =
         config?.territorial?.winConditionCheckIntervalTicks ?? 5;
-      if ((gameRoom.tickCount ?? 0) % winCheckInterval === 0) {
+      if (currentTick % winCheckInterval === 0) {
         const stats = this.cachedMapStats.get(roomKey);
         checkWinCondition(
           gameRoom.gameState,
@@ -1014,25 +1052,36 @@ class GameLoop {
           stats?.totalClaimable
         );
       }
-      gameRoom.tickCount += 1;
 
-      // OPTIMIZATION 2: Batched MongoDB saves - only save every N ticks or when dirty
+      // Increment tick count in both memory and gameRoom (for DB sync)
+      const nextTick = currentTick + 1;
+      this.roomTickCount.set(roomKey, nextTick);
+      gameRoom.tickCount = nextTick;
+
+      // Periodic DB save for crash recovery (~30 seconds)
       const lastSave = this.lastSaveTick.get(roomKey) || 0;
-      const ticksSinceLastSave = gameRoom.tickCount - lastSave;
-      const isDirty = this.roomDirtyFlags.get(roomKey) || false;
+      const ticksSinceLastSave = nextTick - lastSave;
 
-      if (ticksSinceLastSave >= this.dbSaveIntervalTicks || (isDirty && ticksSinceLastSave >= 1)) {
+      if (ticksSinceLastSave >= this.dbSaveIntervalTicks && !this.savingRooms.has(roomKey)) {
+        this.savingRooms.add(roomKey);
         gameRoom.markModified("gameState.nations");
-        // Fire-and-forget save to avoid blocking the game loop
         gameRoom.save()
           .then(() => {
-            if (process.env.DEBUG_TICKS === "true") {
-              console.log(`[DB] Saved room ${roomKey} at tick ${gameRoom.tickCount}`);
-            }
+            this.savingRooms.delete(roomKey);
+            console.log(`[DB] Saved room ${roomKey} at tick ${nextTick}`);
           })
-          .catch((err) => console.error(`[DB] Error saving room ${roomKey}:`, err.message));
-        this.lastSaveTick.set(roomKey, gameRoom.tickCount);
-        this.roomDirtyFlags.set(roomKey, false);
+          .catch((err) => {
+            this.savingRooms.delete(roomKey);
+            if (err.name === "VersionError") {
+              this.cachedGameRoom.delete(roomKey);
+              this.cachedOwnershipMap.delete(roomKey);
+              this.cachedFrontierSets.delete(roomKey);
+              console.log(`[DB] Version conflict for room ${roomKey}, cache invalidated`);
+            } else {
+              console.error(`[DB] Error saving room ${roomKey}:`, err.message);
+            }
+          });
+        this.lastSaveTick.set(roomKey, nextTick);
       }
 
       const now = Date.now();
@@ -1060,74 +1109,128 @@ class GameLoop {
         console.error(`Error processing room ${roomKey}:`, error);
       }
       return 0; // Return 0 for error cases to maintain tick rate
+    } finally {
+      // Always release the processing lock
+      this.processingRooms.delete(roomKey);
     }
   }
 
   async startRoom(roomId) {
     const roomKey = roomId?.toString();
-    if (this.timers.has(roomKey)) {
-      console.log(`Room ${roomKey} already has an active timer`);
+    console.log(`[LOOP] startRoom called for ${roomKey}`);
+
+    // If a loop is already running, just return (don't kill it)
+    if (this.timers.has(roomKey) || this.loopIds.has(roomKey)) {
+      console.log(`[LOOP] Room ${roomKey} already has a running loop, skipping`);
       return;
     }
+    if (this.pendingRooms.has(roomKey)) {
+      console.log(`[LOOP] Room ${roomKey} is already being initialized, skipping`);
+      return;
+    }
+    this.pendingRooms.add(roomKey);
+    console.log(`[LOOP] Initializing map data for room ${roomKey}`);
 
     // Initialize map data before starting the game loop
     const mapData = await this.initializeMapData(roomKey);
     if (!mapData) {
       console.error(`Failed to initialize map data for room ${roomKey}`);
+      this.pendingRooms.delete(roomKey);
       return;
     }
 
+    // Double-check no timer was created while we were initializing
+    if (this.timers.has(roomKey)) {
+      console.log(`[LOOP] Room ${roomKey} timer was created while initializing, skipping`);
+      this.pendingRooms.delete(roomKey);
+      return;
+    }
+
+    // Generate unique loop ID - any duplicate loops will detect this and stop
+    const loopId = Date.now() + Math.random();
+    this.loopIds.set(roomKey, loopId);
+
     const tick = async () => {
+      // Check if this tick belongs to the current loop (kills duplicate loops)
+      if (this.loopIds.get(roomKey) !== loopId) {
+        console.log(`[LOOP] Old loop detected for ${roomKey}, stopping`);
+        return;
+      }
       if (!this.timers.has(roomKey)) return;
 
       const startTime = Date.now();
-      let processingTime = 0;
-
+      let result = 0;
       try {
-        processingTime = await this.processRoom(roomKey);
+        result = await this.processRoom(roomKey);
       } catch (tickError) {
-        // Catch any errors that escape processRoom's try-catch
         console.error(`[TICK] Unhandled error in room ${roomKey}:`, tickError);
       }
 
-      if (!this.timers.has(roomKey)) return;
+      // If processRoom returned -1, this is a duplicate loop - stop
+      if (result === -1) {
+        console.log(`[LOOP] This loop is a duplicate for ${roomKey}, terminating`);
+        return;
+      }
 
-      // Calculate the time until the next tick should occur
+      // Re-check loop ownership after async processing
+      if (this.loopIds.get(roomKey) !== loopId || !this.timers.has(roomKey)) return;
+
       const elapsedTime = Date.now() - startTime;
       const remainingTime = Math.max(0, this.targetTickRate - elapsedTime);
 
-      // Log if we're falling behind
       if (elapsedTime > this.targetTickRate) {
-        console.warn(
-          `Room ${roomKey} tick processing took ${elapsedTime}ms, exceeding target tick rate of ${this.targetTickRate}ms`
-        );
+        console.warn(`Room ${roomKey} tick processing took ${elapsedTime}ms, exceeding target tick rate of ${this.targetTickRate}ms`);
       }
 
-      // Schedule the next tick
       const timer = setTimeout(tick, remainingTime);
       this.timers.set(roomKey, timer);
     };
 
     const timer = setTimeout(tick, 0);
     this.timers.set(roomKey, timer);
-    console.log(`Started game loop for room ${roomKey}`);
+    this.pendingRooms.delete(roomKey);
+    console.log(`[LOOP] Started room ${roomKey} (loopId: ${loopId.toFixed(0)})`);
+  }
+
+  // Called by routes after modifying gameState to update the in-memory cache
+  async refreshRoomCache(roomId) {
+    const roomKey = roomId?.toString();
+    try {
+      const GameRoom = mongoose.model("GameRoom");
+      const freshRoom = await GameRoom.findById(roomKey);
+      if (freshRoom) {
+        this.cachedGameRoom.set(roomKey, freshRoom);
+        // Rebuild ownership/frontier caches since nations may have changed
+        this.cachedOwnershipMap.delete(roomKey);
+        this.cachedFrontierSets.delete(roomKey);
+        console.log(`[LOOP] Cache refreshed for room ${roomKey}`);
+      }
+    } catch (err) {
+      console.error(`[LOOP] Failed to refresh cache for room ${roomKey}:`, err.message);
+    }
   }
 
   stopRoom(roomId) {
     const roomKey = roomId?.toString();
+    // Clear all flags for this room
+    this.pendingRooms.delete(roomKey);
+    this.processingRooms.delete(roomKey);
+    this.savingRooms.delete(roomKey);
+    this.loopIds.delete(roomKey); // This will cause any running tick to stop
+    this.roomTickCount.delete(roomKey); // Clean up in-memory tick count
     const timer = this.timers.get(roomKey);
     if (timer) {
       clearTimeout(timer);
       this.timers.delete(roomKey);
+      this.cachedGameRoom.delete(roomKey);
       this.cachedMapData.delete(roomKey);
       this.cachedMapStats.delete(roomKey);
-      this.cachedOwnershipMap.delete(roomKey); // OPTIMIZATION 1
-      this.cachedNationCount.delete(roomKey); // OPTIMIZATION 1
-      this.cachedFrontierSets.delete(roomKey); // OPTIMIZATION 3
-      this.lastSaveTick.delete(roomKey); // OPTIMIZATION 2
-      this.roomDirtyFlags.delete(roomKey); // OPTIMIZATION 2
+      this.cachedOwnershipMap.delete(roomKey);
+      this.cachedNationCount.delete(roomKey);
+      this.cachedFrontierSets.delete(roomKey);
+      this.lastSaveTick.delete(roomKey);
       this.lastBroadcast.delete(roomKey);
-      console.log(`Stopped game loop and cleared cache for room ${roomKey}`);
+      console.log(`[LOOP] Stopped room ${roomKey}`);
     }
   }
 }

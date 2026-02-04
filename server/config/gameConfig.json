@@ -48,7 +48,7 @@
     "matchLengthMinutes": 15,
     "tickRateMs": 100,
     "broadcastIntervalMs": 100,
-    "dbSaveIntervalTicks": 5,
+    "dbSaveIntervalTicks": 300,
     "enabled": true,
     "allowRefound": true,
     "baseGrowth": 0.6,

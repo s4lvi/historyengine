@@ -8,6 +8,7 @@ import StatsBar from "./StatsBar";
 import SettingsModal from "./SettingsModal";
 import PlayerListModal from "./PlayerListModal";
 import ActionBar from "./ActionBar";
+import { unpackTerritoryDelta } from "../utils/packedDelta";
 
 const Game = () => {
   // Get game room ID from URL params.
@@ -176,6 +177,17 @@ const Game = () => {
   };
 
   const applyDeltaGameState = (data) => {
+    // Unpack packed deltas if server is using that format
+    if (data.usePackedDeltas && data.gameState?.nations) {
+      data.gameState.nations = data.gameState.nations.map((nation) => {
+        if (nation.packedDelta) {
+          nation.territoryDeltaForClient = unpackTerritoryDelta(nation.packedDelta);
+          delete nation.packedDelta;
+        }
+        return nation;
+      });
+    }
+
     logNationOwners(data.gameState);
     const allowRefound = config?.territorial?.allowRefound !== false;
     const beginSpectate = () => {

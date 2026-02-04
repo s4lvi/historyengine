@@ -13,6 +13,10 @@ import { settings } from "@pixi/settings";
 import { SCALE_MODES } from "@pixi/constants";
 import MapTiles from "./MapTiles";
 import { SCALE_MODES as PIXI_SCALE_MODES } from "pixi.js";
+import { TerritoryLayer } from "./TerritoryRenderer";
+
+// Feature flag for optimized territory rendering (set via environment or default false)
+const USE_OPTIMIZED_TERRITORY = process.env.REACT_APP_OPTIMIZED_TERRITORY === "true";
 
 settings.SCALE_MODE = SCALE_MODES.NEAREST;
 
@@ -1509,7 +1513,19 @@ const GameCanvas = ({
         {!useFullMapTexture && memoizedCaptureOverlays}
           </>
         )}
-        {renderNationOverlays}
+        {/* Territory rendering - use optimized texture-based or traditional Graphics */}
+        {USE_OPTIMIZED_TERRITORY && mapMetadata ? (
+          <TerritoryLayer
+            mapWidth={mapMetadata.width}
+            mapHeight={mapMetadata.height}
+            cellSize={cellSize}
+            nations={nations}
+            nationColors={nationColors}
+            zIndex={100}
+          />
+        ) : (
+          renderNationOverlays
+        )}
         {/* Render active arrows with troop counts */}
         {activeAttackArrow && activeAttackArrow.path && renderArrowPath(
           activeAttackArrow.path,

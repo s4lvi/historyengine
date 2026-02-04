@@ -263,9 +263,9 @@ function updateNationTerritorial(
           cachedFrontierSet
         );
       } catch (arrowErr) {
-        console.error(`[ARROW] Error processing arrows for ${updatedNation.name}:`, arrowErr.message, arrowErr.stack);
-        // Clear invalid arrows to prevent repeated errors
-        updatedNation.arrowOrders = {};
+        console.error(`[ARROW] Error processing arrows for ${updatedNation.name || updatedNation.owner}:`, arrowErr.message, arrowErr.stack);
+        // Don't clear all arrows on error - just log and continue
+        // The arrow will naturally expire or be replaced
       }
     }
 
@@ -437,10 +437,10 @@ function maybeEnqueueBotArrow(
 
   // Check if bot already has an active attack arrow
   if (nation.arrowOrders?.attack && nation.arrowOrders.attack.remainingPower > 0) {
-    // Log this to see if arrows are getting stuck
-    if (process.env.DEBUG_BOTS === "true") {
+    // Log every 20 ticks when bots have active arrows
+    if (tickCount % 20 === 0) {
       const arrow = nation.arrowOrders.attack;
-      console.log(`[BOTS] skip ${nation.owner} has active arrow (power: ${arrow.remainingPower?.toFixed(1)}, age: ${arrow.createdAt ? Date.now() - new Date(arrow.createdAt).getTime() : 'unknown'}ms)`);
+      console.log(`[BOTS] ${nation.name || nation.owner} has active arrow (power: ${arrow.remainingPower?.toFixed(1)})`);
     }
     return;
   }
@@ -448,10 +448,9 @@ function maybeEnqueueBotArrow(
   const orderInterval = config?.territorial?.botOrderIntervalTicks ?? 4;
   const lastTick = nation.lastBotOrderTick ?? -Infinity;
   if (tickCount - lastTick < orderInterval) {
-    if (process.env.DEBUG_BOTS === "true") {
-      console.log(
-        `[BOTS] skip ${nation.owner} interval=${tickCount - lastTick}`
-      );
+    // Only log occasionally
+    if (tickCount % 50 === 0 && process.env.DEBUG_BOTS === "true") {
+      console.log(`[BOTS] ${nation.name || nation.owner} waiting (interval=${tickCount - lastTick}/${orderInterval})`);
     }
     return;
   }
@@ -523,7 +522,7 @@ function maybeEnqueueBotArrow(
   };
 
   if (process.env.DEBUG_BOTS === "true") {
-    console.log(`[BOTS] ${nation.name} arrow: power=${actualPower.toFixed(0)} target=(${candidate.x},${candidate.y})`);
+    console.log(`[BOTS] ${nation.name || nation.owner} arrow: power=${actualPower.toFixed(0)} target=(${candidate.x},${candidate.y})`);
   }
   nation.lastBotOrderTick = tickCount;
 }
@@ -718,76 +717,77 @@ function processArrowOrders(
       const currentIndex = arrow.currentIndex || 0;
       const targetPoint = arrow.path[Math.min(currentIndex, arrow.path.length - 1)];
 
-      // Find frontier cells near the arrow path
-      const pathSet = new Set(arrow.path.map(p => `${p.x},${p.y}`));
+      // Build frontier candidates
       const candidates = [];
+      const territorySet = getTerritorySetCached(nation);
+      const frontierChecked = new Set();
+      const tx = nation.territory?.x || [];
+      const ty = nation.territory?.y || [];
 
-      // Scan frontier cells that are near the arrow path
-      const frontierCells = cachedFrontierSet || new Set();
-      const scanCells = frontierCells.size > 0 ? frontierCells : (() => {
-        // Build frontier if not cached
-        const f = new Set();
-        const tx = nation.territory?.x || [];
-        const ty = nation.territory?.y || [];
-        for (let i = 0; i < tx.length; i++) {
-          for (const [dx, dy] of neighbors) {
-            const nx = tx[i] + dx;
-            const ny = ty[i] + dy;
-            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-            const key = `${nx},${ny}`;
-            if (ownershipMap.get(key)?.owner !== nation.owner) {
-              const cell = mapData[ny]?.[nx];
-              if (cell && cell.biome !== "OCEAN") {
-                f.add(key);
-              }
+      for (let i = 0; i < tx.length; i++) {
+        for (const [dx, dy] of neighbors) {
+          const nx = tx[i] + dx;
+          const ny = ty[i] + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+
+          const key = `${nx},${ny}`;
+          if (frontierChecked.has(key)) continue;
+          frontierChecked.add(key);
+
+          if (territorySet.has(key)) continue;
+          if (ownershipMap.get(key)?.owner === nation.owner) continue;
+
+          const cell = mapData[ny]?.[nx];
+          if (!cell || cell.biome === "OCEAN") continue;
+
+          // Count owned neighbors FIRST (need this for compactness check)
+          let ownedNeighborCount = 0;
+          let sourceCell = null;
+          for (const [ddx, ddy] of neighbors) {
+            const sx = nx + ddx;
+            const sy = ny + ddy;
+            if (territorySet.has(`${sx},${sy}`) || ownershipMap.get(`${sx},${sy}`)?.owner === nation.owner) {
+              ownedNeighborCount++;
+              if (!sourceCell) sourceCell = mapData[sy]?.[sx];
             }
           }
-        }
-        return f;
-      })();
+          if (ownedNeighborCount === 0 || !sourceCell) continue;
 
-      for (const key of scanCells) {
-        const [xStr, yStr] = key.split(",");
-        const x = Number(xStr);
-        const y = Number(yStr);
-
-        // Calculate distance to the arrow path
-        let minDistToPath = Infinity;
-        for (const p of arrow.path) {
-          const d = Math.hypot(x - p.x, y - p.y);
-          if (d < minDistToPath) minDistToPath = d;
-        }
-
-        // Also prioritize direction toward target point
-        const distToTarget = Math.hypot(x - targetPoint.x, y - targetPoint.y);
-
-        // Only consider cells within reasonable distance of path
-        if (minDistToPath > 15) continue;
-
-        const cell = mapData[y]?.[x];
-        if (!cell || cell.biome === "OCEAN") continue;
-
-        // Find source cell and count owned neighbors (for compactness)
-        let sourceCell = null;
-        let ownedNeighborCount = 0;
-        for (const [dx, dy] of neighbors) {
-          const sx = x + dx;
-          const sy = y + dy;
-          if (ownershipMap.get(`${sx},${sy}`)?.owner === nation.owner) {
-            if (!sourceCell) sourceCell = mapData[sy]?.[sx];
-            ownedNeighborCount++;
+          // Calculate min distance to the arrow path LINE SEGMENTS (not just points)
+          let minDistToPath = Infinity;
+          for (let pi = 0; pi < arrow.path.length - 1; pi++) {
+            const p1 = arrow.path[pi];
+            const p2 = arrow.path[pi + 1];
+            // Distance from point (nx,ny) to line segment p1-p2
+            const segDx = p2.x - p1.x;
+            const segDy = p2.y - p1.y;
+            const lenSq = segDx * segDx + segDy * segDy;
+            let t = lenSq > 0 ? ((nx - p1.x) * segDx + (ny - p1.y) * segDy) / lenSq : 0;
+            t = Math.max(0, Math.min(1, t)); // Clamp to segment
+            const closestX = p1.x + t * segDx;
+            const closestY = p1.y + t * segDy;
+            const d = Math.hypot(nx - closestX, ny - closestY);
+            if (d < minDistToPath) minDistToPath = d;
           }
-        }
-        if (!sourceCell) continue;
+          // Handle single-point path or use first point as fallback
+          if (arrow.path.length === 1 || minDistToPath === Infinity) {
+            const d = Math.hypot(nx - arrow.path[0].x, ny - arrow.path[0].y);
+            if (d < minDistToPath) minDistToPath = d;
+          }
 
-        // Score: balance between path direction and compactness
-        // Compactness helps prevent holes but shouldn't dominate
-        const compactnessBonus = ownedNeighborCount * 5;
-        const score = -minDistToPath * 2 - distToTarget + compactnessBonus;
-        candidates.push({ x, y, score, sourceCell, cell, ownedNeighborCount });
+          // Only expand within 12 tiles of path (increased for bots with long-distance arrows)
+          if (minDistToPath > 12) continue;
+
+          const distToTarget = Math.hypot(nx - targetPoint.x, ny - targetPoint.y);
+
+          // Score: STRONGLY prefer filling holes (3+ neighbors), then path proximity, then target direction
+          // A hole (3-4 neighbors) gets +150-200 bonus, ensuring it's filled before advancing
+          const compactnessBonus = ownedNeighborCount >= 3 ? 50 * ownedNeighborCount : ownedNeighborCount * 5;
+          const score = compactnessBonus - minDistToPath * 5 - distToTarget * 0.5;
+          candidates.push({ x: nx, y: ny, score, sourceCell, cell, ownedNeighborCount });
+        }
       }
 
-      // Sort by score (higher is better)
       candidates.sort((a, b) => b.score - a.score);
 
       // Try to expand
@@ -845,7 +845,12 @@ function processArrowOrders(
 
         if (budget - spent >= cost) {
           if (currentOwner && currentOwner.owner !== nation.owner) {
-            removeTerritoryCell(currentOwner, x, y);
+            // CRITICAL: Find the nation object from gameState.nations, not the ownershipMap!
+            // The ownershipMap may contain stale references that won't be saved.
+            const targetNation = gameState.nations.find(n => n.owner === currentOwner.owner);
+            if (targetNation) {
+              removeTerritoryCell(targetNation, x, y);
+            }
           }
           addTerritoryCell(nation, x, y);
           ownershipMap.set(key, nation);
@@ -959,7 +964,11 @@ function processArrowOrders(
     for (const hole of holesToFill) {
       const currentOwner = ownershipMap.get(hole.key);
       if (currentOwner?.owner && currentOwner.owner !== nation.owner) {
-        removeTerritoryCell(currentOwner, hole.x, hole.y);
+        // CRITICAL: Find the nation object from gameState.nations, not the ownershipMap!
+        const targetNation = gameState.nations.find(n => n.owner === currentOwner.owner);
+        if (targetNation) {
+          removeTerritoryCell(targetNation, hole.x, hole.y);
+        }
       }
       addTerritoryCell(nation, hole.x, hole.y);
       ownershipMap.set(hole.key, nation);
@@ -1407,17 +1416,110 @@ function getMinDistanceToTerritory(nation, x, y, maxDistance = Infinity) {
 }
 
 // Lazy-initialize and return the cached territory Set for O(1) lookups
+// Also deduplicates the territory arrays if duplicates are detected
 function getTerritorySetCached(nation) {
   // Check if _territorySet exists AND is actually a Set (not a plain object from MongoDB)
   if (!(nation._territorySet instanceof Set)) {
     nation._territorySet = new Set();
     if (nation.territory?.x && nation.territory?.y) {
+      const originalLength = nation.territory.x.length;
+      // Build set and detect duplicates
       for (let i = 0; i < nation.territory.x.length; i++) {
         nation._territorySet.add(`${nation.territory.x[i]},${nation.territory.y[i]}`);
+      }
+      // If set size differs from array length, we have duplicates - rebuild arrays
+      if (nation._territorySet.size !== originalLength) {
+        const newX = [];
+        const newY = [];
+        for (const key of nation._territorySet) {
+          const [xStr, yStr] = key.split(",");
+          newX.push(Number(xStr));
+          newY.push(Number(yStr));
+        }
+        nation.territory.x = newX;
+        nation.territory.y = newY;
+        console.log(`[DEDUPE] ${nation.name || nation.owner} had ${originalLength - nation._territorySet.size} duplicate tiles removed`);
       }
     }
   }
   return nation._territorySet;
+}
+
+// Neighbors for border calculations
+const NEIGHBORS_4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+// Update border set when a cell is added - only the new cell and its neighbors might change border status
+function updateBorderOnAdd(nation, x, y, territorySet) {
+  // Ensure _borderSet is a proper Set (might be plain object from MongoDB)
+  if (!(nation._borderSet instanceof Set)) {
+    nation._borderSet = new Set();
+  }
+  const key = `${x},${y}`;
+
+  // Check if the new cell is a border cell (has non-owned neighbor)
+  let isBorder = false;
+  for (const [dx, dy] of NEIGHBORS_4) {
+    const nKey = `${x + dx},${y + dy}`;
+    if (!territorySet.has(nKey)) {
+      isBorder = true;
+    } else {
+      // This neighbor was potentially a border cell, recheck it
+      let neighborStillBorder = false;
+      for (const [ddx, ddy] of NEIGHBORS_4) {
+        if (!territorySet.has(`${x + dx + ddx},${y + dy + ddy}`)) {
+          neighborStillBorder = true;
+          break;
+        }
+      }
+      if (!neighborStillBorder) {
+        nation._borderSet.delete(nKey);
+      }
+    }
+  }
+  if (isBorder) {
+    nation._borderSet.add(key);
+  }
+}
+
+// Update border set when a cell is removed
+function updateBorderOnRemove(nation, x, y, territorySet) {
+  // Ensure _borderSet is a proper Set (might be plain object from MongoDB)
+  if (!(nation._borderSet instanceof Set)) {
+    nation._borderSet = new Set();
+    return; // If it wasn't a Set, just return - it will be rebuilt when needed
+  }
+  const key = `${x},${y}`;
+  nation._borderSet.delete(key);
+
+  // Neighbors of removed cell become border cells if they're still in territory
+  for (const [dx, dy] of NEIGHBORS_4) {
+    const nKey = `${x + dx},${y + dy}`;
+    if (territorySet.has(nKey)) {
+      nation._borderSet.add(nKey);
+    }
+  }
+}
+
+// Get cached border set for efficient border operations
+function getBorderSetCached(nation) {
+  if (!(nation._borderSet instanceof Set)) {
+    nation._borderSet = new Set();
+    const territorySet = getTerritorySetCached(nation);
+    if (nation.territory?.x && nation.territory?.y) {
+      for (let i = 0; i < nation.territory.x.length; i++) {
+        const x = nation.territory.x[i];
+        const y = nation.territory.y[i];
+        // Cell is border if any neighbor is not in territory
+        for (const [dx, dy] of NEIGHBORS_4) {
+          if (!territorySet.has(`${x + dx},${y + dy}`)) {
+            nation._borderSet.add(`${x},${y}`);
+            break;
+          }
+        }
+      }
+    }
+  }
+  return nation._borderSet;
 }
 
 function addTerritoryCell(nation, x, y) {
@@ -1429,7 +1531,7 @@ function addTerritoryCell(nation, x, y) {
   }
   const key = `${x},${y}`;
   const territorySet = getTerritorySetCached(nation);
-  // O(1) check instead of O(n) loop
+  // O(1) check
   if (territorySet.has(key)) {
     return;
   }
@@ -1438,6 +1540,7 @@ function addTerritoryCell(nation, x, y) {
   territorySet.add(key);
   nation.territoryDelta?.add.x.push(x);
   nation.territoryDelta?.add.y.push(y);
+  updateBorderOnAdd(nation, x, y, territorySet);
 }
 
 function removeTerritoryCell(nation, x, y) {
@@ -1447,11 +1550,11 @@ function removeTerritoryCell(nation, x, y) {
   }
   const key = `${x},${y}`;
   const territorySet = getTerritorySetCached(nation);
-  // O(1) check instead of O(n) loop
+  // O(1) check
   if (!territorySet.has(key)) {
     return;
   }
-  // Still need O(n) to find index for splice, but we know it exists
+  // O(n) to find index for splice
   for (let i = 0; i < nation.territory.x.length; i++) {
     if (nation.territory.x[i] === x && nation.territory.y[i] === y) {
       nation.territory.x.splice(i, 1);
@@ -1459,7 +1562,9 @@ function removeTerritoryCell(nation, x, y) {
       territorySet.delete(key);
       nation.territoryDelta?.sub.x.push(x);
       nation.territoryDelta?.sub.y.push(y);
+      updateBorderOnRemove(nation, x, y, territorySet);
       break;
     }
   }
 }
+
