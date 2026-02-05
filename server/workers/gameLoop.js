@@ -200,6 +200,12 @@ function updateEncircledTerritory(gameState, mapData, ownershipMap) {
   const height = mapData.length || 0;
   if (!width || !height) return;
 
+  // Reset encirclement flags each pass; we'll re-mark currently encircled nations.
+  for (const nation of gameState.nations || []) {
+    nation.isEncircled = false;
+    nation.encircledBy = null;
+  }
+
   const visited = new Set();
   const encircledUnowned = new Map(); // key -> encircler owner (for unowned cells)
   const encircledOwned = new Map(); // key -> { owner, encircler } (for enemy cells)
@@ -344,14 +350,6 @@ function updateEncircledTerritory(gameState, mapData, ownershipMap) {
     console.log(`[ENCIRCLE] Captured ${encircledOwned.size} enemy cells without capital`);
   }
 
-  // Clear encircled flag for nations that are no longer encircled
-  for (const nation of gameState.nations || []) {
-    // Only clear if we didn't just set it above
-    if (!nation.isEncircled) {
-      nation.encircledBy = null;
-    }
-  }
-
   gameState.encirclementClaims = {};
 }
 
@@ -481,6 +479,7 @@ class GameLoop {
     this.savingRooms = new Set(); // Rooms with a save in progress (prevent parallel saves)
     this.pendingRooms = new Set(); // Rooms being initialized (race condition prevention)
     this.processingRooms = new Set(); // Rooms currently being processed (prevents duplicate processing)
+    this.roomMutationLocks = new Set(); // Rooms with active API mutations (prevents tick/mutation races)
     this.loopIds = new Map(); // roomId -> current loopId (kills duplicate loops)
     this.roomTickCount = new Map(); // roomId -> current tick count (in-memory, not from stale DB)
     const tickRate =
@@ -490,9 +489,14 @@ class GameLoop {
       Number(process.env.BROADCAST_INTERVAL_MS) ||
       Number(config?.territorial?.broadcastIntervalMs);
     this.targetTickRate = Number.isFinite(tickRate) ? tickRate : 100;
-    this.broadcastIntervalMs = Number.isFinite(broadcastRate)
+    const configuredBroadcastRate = Number.isFinite(broadcastRate)
       ? broadcastRate
-      : 250;
+      : this.targetTickRate;
+    // Delta payloads are tick-based; broadcasting slower than ticks drops deltas on clients.
+    this.broadcastIntervalMs = Math.max(
+      10,
+      Math.min(configuredBroadcastRate, this.targetTickRate)
+    );
     this.lastBroadcast = new Map(); // roomId -> timestamp
     this.dbSaveIntervalTicks = config?.territorial?.dbSaveIntervalTicks ?? 5; // OPTIMIZATION 2
   }
@@ -622,6 +626,64 @@ class GameLoop {
       mapData = await this.initializeMapData(roomKey);
     }
     return mapData;
+  }
+
+  getCachedGameRoom(roomId) {
+    const roomKey = roomId?.toString();
+    return this.cachedGameRoom.get(roomKey) || null;
+  }
+
+  async getLiveGameRoom(roomId) {
+    const roomKey = roomId?.toString();
+    let gameRoom = this.cachedGameRoom.get(roomKey);
+    if (gameRoom && gameRoom.status !== "open") {
+      const GameRoom = mongoose.model("GameRoom");
+      const fresh = await GameRoom.findById(roomKey);
+      if (fresh) {
+        this.cachedGameRoom.set(roomKey, fresh);
+        return fresh;
+      }
+      return gameRoom;
+    }
+    if (gameRoom) return gameRoom;
+
+    const GameRoom = mongoose.model("GameRoom");
+    gameRoom = await GameRoom.findById(roomKey);
+    if (gameRoom) {
+      this.cachedGameRoom.set(roomKey, gameRoom);
+    }
+    return gameRoom || null;
+  }
+
+  isRoomRunning(roomId) {
+    const roomKey = roomId?.toString();
+    return this.timers.has(roomKey);
+  }
+
+  async withRoomMutationLock(roomId, mutateFn, timeoutMs = 2000) {
+    const roomKey = roomId?.toString();
+    const start = Date.now();
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    while (this.roomMutationLocks.has(roomKey)) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`Timed out waiting for mutation lock on room ${roomKey}`);
+      }
+      await sleep(2);
+    }
+
+    this.roomMutationLocks.add(roomKey);
+    try {
+      while (this.processingRooms.has(roomKey)) {
+        if (Date.now() - start > timeoutMs) {
+          throw new Error(`Timed out waiting for room ${roomKey} tick processing`);
+        }
+        await sleep(2);
+      }
+      return await mutateFn();
+    } finally {
+      this.roomMutationLocks.delete(roomKey);
+    }
   }
 
   // Build ownership map from nations AND clean up any duplicate ownership
@@ -893,6 +955,10 @@ class GameLoop {
 
   async processRoom(roomId) {
     const roomKey = roomId?.toString();
+
+    if (this.roomMutationLocks.has(roomKey)) {
+      return 0;
+    }
 
     // Prevent concurrent processing of the same room
     if (this.processingRooms.has(roomKey)) {
@@ -1216,6 +1282,7 @@ class GameLoop {
     this.pendingRooms.delete(roomKey);
     this.processingRooms.delete(roomKey);
     this.savingRooms.delete(roomKey);
+    this.roomMutationLocks.delete(roomKey);
     this.loopIds.delete(roomKey); // This will cause any running tick to stop
     this.roomTickCount.delete(roomKey); // Clean up in-memory tick count
     const timer = this.timers.get(roomKey);

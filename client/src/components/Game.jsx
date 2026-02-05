@@ -34,9 +34,16 @@ const Game = () => {
   const isFetchingChunk = useRef(false);
   const wsRef = useRef(null);
   const applyDeltaGameStateRef = useRef(null);
+  const requestFullStateRef = useRef(null);
   const wsReconnectTimerRef = useRef(null);
   const wsReconnectAttemptsRef = useRef(0);
   const lastNationOwnersRef = useRef("");
+  const lastAppliedTickRef = useRef(-1);
+  const pollRequestIdRef = useRef(0);
+  const fullRequestIdRef = useRef(0);
+  const pollInFlightRef = useRef(false);
+  const fullInFlightRef = useRef(false);
+  const pendingGapSyncRef = useRef(false);
 
   // ----------------------------
   // Login and credentials state
@@ -176,7 +183,25 @@ const Game = () => {
     }
   };
 
-  const applyDeltaGameState = (data) => {
+  const applyDeltaGameState = (data, options = {}) => {
+    const { isFullState = false } = options;
+    if (!data?.gameState) return false;
+
+    const incomingTick = Number(data.tickCount);
+    const lastAppliedTick = Number(lastAppliedTickRef.current);
+    if (Number.isFinite(incomingTick) && Number.isFinite(lastAppliedTick)) {
+      if (!isFullState && incomingTick < lastAppliedTick) {
+        return false;
+      }
+      if (!isFullState && lastAppliedTick >= 0 && incomingTick > lastAppliedTick + 1) {
+        if (!pendingGapSyncRef.current && requestFullStateRef.current) {
+          pendingGapSyncRef.current = true;
+          requestFullStateRef.current("tick-gap");
+        }
+        return false;
+      }
+    }
+
     // Unpack packed deltas if server is using that format
     if (data.usePackedDeltas && data.gameState?.nations) {
       data.gameState.nations = data.gameState.nations.map((nation) => {
@@ -252,6 +277,12 @@ const Game = () => {
         gameState: data.gameState,
       };
     });
+    if (Number.isFinite(incomingTick)) {
+      lastAppliedTickRef.current = incomingTick;
+    }
+    if (isFullState) {
+      pendingGapSyncRef.current = false;
+    }
 
     const winningNation = data.gameState.nations?.find(
       (n) => n.status === "winner"
@@ -328,7 +359,18 @@ const Game = () => {
         setHasFounded(false);
       }
     }
+    return true;
   };
+
+  useEffect(() => {
+    lastAppliedTickRef.current = -1;
+    pollRequestIdRef.current = 0;
+    fullRequestIdRef.current = 0;
+    pollInFlightRef.current = false;
+    fullInFlightRef.current = false;
+    pendingGapSyncRef.current = false;
+    lastNationOwnersRef.current = "";
+  }, [id]);
 
   useEffect(() => {
     applyDeltaGameStateRef.current = applyDeltaGameState;
@@ -474,6 +516,9 @@ const Game = () => {
       ) {
         return;
       }
+      if (pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
+      const requestId = ++pollRequestIdRef.current;
       try {
         const response = await fetch(
           `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
@@ -490,10 +535,15 @@ const Game = () => {
         }
 
         const data = await response.json();
+        if (requestId !== pollRequestIdRef.current) {
+          return;
+        }
 
         applyDeltaGameState(data);
       } catch (err) {
         console.error("Error fetching game state:", err);
+      } finally {
+        pollInFlightRef.current = false;
       }
     };
 
@@ -508,8 +558,15 @@ const Game = () => {
     if (!userId || !storedPassword) return;
 
     const fetchFullState = async () => {
+      if (fullInFlightRef.current) return;
+      fullInFlightRef.current = true;
+      const requestId = ++fullRequestIdRef.current;
+
       // If an action modal is active (win/defeat popup), skip full state update.
-      if (actionModal) return;
+      if (actionModal) {
+        fullInFlightRef.current = false;
+        return;
+      }
 
       try {
         const response = await fetch(
@@ -529,79 +586,33 @@ const Game = () => {
           return;
         }
         const data = await response.json();
-
-        // Overwrite local state with the full state from the backend.
-        if (data.gameState.nations) {
-          const byOwner = new Map();
-          data.gameState.nations.forEach((nation) => {
-            const existing = byOwner.get(nation.owner);
-            if (!existing) {
-              byOwner.set(nation.owner, nation);
-              return;
-            }
-            if (existing.status === "defeated" && nation.status !== "defeated") {
-              byOwner.set(nation.owner, nation);
-              return;
-            }
-            if (nation.status !== "defeated" && existing.status !== "defeated") {
-              byOwner.set(nation.owner, nation);
-            }
-          });
-          data.gameState.nations = Array.from(byOwner.values()).map((nation) => {
-            // Remove any delta properties if present.
-            if (nation.territoryDeltaForClient) {
-              delete nation.territoryDeltaForClient;
-            }
-            if (nation.status === "defeated") {
-              nation.territory = { x: [], y: [] };
-            }
-            return nation;
-          });
+        if (requestId !== fullRequestIdRef.current) {
+          return;
         }
-
-        logNationOwners(data.gameState);
-        setGameState({
-          tickCount: data.tickCount,
-          roomName: data.roomName,
-          roomCreator: data.roomCreator,
-          gameState: data.gameState,
-        });
-
-        // Also update userState if needed.
-        if (data.gameState.nations) {
-          const playerNation = data.gameState.nations.find(
-            (n) => n.owner === userId && n.status !== "defeated"
-          );
-          if (playerNation) {
-            setUserState(playerNation);
-            setIsDefeated(false);
-            setHasFounded(true);
-          } else {
-            if (!isDefeated && hasFounded) {
-              const defeatedNation = data.gameState.nations.find(
-                (n) => n.owner === userId && n.status === "defeated"
-              );
-              if (defeatedNation) {
-                setIsDefeated(true);
-                setHasFounded(false);
-              }
-              setUserState(null);
-              setFoundingNation(true);
-              setHasFounded(false);
-            }
-          }
-        }
+        applyDeltaGameState(data, { isFullState: true });
       } catch (err) {
         console.error("Error fetching full game state:", err);
+      } finally {
+        if (requestId === fullRequestIdRef.current) {
+          pendingGapSyncRef.current = false;
+        }
+        fullInFlightRef.current = false;
       }
     };
+
+    requestFullStateRef.current = fetchFullState;
 
     // Immediately fetch full state on mounting
     fetchFullState();
     // Then set interval for rectification every 5 seconds
     const fullIntervalMs = wsConnected ? 15000 : 1000;
     const interval = setInterval(fetchFullState, fullIntervalMs);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (requestFullStateRef.current === fetchFullState) {
+        requestFullStateRef.current = null;
+      }
+    };
   }, [id, userId, storedPassword, navigate, actionModal, wsConnected]);
 
   // ----------------------------
@@ -653,27 +664,7 @@ const Game = () => {
           );
           if (fullResp.ok) {
             const fullData = await fullResp.json();
-            if (fullData.gameState.nations) {
-              fullData.gameState.nations = fullData.gameState.nations.map(
-                (nation) => {
-                  if (nation.territoryDeltaForClient) {
-                    delete nation.territoryDeltaForClient;
-                  }
-                  return nation;
-                }
-              );
-            }
-            setGameState({
-              tickCount: fullData.tickCount,
-              roomName: fullData.roomName,
-              roomCreator: fullData.roomCreator,
-              gameState: fullData.gameState,
-            });
-            if (fullData.gameState.nations) {
-              setUserState(
-                fullData.gameState.nations.find((n) => n.owner === loginName)
-              );
-            }
+            applyDeltaGameState(fullData, { isFullState: true });
           }
         } catch (err) {
           console.error("Error fetching full state on join:", err);

@@ -517,6 +517,7 @@ function maybeEnqueueBotArrow(
     ],
     currentIndex: 1, // Start at 1 to target the destination, not the anchor
     remainingPower: actualPower,
+    initialPower: actualPower,
     percent: clampedPercent,
     createdAt: new Date(),
   };
@@ -678,6 +679,28 @@ function processArrowOrders(
   const mountainCrossingCostMult = config?.territorial?.mountainCrossingCostMult ?? 1.5;
   const distancePenaltyPerTile = config?.territorial?.distancePenaltyPerTile ?? 0.02;
   const maxDistancePenaltyTiles = config?.territorial?.maxDistancePenaltyTiles ?? 40;
+  const minArrowDurationMs = config?.territorial?.minArrowDurationMs ?? 10000;
+  const maxArrowDurationMs = config?.territorial?.maxArrowDurationMs ?? 120000;
+  const arrowDurationPerPowerMs = config?.territorial?.arrowDurationPerPowerMs ?? 25;
+  const arrowPressurePerSqrtPower = config?.territorial?.arrowPressurePerSqrtPower ?? 0.2;
+  const maxArrowPressurePerTick =
+    config?.territorial?.maxArrowPressurePerTick ??
+    Math.max(pressurePerTick, 40);
+  const arrowMaxStallTicks = config?.territorial?.arrowMaxStallTicks ?? 6;
+  const maxArrowCandidates = config?.territorial?.maxArrowCandidatesPerNation ?? 500;
+  const minOwnedNeighborsForStableExpansion =
+    config?.territorial?.minOwnedNeighborsForStableExpansion ?? 1;
+
+  const getArrowMaxDurationMs = (arrow) => {
+    const initialPower = Number(
+      arrow?.initialPower ?? arrow?.remainingPower ?? 0
+    );
+    const scaledDuration = minArrowDurationMs + initialPower * arrowDurationPerPowerMs;
+    return Math.max(
+      minArrowDurationMs,
+      Math.min(maxArrowDurationMs, scaledDuration)
+    );
+  };
 
   const anchor = getNationAnchor(nation);
   const width = mapData[0]?.length || 0;
@@ -689,8 +712,8 @@ function processArrowOrders(
     const arrow = nation.arrowOrders.attack;
     let remaining = arrow.remainingPower || 0;
 
-    // Check max duration (10 seconds)
-    const maxDurationMs = 10000;
+    // Expiry scales with committed power so large arrows do not die instantly.
+    const maxDurationMs = getArrowMaxDurationMs(arrow);
     const arrowAge = arrow.createdAt ? Date.now() - new Date(arrow.createdAt).getTime() : 0;
     if (arrowAge > maxDurationMs) {
       console.log(`[ARROW] Attack arrow expired for ${nation.name || nation.owner} (age: ${arrowAge}ms)`);
@@ -709,7 +732,14 @@ function processArrowOrders(
         nation.arrowOrders.attack = null;
         delete nation.arrowOrders.attack;
       } else if (remaining > 0) {
-        const budget = Math.min(remaining, pressurePerTick);
+        const initialPower = Number(arrow.initialPower ?? remaining ?? 0);
+        const dynamicBudget =
+          pressurePerTick +
+          Math.sqrt(Math.max(0, initialPower)) * arrowPressurePerSqrtPower;
+        const budget = Math.min(
+          remaining,
+          Math.max(1, Math.min(maxArrowPressurePerTick, dynamicBudget))
+        );
       let spent = 0;
       let attempts = 0;
 
@@ -723,7 +753,12 @@ function processArrowOrders(
       const frontierChecked = new Set();
       const tx = nation.territory?.x || [];
       const ty = nation.territory?.y || [];
+      const sourcePoint =
+        arrow.path[Math.max(0, Math.min((arrow.currentIndex || 1) - 1, arrow.path.length - 1))] ||
+        arrow.path[0];
+      const pathSegments = Math.max(1, arrow.path.length - 1);
 
+      candidateScan:
       for (let i = 0; i < tx.length; i++) {
         for (const [dx, dy] of neighbors) {
           const nx = tx[i] + dx;
@@ -753,38 +788,62 @@ function processArrowOrders(
           }
           if (ownedNeighborCount === 0 || !sourceCell) continue;
 
-          // Calculate min distance to the arrow path LINE SEGMENTS (not just points)
+          // Calculate min distance to the arrow path line segments.
           let minDistToPath = Infinity;
+          let pathProgress = 0;
           for (let pi = 0; pi < arrow.path.length - 1; pi++) {
             const p1 = arrow.path[pi];
             const p2 = arrow.path[pi + 1];
-            // Distance from point (nx,ny) to line segment p1-p2
             const segDx = p2.x - p1.x;
             const segDy = p2.y - p1.y;
             const lenSq = segDx * segDx + segDy * segDy;
             let t = lenSq > 0 ? ((nx - p1.x) * segDx + (ny - p1.y) * segDy) / lenSq : 0;
-            t = Math.max(0, Math.min(1, t)); // Clamp to segment
+            t = Math.max(0, Math.min(1, t));
             const closestX = p1.x + t * segDx;
             const closestY = p1.y + t * segDy;
             const d = Math.hypot(nx - closestX, ny - closestY);
-            if (d < minDistToPath) minDistToPath = d;
+            const segmentProgress = (pi + t) / pathSegments;
+            if (d < minDistToPath || (Math.abs(d - minDistToPath) < 0.001 && segmentProgress > pathProgress)) {
+              minDistToPath = d;
+              pathProgress = segmentProgress;
+            }
           }
-          // Handle single-point path or use first point as fallback
+          // Handle single-point path or fallback.
           if (arrow.path.length === 1 || minDistToPath === Infinity) {
             const d = Math.hypot(nx - arrow.path[0].x, ny - arrow.path[0].y);
             if (d < minDistToPath) minDistToPath = d;
           }
 
-          // Only expand within 12 tiles of path (increased for bots with long-distance arrows)
-          if (minDistToPath > 12) continue;
+          // Keep the expansion front tight around the planned arrow path.
+          if (minDistToPath > 7) continue;
 
           const distToTarget = Math.hypot(nx - targetPoint.x, ny - targetPoint.y);
+          const distFromSource = Math.hypot(nx - sourcePoint.x, ny - sourcePoint.y);
 
-          // Score: STRONGLY prefer filling holes (3+ neighbors), then path proximity, then target direction
-          // A hole (3-4 neighbors) gets +150-200 bonus, ensuring it's filled before advancing
-          const compactnessBonus = ownedNeighborCount >= 3 ? 50 * ownedNeighborCount : ownedNeighborCount * 5;
-          const score = compactnessBonus - minDistToPath * 5 - distToTarget * 0.5;
-          candidates.push({ x: nx, y: ny, score, sourceCell, cell, ownedNeighborCount });
+          // Favor coherent fronts that move along the arrow while still closing local gaps.
+          const holeBonus =
+            ownedNeighborCount >= 3 ? 18 + ownedNeighborCount * 4 : ownedNeighborCount * 2;
+          const score =
+            holeBonus +
+            pathProgress * 35 -
+            minDistToPath * 4 -
+            distToTarget * 1.2 -
+            distFromSource * 0.25 -
+            (ownedNeighborCount <= 1 ? 12 : 0);
+          candidates.push({
+            x: nx,
+            y: ny,
+            score,
+            sourceCell,
+            cell,
+            pathProgress,
+            ownedNeighborCount,
+            minDistToPath,
+            distToTarget,
+          });
+          if (candidates.length >= maxArrowCandidates) {
+            break candidateScan;
+          }
         }
       }
 
@@ -794,11 +853,29 @@ function processArrowOrders(
       for (const candidate of candidates) {
         if (spent >= budget || attempts >= attemptsPerTick) break;
 
-        const { x, y, sourceCell, cell } = candidate;
+        const { x, y, sourceCell, cell, minDistToPath, distToTarget, pathProgress } = candidate;
         const key = `${x},${y}`;
         const currentOwner = ownershipMap.get(key);
 
         if (currentOwner?.owner === nation.owner) {
+          attempts++;
+          continue;
+        }
+
+        // Suppress checkerboard growth by preferring tiles that are supported
+        // by multiple already-owned neighbors, except at the immediate spear tip.
+        let liveOwnedNeighborCount = 0;
+        for (const [dx, dy] of neighbors) {
+          if (ownershipMap.get(`${x + dx},${y + dy}`)?.owner === nation.owner) {
+            liveOwnedNeighborCount += 1;
+          }
+        }
+        const spearTip = distToTarget <= 2.5 || minDistToPath <= 1.0;
+        const requiredNeighbors =
+          minDistToPath <= 1.5 || pathProgress >= 0.4
+            ? Math.max(1, minOwnedNeighborsForStableExpansion - 1)
+            : minOwnedNeighborsForStableExpansion;
+        if (!spearTip && liveOwnedNeighborCount < requiredNeighbors) {
           attempts++;
           continue;
         }
@@ -871,10 +948,18 @@ function processArrowOrders(
 
       remaining -= spent;
       arrow.remainingPower = remaining;
+      arrow.stalledTicks = spent > 0 ? 0 : Number(arrow.stalledTicks || 0) + 1;
 
         // Remove arrow if power is too low to capture anything (cost is usually 1-3)
-        // Or if no progress was made this tick (arrow is stuck)
-        if (remaining <= 3 || (spent === 0 && remaining < 10)) {
+        // Or if arrow has been stalled for multiple ticks.
+        if (
+          remaining <= 3 ||
+          (spent === 0 && remaining < 10) ||
+          (arrow.stalledTicks >= arrowMaxStallTicks)
+        ) {
+          if (arrow.stalledTicks >= arrowMaxStallTicks && remaining > 0) {
+            nation.population = (nation.population || 0) + remaining;
+          }
           nation.arrowOrders.attack = null;
           delete nation.arrowOrders.attack;
         }
@@ -887,8 +972,8 @@ function processArrowOrders(
     const arrow = nation.arrowOrders.defend;
     let remaining = arrow.remainingPower || 0;
 
-    // Check max duration (10 seconds)
-    const maxDurationMs = 10000;
+    // Expiry scales with committed power so large arrows do not die instantly.
+    const maxDurationMs = getArrowMaxDurationMs(arrow);
     const arrowAge = arrow.createdAt ? Date.now() - new Date(arrow.createdAt).getTime() : 0;
     if (arrowAge > maxDurationMs) {
       console.log(`[ARROW] Defend arrow expired for ${nation.name || nation.owner} (age: ${arrowAge}ms)`);
@@ -925,51 +1010,57 @@ function processArrowOrders(
     }
   }
 
-  // Simple hole-filling: only fill cells with 3+ owned neighbors (true holes)
+  // Hole-filling pass to reduce frontier artifacts/checkerboards.
   if (nation.territory?.x?.length > 0) {
     const holesToFill = [];
     const checked = new Set();
     const tx = nation.territory.x;
     const ty = nation.territory.y;
+    const dynamicFillBudget = Math.max(
+      4,
+      Math.min(18, Math.floor(tx.length * 0.008))
+    );
 
-    for (let i = 0; i < tx.length && holesToFill.length < 20; i++) {
-      for (const [dx, dy] of neighbors) {
-        const nx = tx[i] + dx;
-        const ny = ty[i] + dy;
-        const key = `${nx},${ny}`;
-        if (checked.has(key)) continue;
-        checked.add(key);
+    const collectHoles = (requiredOwnedNeighbors) => {
+      for (let i = 0; i < tx.length && holesToFill.length < dynamicFillBudget; i++) {
+        for (const [dx, dy] of neighbors) {
+          const nx = tx[i] + dx;
+          const ny = ty[i] + dy;
+          const key = `${nx},${ny}`;
+          if (checked.has(key)) continue;
+          checked.add(key);
 
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-        if (ownershipMap.get(key)?.owner === nation.owner) continue;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const currentOwner = ownershipMap.get(key);
+          if (currentOwner?.owner === nation.owner) continue;
+          if (currentOwner?.owner && currentOwner.owner !== nation.owner) continue;
 
-        const cell = mapData[ny]?.[nx];
-        if (!cell || cell.biome === "OCEAN") continue;
+          const cell = mapData[ny]?.[nx];
+          if (!cell || cell.biome === "OCEAN") continue;
 
-        // Count owned neighbors
-        let ownedCount = 0;
-        for (const [ddx, ddy] of neighbors) {
-          if (ownershipMap.get(`${nx + ddx},${ny + ddy}`)?.owner === nation.owner) {
-            ownedCount++;
+          let ownedCount = 0;
+          for (const [ddx, ddy] of neighbors) {
+            if (ownershipMap.get(`${nx + ddx},${ny + ddy}`)?.owner === nation.owner) {
+              ownedCount++;
+            }
+          }
+
+          if (ownedCount >= requiredOwnedNeighbors) {
+            holesToFill.push({ x: nx, y: ny, key, ownedCount });
           }
         }
-
-        // Only fill true holes (surrounded on 3+ sides)
-        if (ownedCount >= 3) {
-          holesToFill.push({ x: nx, y: ny, key });
-        }
       }
+    };
+
+    // First pass: strict holes, second pass: softer gaps if room remains in budget.
+    collectHoles(3);
+    if (holesToFill.length < Math.floor(dynamicFillBudget * 0.35)) {
+      collectHoles(2);
     }
 
-    for (const hole of holesToFill) {
-      const currentOwner = ownershipMap.get(hole.key);
-      if (currentOwner?.owner && currentOwner.owner !== nation.owner) {
-        // CRITICAL: Find the nation object from gameState.nations, not the ownershipMap!
-        const targetNation = gameState.nations.find(n => n.owner === currentOwner.owner);
-        if (targetNation) {
-          removeTerritoryCell(targetNation, hole.x, hole.y);
-        }
-      }
+    holesToFill.sort((a, b) => b.ownedCount - a.ownedCount);
+
+    for (const hole of holesToFill.slice(0, dynamicFillBudget)) {
       addTerritoryCell(nation, hole.x, hole.y);
       ownershipMap.set(hole.key, nation);
     }
@@ -1567,4 +1658,3 @@ function removeTerritoryCell(nation, x, y) {
     }
   }
 }
-

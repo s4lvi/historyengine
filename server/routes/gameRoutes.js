@@ -23,6 +23,35 @@ function parseBoolean(value, fallback = false) {
   return Boolean(value);
 }
 
+async function getAuthoritativeRoom(roomId) {
+  return gameLoop.getLiveGameRoom(roomId);
+}
+
+function hasValidPlayerCredentials(gameRoom, userId, password) {
+  return !!gameRoom?.players?.find(
+    (p) => p.userId === userId && p.password === password
+  );
+}
+
+async function persistRoomMutation(
+  gameRoom,
+  roomId,
+  modifiedPaths = [],
+  options = {}
+) {
+  const { forceSave = false } = options;
+  for (const path of modifiedPaths) {
+    gameRoom.markModified(path);
+  }
+
+  // Active rooms are saved periodically by the loop to avoid version conflicts.
+  if (!forceSave && gameLoop.isRoomRunning(roomId)) {
+    return;
+  }
+
+  await gameRoom.save();
+}
+
 function manhattanDistance(x1, y1, x2, y2) {
   return Math.abs(x1 - x2) + Math.abs(y1 - y2);
 }
@@ -111,6 +140,17 @@ function distanceToBorder(nation, x, y, maxDistance = 10) {
     if (best <= maxDistance) return best;
   }
   return best;
+}
+
+function isPointNearTerritory(nation, point, maxDistance = 3) {
+  if (!point || !nation?.territory?.x || !nation?.territory?.y) return false;
+  const tx = nation.territory.x;
+  const ty = nation.territory.y;
+  for (let i = 0; i < tx.length; i++) {
+    const dist = Math.abs(tx[i] - point.x) + Math.abs(ty[i] - point.y);
+    if (dist <= maxDistance) return true;
+  }
+  return false;
 }
 
 const BOT_NAME_PARTS = {
@@ -320,18 +360,17 @@ async function spawnBotsForRoom(roomId, mapData, desiredCount) {
   if (!count) return;
   console.log(`[BOTS] spawnBotsForRoom room=${roomId} desired=${count}`);
 
-  // Use lean() to get plain object, avoiding version conflicts with game loop
-  const gameRoomData = await GameRoom.findById(roomId).lean();
-  if (!gameRoomData) {
+  const gameRoom = await getAuthoritativeRoom(roomId);
+  if (!gameRoom) {
     console.warn(`[BOTS] room not found ${roomId}`);
     return;
   }
-  if ((gameRoomData.gameState?.nations || []).length === 0) {
+  if ((gameRoom.gameState?.nations || []).length === 0) {
     console.log(`[BOTS] deferring spawn; no players have founded yet`);
     return;
   }
 
-  const nations = gameRoomData.gameState?.nations || [];
+  const nations = gameRoom.gameState?.nations || [];
   const existingBots = nations.filter((n) => n.isBot);
   const toAdd = Math.max(0, count - existingBots.length);
   if (!toAdd) {
@@ -364,29 +403,12 @@ async function spawnBotsForRoom(roomId, mapData, desiredCount) {
   }
 
   if (created.length > 0) {
-    try {
-      // Use findOneAndUpdate with $push to avoid version conflicts
-      // Also ensure gameState.nations exists before pushing
-      const updatedRoom = await GameRoom.findOneAndUpdate(
-        { _id: roomId },
-        {
-          $push: { "gameState.nations": { $each: created } },
-        },
-        { new: true }
-      );
-      if (updatedRoom) {
-        console.log(
-          `[BOTS] spawned ${created.length} bots room=${roomId} totalNations=${updatedRoom.gameState.nations.length}`
-        );
-        // Refresh game loop's in-memory cache with the new bots
-        await gameLoop.refreshRoomCache(roomId);
-        broadcastRoomUpdate(roomId.toString(), updatedRoom);
-      } else {
-        console.warn(`[BOTS] failed to update room ${roomId}`);
-      }
-    } catch (err) {
-      console.error(`[BOTS] error spawning bots for room ${roomId}:`, err.message);
-    }
+    gameRoom.gameState.nations.push(...created);
+    await persistRoomMutation(gameRoom, roomId, ["gameState.nations"]);
+    console.log(
+      `[BOTS] spawned ${created.length} bots room=${roomId} totalNations=${gameRoom.gameState.nations.length}`
+    );
+    broadcastRoomUpdate(roomId.toString(), gameRoom);
   }
 }
 
@@ -556,6 +578,8 @@ router.post("/init", async (req, res, next) => {
 
         // Update game room status to "open"
         await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
+        // Refresh in-memory cache so the loop doesn't see stale status
+        await gameLoop.refreshRoomCache(gameRoom._id);
         console.log("Game room status updated to 'open':", gameRoom._id);
 
         await spawnBotsForRoom(gameRoom._id, mapData, botCount);
@@ -583,7 +607,7 @@ router.post("/init", async (req, res, next) => {
 // ─── NEW: Status endpoint to poll game room and map readiness ───────────────
 router.get("/:id/status", async (req, res, next) => {
   try {
-    const gameRoom = await GameRoom.findById(req.params.id).lean();
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
@@ -911,6 +935,7 @@ router.delete("/:id", async (req, res, next) => {
         .status(403)
         .json({ error: "Invalid room creator credentials" });
     }
+    await gameLoop.stopRoom(req.params.id.toString());
     const MapModel = mongoose.model("Map");
     const MapChunk = mongoose.model("MapChunk");
     await MapChunk.deleteMany({ map: gameRoom.map });
@@ -997,40 +1022,36 @@ router.post("/:id/quit", async (req, res, next) => {
     }
 
     // First, verify the game room exists
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
 
     // Verify player credentials
-    const player = gameRoom.players.find(
-      (p) => p.userId === userId && p.password === password
-    );
-    if (!player) {
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
 
-    // Remove the nation and player in a single update operation
-    const result = await GameRoom.findOneAndUpdate(
-      { _id: req.params.id },
-      {
-        // Pull the nation from the nations array where owner matches userId
-        $pull: {
-          "gameState.nations": { owner: userId },
-          players: { userId },
-        },
-      },
-      { new: true } // Return the updated document
-    );
-
-    if (!result) {
-      return res.status(404).json({ error: "Failed to update game room" });
-    }
+    await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      gameRoom.players = (gameRoom.players || []).filter(
+        (player) => player.userId !== userId
+      );
+      if (Array.isArray(gameRoom.gameState?.nations)) {
+        gameRoom.gameState.nations = gameRoom.gameState.nations.filter(
+          (nation) => nation.owner !== userId
+        );
+      }
+      await persistRoomMutation(gameRoom, req.params.id, [
+        "players",
+        "gameState.nations",
+      ]);
+      broadcastRoomUpdate(req.params.id.toString(), gameRoom);
+    });
 
     res.json({
       message: "Successfully quit the match",
-      remainingPlayers: result.players.length,
+      remainingPlayers: gameRoom.players.length,
     });
   } catch (error) {
     next(error);
@@ -1047,7 +1068,7 @@ router.post("/:id/join", async (req, res, next) => {
         .status(400)
         .json({ error: "userName and password are required" });
     }
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
     if (gameRoom.status !== "open")
@@ -1071,7 +1092,7 @@ router.post("/:id/join", async (req, res, next) => {
       player = { userId: userName, password, userState: {} };
       gameRoom.players.push(player);
       touchRoom(gameRoom._id.toString());
-      await gameRoom.save();
+      await persistRoomMutation(gameRoom, req.params.id, ["players"]);
       res.json({
         message: "Joined game room successfully",
         userId: player.userId,
@@ -1095,7 +1116,7 @@ router.post("/:id/state", async (req, res, next) => {
         .json({ error: "userId and password are required" });
     }
 
-    const gameRoom = await GameRoom.findById(req.params.id).lean();
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
@@ -1106,6 +1127,7 @@ router.post("/:id/state", async (req, res, next) => {
     if (!player) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
+    touchRoom(gameRoom._id.toString());
 
     res.json(buildGameStateResponse(gameRoom, userId, !!full));
   } catch (error) {
@@ -1123,7 +1145,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
     console.log("[FOUND] Attempt:", { userId, x, y });
 
     // 1. Load current state
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
@@ -1135,6 +1157,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
     if (!player) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
+    touchRoom(gameRoom._id.toString());
 
     // Initialize gameState if needed
     if (!gameRoom.gameState) {
@@ -1280,27 +1303,39 @@ router.post("/:id/foundNation", async (req, res, next) => {
       auto_city: false,
     };
 
-    // 5. Save directly to DB
-    const updatedRoom = await GameRoom.findByIdAndUpdate(
-      req.params.id,
-      {
-        $set: { "gameState.nations": existingNations.concat(newNation) },
-      },
-      { new: true }
-    );
-    if (updatedRoom) {
-      // Refresh game loop's in-memory cache with the new nation
-      await gameLoop.refreshRoomCache(req.params.id);
+    let founded = false;
+    await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      // Re-check from latest in-memory state while lock is held.
+      const lockedRoom = await getAuthoritativeRoom(req.params.id);
+      if (!lockedRoom) {
+        throw new Error("Game room not found during locked mutation");
+      }
 
-      const mapData = await gameLoop.getMapData(req.params.id);
-      if (mapData) {
+      const lockedNations = (lockedRoom.gameState?.nations || []).filter(
+        (nation) => nation.owner !== userId || nation.status !== "defeated"
+      );
+      if (lockedNations.some((n) => n.owner === userId)) {
+        return;
+      }
+
+      lockedRoom.gameState.nations = lockedNations.concat(newNation);
+      founded = true;
+      await persistRoomMutation(lockedRoom, req.params.id, ["gameState.nations"]);
+
+      const mapDataAfterFound = await gameLoop.getMapData(req.params.id);
+      if (mapDataAfterFound) {
         await spawnBotsForRoom(
           req.params.id,
-          mapData,
-          updatedRoom.gameState?.bots?.count || 0
+          mapDataAfterFound,
+          lockedRoom.gameState?.bots?.count || 0
         );
       }
-      broadcastRoomUpdate(req.params.id.toString(), updatedRoom);
+      broadcastRoomUpdate(req.params.id.toString(), lockedRoom);
+    });
+    if (!founded) {
+      return res
+        .status(400)
+        .json({ error: "Nation already exists for this user" });
     }
 
     res
@@ -1325,9 +1360,13 @@ router.post("/:id/buildCity", async (req, res, next) => {
         .status(400)
         .json({ error: "userId, password, x, y, and cityType are required" });
     }
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    touchRoom(gameRoom._id.toString());
 
     // Find the player's nation.
     const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
@@ -1471,23 +1510,8 @@ router.post("/:id/buildCity", async (req, res, next) => {
     };
     nation.cities.push(newCity);
 
-    // Save updated game state.
-    const updatedRoom = await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $push: { "gameState.nations.$.cities": newCity },
-        $set: { "gameState.nations.$.resources": nation.resources },
-      },
-      { new: true }
-    );
-    if (updatedRoom) {
-      // Refresh game loop's in-memory cache
-      await gameLoop.refreshRoomCache(req.params.id);
-      broadcastRoomUpdate(req.params.id.toString(), updatedRoom);
-    }
+    await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+    broadcastRoomUpdate(req.params.id.toString(), gameRoom);
 
     res.status(201).json({ message: "Structure built successfully", city: newCity });
   } catch (error) {
@@ -1566,18 +1590,44 @@ router.post("/:id/arrow", async (req, res, next) => {
       });
     }
 
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    touchRoom(gameRoom._id.toString());
 
     const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
     if (!nation)
       return res.status(404).json({ error: "Nation not found for this user" });
 
+    const sanitizedPath = path.map((point) => ({
+      x: Number(point?.x),
+      y: Number(point?.y),
+    }));
+    const hasInvalidPoint = sanitizedPath.some(
+      (point) => !Number.isFinite(point.x) || !Number.isFinite(point.y)
+    );
+    if (hasInvalidPoint) {
+      return res.status(400).json({
+        error: "Arrow path contains invalid coordinates",
+      });
+    }
+
+    if (!isPointNearTerritory(nation, sanitizedPath[0], 3)) {
+      return res.status(400).json({
+        error: "Arrow must start on or near your territory",
+      });
+    }
+
     // Calculate power commitment
     const minPercent = config?.territorial?.minAttackPercent || 0.05;
     const maxPercent = config?.territorial?.maxAttackPercent || 1;
     const rawPercent = Number(percent ?? config?.territorial?.defaultAttackPercent ?? 0.25);
+    if (!Number.isFinite(rawPercent)) {
+      return res.status(400).json({ error: "Invalid attack percent" });
+    }
     const clampedPercent = Math.min(Math.max(rawPercent, minPercent), maxPercent);
 
     const available = nation.population || 0;
@@ -1598,31 +1648,21 @@ router.post("/:id/arrow", async (req, res, next) => {
     nation.arrowOrders[type] = {
       id: new mongoose.Types.ObjectId().toString(),
       type,
-      path: path.map(p => ({ x: p.x, y: p.y })),
-      currentIndex: 0, // Progress along the path
+      path: sanitizedPath,
+      currentIndex: type === "attack" ? 1 : 0, // Attack arrows start from the first target point.
       remainingPower: power,
+      initialPower: power,
       percent: clampedPercent,
       createdAt: new Date(),
     };
-
-    const updatedRoom = await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $set: {
-          "gameState.nations.$.population": nation.population,
-          "gameState.nations.$.arrowOrders": nation.arrowOrders,
-        },
-      },
-      { new: true }
-    );
-    if (updatedRoom) {
-      // Refresh game loop's in-memory cache with the new arrow
-      await gameLoop.refreshRoomCache(req.params.id);
-      broadcastRoomUpdate(req.params.id.toString(), updatedRoom);
+    if (process.env.DEBUG_ARROWS === "true") {
+      console.log(
+        `[ARROW] ${userId} ${type} commit: available=${available.toFixed(2)} percent=${clampedPercent.toFixed(2)} power=${power.toFixed(2)}`
+      );
     }
+
+    await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+    broadcastRoomUpdate(req.params.id.toString(), gameRoom);
 
     res.json({
       message: `${type} arrow order sent`,
@@ -1652,9 +1692,13 @@ router.post("/:id/clearArrow", async (req, res, next) => {
       });
     }
 
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    touchRoom(gameRoom._id.toString());
 
     const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
     if (!nation)
@@ -1668,24 +1712,8 @@ router.post("/:id/clearArrow", async (req, res, next) => {
       delete nation.arrowOrders[type];
     }
 
-    const updatedRoom = await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $set: {
-          "gameState.nations.$.population": nation.population,
-          "gameState.nations.$.arrowOrders": nation.arrowOrders || {},
-        },
-      },
-      { new: true }
-    );
-    if (updatedRoom) {
-      // Refresh game loop's in-memory cache
-      await gameLoop.refreshRoomCache(req.params.id);
-      broadcastRoomUpdate(req.params.id.toString(), updatedRoom);
-    }
+    await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+    broadcastRoomUpdate(req.params.id.toString(), gameRoom);
 
     res.json({ message: `${type} arrow cleared` });
   } catch (error) {
