@@ -137,6 +137,19 @@
       "stone": { "defensePower": 0.02 },
       "gold": { "goldIncome": 1 }
     },
+    "maxAttackArrows": 3,
+    "maxDefendArrows": 1,
+    "frontBaseWidth": 3,
+    "frontWidthPerSqrtPower": 0.3,
+    "frontMaxWidth": 12,
+    "phaseConsolidationTicks": 3,
+    "arrowBaseRange": 15,
+    "arrowRangePerSqrtPop": 0.15,
+    "arrowMaxRange": 60,
+    "oppositionScanRadius": 3,
+    "reinforceMinPercent": 0.05,
+    "reinforceMaxPercent": 0.5,
+    "retreatReturnRate": 0.1,
     "terrainSimilarity": {
       "defaults": { "same": 1, "group": 0.8, "near": 0.6, "far": 0.3 },
       "groups": {
@@ -181,5 +194,35 @@
     "MOUNTAIN": 6,
     "RIVER": 10,
     "OCEAN": 0
+  },
+  "matrix": {
+    "maxNations": 64,
+    "noiseFrequency": 0.08,
+    "noiseOctaves": 5,
+    "noiseWeight": 0.95,
+    "elevationResistanceWeight": 0.15,
+    "biomeResistanceEnabled": true
+  },
+  "loyalty": {
+    "enabled": true,
+    "ownershipThreshold": 0.6,
+    "diffusionRate": 0.04,
+    "decayRate": 0.01,
+    "reinforcementRate": 0.02,
+    "cityBonus": 0.03,
+    "capitalBonus": 0.06,
+    "cityRadius": 10,
+    "capitalRadius": 15,
+    "arrowPressureLoyaltyGain": 0.2,
+    "concavityFillMinNeighbors": 5,
+    "concavityFillMaxPasses": 3
+  },
+  "populationDensity": {
+    "enabled": true,
+    "diffusionRate": 0.05,
+    "decayRate": 0.02,
+    "citySource": 0.5,
+    "capitalSource": 1.0,
+    "densityDefenseScale": 0.5
   }
 }

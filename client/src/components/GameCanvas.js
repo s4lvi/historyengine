@@ -6,7 +6,13 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
-import { Stage, Container, Graphics, Text, Sprite } from "@pixi/react";
+import {
+  Stage,
+  Graphics,
+  Text,
+  Sprite,
+  Container,
+} from "@pixi/react";
 import { string2hex } from "@pixi/utils";
 import BorderedSprite from "./BorderedSprite";
 import { settings } from "@pixi/settings";
@@ -153,14 +159,27 @@ const simplifyArrowPath = (path, n = 3) => {
   return result;
 };
 
-// Render an arrow path with arrowhead and troop count
+// Status color map for arrow rendering
+const ARROW_STATUS_COLORS = {
+  advancing: 0x44cc44,
+  consolidating: 0xcccc44,
+  stalled: 0xcc8844,
+  retreating: 0xcc4444,
+};
+const ARROW_STATUS_HEX = {
+  advancing: "#44cc44",
+  consolidating: "#cccc44",
+  stalled: "#cc8844",
+  retreating: "#cc4444",
+};
+
+// Simple thin-line arrow for drawing-in-progress and defend arrows
 const renderArrowPath = (path, cellSize, type, isActive, key, troopCount = null) => {
   if (!path || path.length < 2) return null;
 
   const color = type === "attack" ? 0xff4444 : 0x4444ff;
   const alpha = isActive ? 0.8 : 0.6;
 
-  // Calculate midpoint for troop display
   const midIndex = Math.floor(path.length / 2);
   const midPoint = path[midIndex];
   const midX = midPoint.x * cellSize + cellSize / 2;
@@ -173,44 +192,24 @@ const renderArrowPath = (path, cellSize, type, isActive, key, troopCount = null)
         draw={(g) => {
           g.clear();
           g.lineStyle(4, color, alpha);
-
-          // Draw the path
           const startX = path[0].x * cellSize + cellSize / 2;
           const startY = path[0].y * cellSize + cellSize / 2;
           g.moveTo(startX, startY);
-
           for (let i = 1; i < path.length; i++) {
-            const px = path[i].x * cellSize + cellSize / 2;
-            const py = path[i].y * cellSize + cellSize / 2;
-            g.lineTo(px, py);
+            g.lineTo(path[i].x * cellSize + cellSize / 2, path[i].y * cellSize + cellSize / 2);
           }
-
-          // Draw arrowhead at the end
           if (path.length >= 2) {
             const last = path[path.length - 1];
             const prev = path[path.length - 2];
             const endX = last.x * cellSize + cellSize / 2;
             const endY = last.y * cellSize + cellSize / 2;
-            const prevX = prev.x * cellSize + cellSize / 2;
-            const prevY = prev.y * cellSize + cellSize / 2;
-
-            const angle = Math.atan2(endY - prevY, endX - prevX);
+            const angle = Math.atan2(endY - (prev.y * cellSize + cellSize / 2), endX - (prev.x * cellSize + cellSize / 2));
             const arrowSize = cellSize * 0.8;
-
             g.beginFill(color, alpha);
             g.moveTo(endX, endY);
-            g.lineTo(
-              endX - arrowSize * Math.cos(angle - Math.PI / 6),
-              endY - arrowSize * Math.sin(angle - Math.PI / 6)
-            );
-            g.lineTo(
-              endX - arrowSize * 0.5 * Math.cos(angle),
-              endY - arrowSize * 0.5 * Math.sin(angle)
-            );
-            g.lineTo(
-              endX - arrowSize * Math.cos(angle + Math.PI / 6),
-              endY - arrowSize * Math.sin(angle + Math.PI / 6)
-            );
+            g.lineTo(endX - arrowSize * Math.cos(angle - Math.PI / 6), endY - arrowSize * Math.sin(angle - Math.PI / 6));
+            g.lineTo(endX - arrowSize * 0.5 * Math.cos(angle), endY - arrowSize * 0.5 * Math.sin(angle));
+            g.lineTo(endX - arrowSize * Math.cos(angle + Math.PI / 6), endY - arrowSize * Math.sin(angle + Math.PI / 6));
             g.lineTo(endX, endY);
             g.endFill();
           }
@@ -218,87 +217,179 @@ const renderArrowPath = (path, cellSize, type, isActive, key, troopCount = null)
       />
       {troopCount !== null && (
         <>
-          {/* Background circle for troop count */}
-          <Graphics
-            zIndex={201}
-            draw={(g) => {
-              g.clear();
-              g.beginFill(0x000000, 0.7);
-              g.drawCircle(midX, midY - cellSize * 0.8, cellSize * 0.6);
-              g.endFill();
-              g.lineStyle(2, color, 1);
-              g.drawCircle(midX, midY - cellSize * 0.8, cellSize * 0.6);
-            }}
-          />
-          <Text
-            text={Math.round(troopCount).toString()}
-            x={midX}
-            y={midY - cellSize * 0.8}
-            anchor={0.5}
-            zIndex={202}
-            style={{
-              fontFamily: "system-ui",
-              fill: "#ffffff",
-              fontSize: Math.max(10, cellSize * 0.5),
-              fontWeight: "bold",
-            }}
-          />
+          <Graphics zIndex={201} draw={(g) => {
+            g.clear();
+            g.beginFill(0x000000, 0.7);
+            g.drawCircle(midX, midY - cellSize * 0.8, cellSize * 0.6);
+            g.endFill();
+            g.lineStyle(2, color, 1);
+            g.drawCircle(midX, midY - cellSize * 0.8, cellSize * 0.6);
+          }} />
+          <Text text={Math.round(troopCount).toString()} x={midX} y={midY - cellSize * 0.8} anchor={0.5} zIndex={202}
+            style={{ fontFamily: "system-ui", fill: "#ffffff", fontSize: Math.max(10, cellSize * 0.5), fontWeight: "bold" }} />
         </>
       )}
     </React.Fragment>
   );
 };
 
-// Render completed arrow with fade out animation
-const renderCompletedArrow = (arrow, cellSize, elapsedMs) => {
-  if (!arrow.path || arrow.path.length < 2) return null;
+// Broad wedge arrow for active attack arrows (documentary war style)
+const renderArrowV2 = (arrow, cellSize, key, scale) => {
+  if (!arrow?.path || arrow.path.length < 2) return null;
 
-  const progress = Math.min(1, elapsedMs / 2000); // 2 second animation
-  const alpha = 1 - progress;
-  const floatOffset = progress * cellSize * 2; // Float upward
-
-  const color = arrow.success ? 0x44ff44 : 0xff4444;
-  const displayTroops = arrow.success ? arrow.troops : 0;
-
-  // Calculate midpoint for display
-  const midIndex = Math.floor(arrow.path.length / 2);
-  const midPoint = arrow.path[midIndex];
-  const midX = midPoint.x * cellSize + cellSize / 2;
-  const midY = midPoint.y * cellSize + cellSize / 2 - floatOffset;
+  const path = arrow.path;
+  const status = arrow.status || "advancing";
+  const color = ARROW_STATUS_COLORS[status] || 0x44cc44;
+  const hexColor = ARROW_STATUS_HEX[status] || "#44cc44";
+  const frontWidth = Math.max(2, arrow.frontWidth || 3);
+  const halfW = (frontWidth / 2) * cellSize;
+  const troopCount = arrow.remainingPower || 0;
+  const headX = (arrow.headX ?? path[path.length - 1].x) * cellSize + cellSize / 2;
+  const headY = (arrow.headY ?? path[path.length - 1].y) * cellSize + cellSize / 2;
+  const opposingForces = arrow.opposingForces || [];
 
   return (
-    <React.Fragment key={arrow.id}>
-      {/* Fading troop count */}
+    <React.Fragment key={key}>
       <Graphics
-        zIndex={300}
+        zIndex={200}
         draw={(g) => {
           g.clear();
-          g.beginFill(0x000000, 0.7 * alpha);
-          g.drawCircle(midX, midY, cellSize * 0.8);
+
+          const startX = path[0].x * cellSize + cellSize / 2;
+          const startY = path[0].y * cellSize + cellSize / 2;
+
+          // Build left and right outlines by offsetting path perpendicular
+          const leftPts = [];
+          const rightPts = [];
+          let lastDx = 0, lastDy = 0;
+          for (let i = 0; i < path.length; i++) {
+            const px = path[i].x * cellSize + cellSize / 2;
+            const py = path[i].y * cellSize + cellSize / 2;
+            const t = path.length > 1 ? i / (path.length - 1) : 0;
+            // Spearhead: wide at origin, narrowing to a point at the front
+            const w = halfW * Math.max(0.08, 1.0 - 0.88 * t);
+
+            let dx, dy;
+            if (i < path.length - 1) {
+              dx = path[i + 1].x - path[i].x;
+              dy = path[i + 1].y - path[i].y;
+            } else {
+              dx = path[i].x - path[i - 1].x;
+              dy = path[i].y - path[i - 1].y;
+            }
+            lastDx = dx; lastDy = dy;
+            const len = Math.hypot(dx, dy) || 1;
+            const perpX = -dy / len;
+            const perpY = dx / len;
+
+            leftPts.push({ x: px + perpX * w, y: py + perpY * w });
+            rightPts.push({ x: px - perpX * w, y: py - perpY * w });
+          }
+
+          // Draw filled wedge polygon
+          g.beginFill(color, 0.25);
+          g.lineStyle(2, color, 0.6);
+          g.moveTo(leftPts[0].x, leftPts[0].y);
+          for (let i = 1; i < leftPts.length; i++) g.lineTo(leftPts[i].x, leftPts[i].y);
+          for (let i = rightPts.length - 1; i >= 0; i--) g.lineTo(rightPts[i].x, rightPts[i].y);
+          g.lineTo(leftPts[0].x, leftPts[0].y);
           g.endFill();
-          g.lineStyle(3, color, alpha);
-          g.drawCircle(midX, midY, cellSize * 0.8);
+
+          // Arrowhead at the tip — wings as wide as the arrow base
+          const tipX = path[path.length - 1].x * cellSize + cellSize / 2;
+          const tipY = path[path.length - 1].y * cellSize + cellSize / 2;
+          const tipLen = Math.hypot(lastDx, lastDy) || 1;
+          const fwdX = lastDx / tipLen;
+          const fwdY = lastDy / tipLen;
+          const perpTipX = -fwdY;
+          const perpTipY = fwdX;
+          const arrowLen = Math.max(cellSize * 1.5, halfW * 0.6);
+          const arrowWing = halfW; // match the full base width of the wedge
+          g.beginFill(color, 0.7);
+          g.lineStyle(0);
+          g.moveTo(tipX + fwdX * arrowLen, tipY + fwdY * arrowLen);
+          g.lineTo(tipX + perpTipX * arrowWing, tipY + perpTipY * arrowWing);
+          g.lineTo(tipX - perpTipX * arrowWing, tipY - perpTipY * arrowWing);
+          g.lineTo(tipX + fwdX * arrowLen, tipY + fwdY * arrowLen);
+          g.endFill();
+
+          // Center line
+          g.lineStyle(2, color, 0.5);
+          g.moveTo(startX, startY);
+          for (let i = 1; i < path.length; i++) {
+            g.lineTo(path[i].x * cellSize + cellSize / 2, path[i].y * cellSize + cellSize / 2);
+          }
+
+          // Phase markers
+          for (let i = 1; i < path.length; i++) {
+            const wx = path[i].x * cellSize + cellSize / 2;
+            const wy = path[i].y * cellSize + cellSize / 2;
+            const reached = i < (arrow.currentIndex || 1);
+            g.lineStyle(1, reached ? 0xffffff : 0x888888, 0.6);
+            g.beginFill(reached ? 0xffffff : 0x444444, 0.4);
+            g.drawCircle(wx, wy, cellSize * 0.2);
+            g.endFill();
+          }
         }}
       />
-      <Text
-        text={displayTroops.toString()}
-        x={midX}
-        y={midY}
-        anchor={0.5}
-        zIndex={301}
-        alpha={alpha}
-        style={{
-          fontFamily: "system-ui",
-          fill: arrow.success ? "#44ff44" : "#ff4444",
-          fontSize: Math.max(14, cellSize * 0.7),
-          fontWeight: "bold",
-          stroke: "#000000",
-          strokeThickness: 2,
-        }}
-      />
+      {/* Troop count label at head — fixed screen size via inverse scale */}
+      {(() => {
+        // Render at large internal font size, scale by 1/zoomScale so it stays
+        // at a fixed screen size regardless of zoom (same approach as NationLabel).
+        const baseFontSize = 14;
+        const invScale = 1 / Math.max(0.35, scale || 1);
+        // Fade when zoomed in so it doesn't block the view
+        const labelAlpha = scale > 2 ? Math.max(0.3, 1.0 - (scale - 2) * 0.15) : 0.85;
+        return (
+          <Text
+            text={Math.round(troopCount).toLocaleString()}
+            x={headX}
+            y={headY - cellSize * 0.8}
+            anchor={0.5}
+            zIndex={211}
+            alpha={labelAlpha}
+            scale={{ x: invScale, y: invScale }}
+            style={{
+              fontFamily: "system-ui, -apple-system, sans-serif",
+              fill: hexColor,
+              fontSize: baseFontSize,
+              fontWeight: "300",
+              stroke: "#000000",
+              strokeThickness: 3,
+            }}
+          />
+        );
+      })()}
+      {/* Opposition indicators */}
+      {opposingForces.length > 0 && (() => {
+        const baseFontSize = 11;
+        const invScale = 1 / Math.max(0.35, scale || 1);
+        const labelAlpha = scale > 2 ? Math.max(0.2, 0.8 - (scale - 2) * 0.15) : 0.7;
+        return (
+          <Text
+            text={opposingForces.map((o) => `vs ${o.nationName}`).join(" ")}
+            x={headX}
+            y={headY + cellSize * 0.3}
+            anchor={0.5}
+            zIndex={211}
+            alpha={labelAlpha}
+            scale={{ x: invScale, y: invScale }}
+            style={{
+              fontFamily: "system-ui, -apple-system, sans-serif",
+              fill: "#ff6666",
+              fontSize: baseFontSize,
+              fontWeight: "300",
+              stroke: "#000000",
+              strokeThickness: 3,
+            }}
+          />
+        );
+      })()}
     </React.Fragment>
   );
 };
+
+// Completed arrow rendering removed — troops return to population silently
 
 // Note: renderTowers for resource upgrades has been removed
 // Towers are now handled as structures within nations.cities
@@ -323,9 +414,7 @@ function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
     if (!mapMetadata) return 1;
     const naturalMapHeight = (stageWidth * mapMetadata.height) / mapMetadata.width;
     const fitScale =
-      naturalMapHeight > stageHeight
-        ? stageHeight / naturalMapHeight
-        : 1;
+      naturalMapHeight > stageHeight ? stageHeight / naturalMapHeight : 1;
     return Math.min(1, fitScale);
   }, [mapMetadata, stageWidth, stageHeight]);
 
@@ -421,11 +510,7 @@ function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
         0
       );
       const zoomFactor = delta > 0 ? 1.1 : 0.9;
-      zoomAtPoint(
-        mousePos.x,
-        mousePos.y,
-        scaleRef.current * zoomFactor
-      );
+      zoomAtPoint(mousePos.x, mousePos.y, scaleRef.current * zoomFactor);
     },
     [zoomAtPoint]
   );
@@ -505,6 +590,39 @@ const getMergedTerritory = (nation) => {
  * It memoizes the territory lookup set and border cells so that border
  * detection only happens when the territory actually changes.
  */
+const NationLabel = ({ text, x, y, fontSize, alpha, scale }) => {
+  const labelRef = useRef(null);
+  useEffect(() => {
+    if (labelRef.current?.texture?.baseTexture) {
+      labelRef.current.texture.baseTexture.scaleMode = PIXI_SCALE_MODES.LINEAR;
+    }
+  }, [text]);
+
+  const inverseScale = 1 / Math.max(0.35, scale || 1);
+
+  return (
+    <Text
+      ref={labelRef}
+      text={text}
+      x={x}
+      y={y}
+      anchor={0.5}
+      zIndex={130}
+      scale={inverseScale}
+      resolution={window.devicePixelRatio || 1}
+      style={{
+        fontFamily: "Barlow Semi Condensed, system-ui",
+        fill: "#ffffff",
+        fontSize,
+        fontWeight: "600",
+        stroke: "#000000",
+        strokeThickness: Math.max(2, Math.round(fontSize * 0.18)),
+      }}
+      alpha={alpha}
+    />
+  );
+};
+
 const NationOverlay = ({
   nation,
   nationIndex,
@@ -557,7 +675,15 @@ const NationOverlay = ({
   }, [territory]);
   const showBorders = scale > 0.35;
   const showCities = scale > 0.4;
-  const showLabels = scale > 0.55;
+  const showLabels = scale > 0.5;
+
+  const labelFontSize = useMemo(() => {
+    const population = Math.max(0, Number(nation.population) || 0);
+    const popScale = Math.log10(population + 10);
+    const base = 10;
+    const size = base + popScale * 6;
+    return Math.min(34, Math.max(12, size));
+  }, [nation.population]);
 
   const rowRuns = useMemo(() => {
     const rows = new Map();
@@ -597,34 +723,22 @@ const NationOverlay = ({
     return runs;
   }, [territory, visibleBounds, scale]);
 
-  const borderSegments = useMemo(() => {
-    const segments = [];
-    const directions = [
-      { dx: 0, dy: -1, x1: 0, y1: 0, x2: 1, y2: 0, side: "top" }, // top
-      { dx: 1, dy: 0, x1: 1, y1: 0, x2: 1, y2: 1, side: "right" }, // right
-      { dx: 0, dy: 1, x1: 1, y1: 1, x2: 0, y2: 1, side: "bottom" }, // bottom
-      { dx: -1, dy: 0, x1: 0, y1: 1, x2: 0, y2: 0, side: "left" }, // left
-    ];
-    if (scale < 0.5) return segments;
+  // Compute which tiles are border tiles (have at least one non-owned neighbor)
+  const borderTileSet = useMemo(() => {
+    const bSet = new Set();
+    if (scale < 0.35) return bSet;
     for (let i = 0; i < territory.x.length; i++) {
       const x = territory.x[i];
       const y = territory.y[i];
-      for (const dir of directions) {
-        const nx = x + dir.dx;
-        const ny = y + dir.dy;
-        if (!territorySet.has(`${nx},${ny}`)) {
-          segments.push({
-            x1: (x + dir.x1),
-            y1: (y + dir.y1),
-            x2: (x + dir.x2),
-            y2: (y + dir.y2),
-            side: dir.side,
-          });
-        }
-      }
+      const hasNonOwned =
+        !territorySet.has(`${x},${y - 1}`) ||
+        !territorySet.has(`${x + 1},${y}`) ||
+        !territorySet.has(`${x},${y + 1}`) ||
+        !territorySet.has(`${x - 1},${y}`);
+      if (hasNonOwned) bSet.add(`${x},${y}`);
     }
-    return segments;
-  }, [territory, territorySet, ownershipMap, nation.owner]);
+    return bSet;
+  }, [territory, territorySet, scale]);
 
   return (
     <>
@@ -633,65 +747,47 @@ const NationOverlay = ({
         zIndex={100}
         draw={(g) => {
           g.clear();
-          // Draw merged horizontal runs to avoid per-tile fills.
-          g.beginFill(baseColor, 0.6);
+          // Interior tiles at 0.6 alpha, edge tiles at full opacity
           for (let i = 0; i < rowRuns.length; i++) {
             const run = rowRuns[i];
-            const width = (run.end - run.start + 1) * cellSize;
-            g.drawRect(run.start * cellSize, run.y * cellSize, width, cellSize);
+            if (!showBorders) {
+              // Not zoomed in enough for borders — draw whole run at 0.6
+              const width = (run.end - run.start + 1) * cellSize;
+              g.beginFill(baseColor, 0.6);
+              g.drawRect(run.start * cellSize, run.y * cellSize, width, cellSize);
+              g.endFill();
+            } else {
+              // Split run into edge vs interior segments
+              let segStart = run.start;
+              let segIsEdge = borderTileSet.has(`${run.start},${run.y}`);
+              for (let x = run.start + 1; x <= run.end; x++) {
+                const isEdge = borderTileSet.has(`${x},${run.y}`);
+                if (isEdge !== segIsEdge) {
+                  const width = (x - segStart) * cellSize;
+                  g.beginFill(baseColor, segIsEdge ? 1.0 : 0.5);
+                  g.drawRect(segStart * cellSize, run.y * cellSize, width, cellSize);
+                  g.endFill();
+                  segStart = x;
+                  segIsEdge = isEdge;
+                }
+              }
+              // Final segment
+              const width = (run.end - segStart + 1) * cellSize;
+              g.beginFill(baseColor, segIsEdge ? 1.0 : 0.5);
+              g.drawRect(segStart * cellSize, run.y * cellSize, width, cellSize);
+              g.endFill();
+            }
           }
-          g.endFill();
         }}
       />
-      {showBorders && (
-        <Graphics
-          key={`border-${nation.owner}`}
-          zIndex={120}
-          draw={(g) => {
-            g.clear();
-            const lineWidth = 2;
-            const inset = Math.min(0.24, 3 / cellSize);
-            g.lineStyle(lineWidth, baseColor, 1);
-            for (let i = 0; i < borderSegments.length; i++) {
-              const seg = borderSegments[i];
-              let x1 = seg.x1;
-              let y1 = seg.y1;
-              let x2 = seg.x2;
-              let y2 = seg.y2;
-              if (seg.side === "top") {
-                y1 += inset;
-                y2 += inset;
-              } else if (seg.side === "bottom") {
-                y1 -= inset;
-                y2 -= inset;
-              } else if (seg.side === "left") {
-                x1 += inset;
-                x2 += inset;
-              } else if (seg.side === "right") {
-                x1 -= inset;
-                x2 -= inset;
-              }
-              g.moveTo(x1 * cellSize, y1 * cellSize);
-              g.lineTo(x2 * cellSize, y2 * cellSize);
-            }
-          }}
-        />
-      )}
       {showLabels && territoryCentroid && (
-        <Text
+        <NationLabel
           text={nation.owner}
           x={territoryCentroid.x * cellSize}
           y={territoryCentroid.y * cellSize}
-          anchor={0.5}
-          zIndex={130}
-          style={{
-            fontFamily: "system-ui",
-            fill: "#ffffff",
-            fontSize: Math.max(10, 12 / Math.max(scale, 0.5)),
-            stroke: "#000000",
-            strokeThickness: 3,
-          }}
+          fontSize={labelFontSize}
           alpha={scale > 3.5 ? 0.2 : 0.9}
+          scale={scale}
         />
       )}
       {showCities &&
@@ -718,20 +814,13 @@ const NationOverlay = ({
                 baseZ={150 + centerY}
               />
               {showName && (
-                <Text
+                <NationLabel
                   text={city.name}
                   x={centerX}
                   y={centerY + iconSize * 0.6}
-                  anchor={0.5}
-                  zIndex={151 + centerY}
-                  style={{
-                    fontFamily: "system-ui",
-                    fill: "#ffffff",
-                    fontSize: Math.max(8, 10 / Math.max(scale, 0.8)),
-                    stroke: "#000000",
-                    strokeThickness: 2,
-                  }}
+                  fontSize={Math.max(10, labelFontSize * 0.6)}
                   alpha={0.9}
+                  scale={scale}
                 />
               )}
             </React.Fragment>
@@ -761,27 +850,24 @@ const GameCanvas = ({
   placingTower,
   onPlaceTower,
   drawingArrowType,
+  onStartDrawArrow,
   currentArrowPath,
   onArrowPathUpdate,
   onSendArrow,
   onCancelArrow,
-  activeAttackArrow,
+  activeAttackArrows,
   activeDefendArrow,
-  completedArrows,
 }) => {
   const stageWidth = window.innerWidth;
   const stageHeight = window.innerHeight;
 
-  // Use our custom pan/zoom hook
   const {
     cellSize,
     scale,
     offset,
     setOffset,
     handleWheel,
-    zoomAtPoint,
     getCellCoordinates,
-    computedMinScale,
   } = usePanZoom({ mapMetadata, stageWidth, stageHeight });
 
   // Local state for unit selections and hovered cell
@@ -879,32 +965,20 @@ const GameCanvas = ({
     };
   }, []);
 
-  /* ----- Middle Mouse Panning State ----- */
+  /* ----- Viewport State ----- */
   const [isPanning, setIsPanning] = useState(false);
-  const panStartPosRef = useRef(null);
-  const panStartOffsetRef = useRef(null);
-  const dragStartRef = useRef(null);
-  const suppressClickRef = useRef(false);
-  const lastPointerRef = useRef(null);
-  const pointersRef = useRef(new Map());
-  const pinchRef = useRef(null);
+  const drawTypeRef = useRef(null);
 
   /* ----- Arrow Drawing State ----- */
   const isDrawingArrowRef = useRef(false);
   const arrowPathRef = useRef([]);
   const lastArrowPointRef = useRef(null);
+  const configRef = useRef(config);
+  configRef.current = config;
+  const gameStateRef = useRef(gameState);
+  gameStateRef.current = gameState;
 
   /* ----- Arrow Animation State ----- */
-  const [animationTick, setAnimationTick] = useState(0);
-
-  // Force re-renders for completed arrow animations
-  useEffect(() => {
-    if (!completedArrows || completedArrows.length === 0) return;
-    const interval = setInterval(() => {
-      setAnimationTick((t) => t + 1);
-    }, 50); // 20fps animation
-    return () => clearInterval(interval);
-  }, [completedArrows?.length]);
 
   /* ----- Smoother WASD Panning via Animation Frame ----- */
   const keysRef = useRef({ w: false, a: false, s: false, d: false });
@@ -965,36 +1039,21 @@ const GameCanvas = ({
         x = e.nativeEvent.clientX - rect.left;
         y = e.nativeEvent.clientY - rect.top;
       }
-      const pointerId =
-        e.data?.pointerId ?? e.data?.identifier ?? e.nativeEvent?.pointerId;
-      const pointerType =
-        e.data?.pointerType ?? e.nativeEvent?.pointerType ?? "mouse";
-      if (pointerId !== undefined) {
-        pointersRef.current.set(pointerId, { x, y, pointerType });
-        if (pointersRef.current.size === 2) {
-          const points = Array.from(pointersRef.current.values());
-          const dx = points[0].x - points[1].x;
-          const dy = points[0].y - points[1].y;
-          pinchRef.current = {
-            distance: Math.hypot(dx, dy),
-            scale,
-          };
-          suppressClickRef.current = true;
-          setIsPanning(true);
-          return;
-        }
-      }
-      // Check which button is pressed (0: left, 1: middle)
+      // Check which button is pressed (0: left, 1: middle, 2: right)
       const button = e.data?.originalEvent?.button ?? e.nativeEvent?.button;
-      if (button === 1) {
-        // Middle mouse pressed: start panning
-        setIsPanning(true);
-        panStartPosRef.current = { x, y };
-        panStartOffsetRef.current = { ...offset };
-        return;
+      if (button === 1) return;
+      if (button === 2) {
+        e.data?.originalEvent?.preventDefault?.();
+        e.preventDefault?.();
       }
-      // Arrow drawing mode
-      if (button === 0 && drawingArrowType) {
+      // Arrow drawing mode: left=attack, right=defend
+      const arrowType = button === 0 ? "attack" : button === 2 ? "defend" : null;
+      if (
+        arrowType &&
+        !foundingNation &&
+        !buildingStructure &&
+        !placingTower
+      ) {
         const cell = getCellCoordinates(x, y);
         if (
           cell.x >= 0 &&
@@ -1002,6 +1061,10 @@ const GameCanvas = ({
           cell.y >= 0 &&
           cell.y < mapMetadata.height
         ) {
+          drawTypeRef.current = arrowType;
+          if (drawingArrowType !== arrowType) {
+            onStartDrawArrow?.(arrowType);
+          }
           isDrawingArrowRef.current = true;
           arrowPathRef.current = [{ x: cell.x, y: cell.y }];
           lastArrowPointRef.current = { x: cell.x, y: cell.y };
@@ -1009,15 +1072,17 @@ const GameCanvas = ({
         }
         return;
       }
-      // Left-drag to pan when not in action modes.
-      if (button === 0 && !foundingNation && !buildingStructure && !placingTower) {
-        dragStartRef.current = { x, y };
-        panStartPosRef.current = { x, y };
-        panStartOffsetRef.current = { ...offset };
-        suppressClickRef.current = false;
-      }
     },
-    [foundingNation, buildingStructure, placingTower, drawingArrowType, offset, scale, getCellCoordinates, mapMetadata, onArrowPathUpdate]
+    [
+      foundingNation,
+      buildingStructure,
+      placingTower,
+      drawingArrowType,
+      getCellCoordinates,
+      mapMetadata,
+      onArrowPathUpdate,
+      onStartDrawArrow,
+    ]
   );
 
   const handlePointerMove = useCallback(
@@ -1030,30 +1095,8 @@ const GameCanvas = ({
         x = e.nativeEvent.clientX - rect.left;
         y = e.nativeEvent.clientY - rect.top;
       }
-      lastPointerRef.current = { x, y };
-      const pointerId =
-        e.data?.pointerId ?? e.data?.identifier ?? e.nativeEvent?.pointerId;
-      if (pointerId !== undefined) {
-        const existing = pointersRef.current.get(pointerId);
-        pointersRef.current.set(pointerId, {
-          x,
-          y,
-          pointerType: existing?.pointerType || e.data?.pointerType,
-        });
-      }
-      if (pointersRef.current.size === 2 && pinchRef.current) {
-        const points = Array.from(pointersRef.current.values());
-        const dx = points[0].x - points[1].x;
-        const dy = points[0].y - points[1].y;
-        const distance = Math.hypot(dx, dy);
-        const ratio = distance / pinchRef.current.distance;
-        const midX = (points[0].x + points[1].x) / 2;
-        const midY = (points[0].y + points[1].y) / 2;
-        zoomAtPoint(midX, midY, pinchRef.current.scale * ratio);
-        return;
-      }
-      // Arrow drawing - add points to path
-      if (isDrawingArrowRef.current && drawingArrowType) {
+      // Arrow drawing - add points to path, clamped to max range
+      if (isDrawingArrowRef.current && (drawTypeRef.current || drawingArrowType)) {
         const cell = getCellCoordinates(x, y);
         if (
           cell.x >= 0 &&
@@ -1062,39 +1105,37 @@ const GameCanvas = ({
           cell.y < mapMetadata.height
         ) {
           const last = lastArrowPointRef.current;
-          // Only add if moved to a different cell (and throttle to every few cells)
           if (!last || cell.x !== last.x || cell.y !== last.y) {
-            arrowPathRef.current.push({ x: cell.x, y: cell.y });
-            lastArrowPointRef.current = { x: cell.x, y: cell.y };
-            onArrowPathUpdate?.([...arrowPathRef.current]);
+            // Compute max arrow range from config + player population
+            const cfg = configRef.current;
+            const baseRange = cfg?.territorial?.arrowBaseRange ?? 15;
+            const rangePerSqrtPop = cfg?.territorial?.arrowRangePerSqrtPop ?? 0.15;
+            const maxRangeCfg = cfg?.territorial?.arrowMaxRange ?? 60;
+            const gs = gameStateRef.current;
+            const playerNation = gs?.gameState?.nations?.find(
+              (n) => n.owner === userId
+            );
+            const pop = playerNation?.population || 0;
+            const maxRange = Math.min(maxRangeCfg, baseRange + Math.sqrt(pop) * rangePerSqrtPop);
+
+            // Compute current path length
+            const path = arrowPathRef.current;
+            let pathLen = 0;
+            for (let i = 1; i < path.length; i++) {
+              pathLen += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+            }
+            const segLen = Math.hypot(cell.x - last.x, cell.y - last.y);
+
+            // Only add point if within max range
+            if (pathLen + segLen <= maxRange) {
+              arrowPathRef.current.push({ x: cell.x, y: cell.y });
+              lastArrowPointRef.current = { x: cell.x, y: cell.y };
+              onArrowPathUpdate?.([...arrowPathRef.current]);
+            }
+            // else: silently stop extending — arrow is at max range
           }
         }
         return;
-      }
-      // If middle mouse panning is active, update offset based on pointer movement.
-      if (isPanning) {
-        const deltaX = x - panStartPosRef.current.x;
-        const deltaY = y - panStartPosRef.current.y;
-        const newOffset = {
-          x: panStartOffsetRef.current.x + deltaX,
-          y: panStartOffsetRef.current.y + deltaY,
-        };
-        setOffset(newOffset);
-        return;
-      }
-      if (dragStartRef.current) {
-        const dx = x - dragStartRef.current.x;
-        const dy = y - dragStartRef.current.y;
-        if (Math.hypot(dx, dy) > 4) {
-          suppressClickRef.current = true;
-          setIsPanning(true);
-          const newOffset = {
-            x: panStartOffsetRef.current.x + dx,
-            y: panStartOffsetRef.current.y + dy,
-          };
-          setOffset(newOffset);
-          return;
-        }
       }
       const cell = getCellCoordinates(x, y);
       if (
@@ -1115,50 +1156,49 @@ const GameCanvas = ({
       }
     },
     [
-      isPanning,
       getCellCoordinates,
       mapMetadata,
-      setOffset,
       drawingArrowType,
       onArrowPathUpdate,
     ]
   );
 
-  const handlePointerUp = useCallback(
-    (e) => {
-      const pointerId =
-        e.data?.pointerId ?? e.data?.identifier ?? e.nativeEvent?.pointerId;
-      if (pointerId !== undefined) {
-        pointersRef.current.delete(pointerId);
-      }
-      if (pointersRef.current.size < 2) {
-        pinchRef.current = null;
-      }
-      // Arrow drawing completed
-      if (isDrawingArrowRef.current && drawingArrowType) {
-        isDrawingArrowRef.current = false;
-        const path = [...arrowPathRef.current];
-        arrowPathRef.current = [];
-        lastArrowPointRef.current = null;
+  // Clean up arrow drawing state — shared by pointerup and pointerleave
+  const finishArrowDrawing = useCallback(
+    (submit) => {
+      if (!isDrawingArrowRef.current) return;
+      isDrawingArrowRef.current = false;
+      const drawType = drawTypeRef.current || drawingArrowType;
+      const path = [...arrowPathRef.current];
+      arrowPathRef.current = [];
+      lastArrowPointRef.current = null;
+      drawTypeRef.current = null;
 
-        // Simplify path - keep only every Nth point plus endpoints
+      if (submit) {
         const simplifiedPath = simplifyArrowPath(path, 3);
-
         if (simplifiedPath.length >= 2) {
-          onSendArrow?.(drawingArrowType, simplifiedPath);
+          onSendArrow?.(drawType, simplifiedPath);
         } else {
           onCancelArrow?.();
         }
-        return;
+      } else {
+        onCancelArrow?.();
       }
-      // End panning/dragging.
-      if (isPanning) {
-        setIsPanning(false);
-        dragStartRef.current = null;
-        if (suppressClickRef.current) {
-          suppressClickRef.current = false;
-          return;
-        }
+    },
+    [drawingArrowType, onSendArrow, onCancelArrow]
+  );
+
+  const handlePointerLeave = useCallback(() => {
+    // If the pointer leaves the canvas while drawing, cancel the arrow
+    finishArrowDrawing(false);
+  }, [finishArrowDrawing]);
+
+  const handlePointerUp = useCallback(
+    (e) => {
+      // Arrow drawing completed
+      if (isDrawingArrowRef.current && (drawTypeRef.current || drawingArrowType)) {
+        finishArrowDrawing(true);
+        return;
       }
       let x, y;
       if (e.data?.global) {
@@ -1176,10 +1216,8 @@ const GameCanvas = ({
         cell.y < 0 ||
         cell.y >= mapMetadata.height
       ) {
-        dragStartRef.current = null;
         return;
       }
-      dragStartRef.current = null;
       if (foundingNation) {
         onFoundNation?.(cell.x, cell.y);
         return;
@@ -1250,8 +1288,7 @@ const GameCanvas = ({
       placingTower,
       onPlaceTower,
       drawingArrowType,
-      onSendArrow,
-      onCancelArrow,
+      finishArrowDrawing,
     ]
   );
 
@@ -1462,6 +1499,121 @@ const GameCanvas = ({
     );
   }
 
+  const sceneChildren = useMemo(() => {
+    const children = [];
+    if (useFullMapTexture && fullMapImageUrl && mapMetadata) {
+      children.push(
+        <Sprite
+          key="full-map"
+          image={fullMapImageUrl}
+          x={0}
+          y={0}
+          width={mapMetadata.width * cellSize}
+          height={mapMetadata.height * cellSize}
+        />
+      );
+    } else {
+      children.push(
+        <MapTiles
+          key="map-tiles"
+          mapGrid={visibleMapGrid}
+          cellSize={cellSize}
+          mappings={mappings}
+          textures={textures}
+        />
+      );
+      if (memoizedResources) {
+        if (Array.isArray(memoizedResources)) {
+          children.push(...memoizedResources);
+        } else {
+          children.push(memoizedResources);
+        }
+      }
+      if (memoizedCaptureOverlays) {
+        if (Array.isArray(memoizedCaptureOverlays)) {
+          children.push(...memoizedCaptureOverlays);
+        } else {
+          children.push(memoizedCaptureOverlays);
+        }
+      }
+    }
+
+    if (USE_OPTIMIZED_TERRITORY && mapMetadata) {
+      children.push(
+        <TerritoryLayer
+          key="territory-layer"
+          mapWidth={mapMetadata.width}
+          mapHeight={mapMetadata.height}
+          cellSize={cellSize}
+          nations={nations}
+          nationColors={nationColors}
+          zIndex={100}
+        />
+      );
+    } else if (renderNationOverlays?.length) {
+      children.push(...renderNationOverlays);
+    }
+
+    // Render active attack arrows (broad wedge style)
+    if (activeAttackArrows && activeAttackArrows.length > 0) {
+      for (let i = 0; i < activeAttackArrows.length; i++) {
+        const arrow = activeAttackArrows[i];
+        if (arrow?.path) {
+          const node = renderArrowV2(arrow, cellSize, `active-attack-${arrow.id || i}`, scale);
+          if (node) children.push(node);
+        }
+      }
+    }
+
+    if (activeDefendArrow?.path) {
+      const node = renderArrowPath(
+        activeDefendArrow.path,
+        cellSize,
+        "defend",
+        true,
+        "active-defend-arrow",
+        activeDefendArrow.remainingPower
+      );
+      if (node) children.push(node);
+    }
+
+    if (drawingArrowType && currentArrowPath && currentArrowPath.length > 0) {
+      const node = renderArrowPath(
+        currentArrowPath,
+        cellSize,
+        drawingArrowType,
+        false,
+        "drawing-arrow",
+        null
+      );
+      if (node) children.push(node);
+    }
+
+    if (buildPreview) children.push(buildPreview);
+    if (towerPreview) children.push(towerPreview);
+
+    return children;
+  }, [
+    useFullMapTexture,
+    fullMapImageUrl,
+    mapMetadata,
+    cellSize,
+    visibleMapGrid,
+    mappings,
+    textures,
+    memoizedResources,
+    memoizedCaptureOverlays,
+    renderNationOverlays,
+    activeAttackArrows,
+    activeDefendArrow,
+    drawingArrowType,
+    currentArrowPath,
+    buildPreview,
+    towerPreview,
+    nations,
+    nationColors,
+  ]);
+
   return (
     <Stage
       interactive={true}
@@ -1473,18 +1625,21 @@ const GameCanvas = ({
         resolution: scale < 0.45 ? 1 : window.devicePixelRatio || 1,
         autoDensity: true,
       }}
+      onContextMenu={(e) => e.preventDefault()}
       onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerLeave}
       style={{
         width: "100%",
         height: "100%",
-        cursor: buildingStructure || foundingNation || placingTower || drawingArrowType
-          ? "crosshair"
-          : isPanning
-          ? "grabbing"
-          : "grab",
+        cursor:
+          buildingStructure || foundingNation || placingTower || drawingArrowType
+            ? "crosshair"
+            : isPanning
+            ? "grabbing"
+            : "grab",
       }}
     >
       <Container
@@ -1493,66 +1648,7 @@ const GameCanvas = ({
         scale={scale}
         sortableChildren={true}
       >
-        {useFullMapTexture ? (
-          <Sprite
-            image={fullMapImageUrl}
-            x={0}
-            y={0}
-            width={mapMetadata.width * cellSize}
-            height={mapMetadata.height * cellSize}
-          />
-        ) : (
-          <>
-            <MapTiles
-              mapGrid={visibleMapGrid}
-              cellSize={cellSize}
-              mappings={mappings}
-              textures={textures}
-            />
-        {!useFullMapTexture && memoizedResources}
-        {!useFullMapTexture && memoizedCaptureOverlays}
-          </>
-        )}
-        {/* Territory rendering - use optimized texture-based or traditional Graphics */}
-        {USE_OPTIMIZED_TERRITORY && mapMetadata ? (
-          <TerritoryLayer
-            mapWidth={mapMetadata.width}
-            mapHeight={mapMetadata.height}
-            cellSize={cellSize}
-            nations={nations}
-            nationColors={nationColors}
-            zIndex={100}
-          />
-        ) : (
-          renderNationOverlays
-        )}
-        {/* Render active arrows with troop counts */}
-        {activeAttackArrow && activeAttackArrow.path && renderArrowPath(
-          activeAttackArrow.path,
-          cellSize,
-          "attack",
-          true,
-          "active-attack-arrow",
-          activeAttackArrow.remainingPower
-        )}
-        {activeDefendArrow && activeDefendArrow.path && renderArrowPath(
-          activeDefendArrow.path,
-          cellSize,
-          "defend",
-          true,
-          "active-defend-arrow",
-          activeDefendArrow.remainingPower
-        )}
-        {/* Render current drawing arrow */}
-        {drawingArrowType && currentArrowPath && currentArrowPath.length > 0 &&
-          renderArrowPath(currentArrowPath, cellSize, drawingArrowType, false, "drawing-arrow", null)}
-        {/* Render completed arrow animations */}
-        {completedArrows && completedArrows.map((arrow) => {
-          const elapsed = Date.now() - arrow.createdAt;
-          return renderCompletedArrow(arrow, cellSize, elapsed);
-        })}
-        {buildPreview}
-        {towerPreview}
+        {sceneChildren}
       </Container>
     </Stage>
   );

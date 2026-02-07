@@ -5,6 +5,7 @@ function stripInternalCaches(nation) {
   const {
     _territorySet,
     _borderSet,
+    _disconnectedCells,
     territoryDelta, // Internal delta, not for client
     ...clean
   } = nation;

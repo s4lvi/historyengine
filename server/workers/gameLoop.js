@@ -2,97 +2,66 @@
 import mongoose from "mongoose";
 import { updateNation, checkWinCondition } from "../utils/gameLogic.js";
 import {
-  buildOwnershipMap,
   computeBonusesByOwner,
   getNodeMultiplier,
 } from "../utils/territorialUtils.js";
 import { assignResourcesToMap } from "../utils/resourceManagement.js";
 import { broadcastRoomUpdate } from "../wsHub.js";
 import config from "../config/config.js";
+import { TerritoryMatrix, UNOWNED } from "../utils/TerritoryMatrix.js";
+import { detectEncirclement, passiveConcavityFill } from "../utils/matrixKernels.js";
+import { applyMatrixToNations } from "../utils/matrixCompat.js";
+import { tickLoyaltyDiffusion } from "../utils/matrixLoyalty.js";
+import { tickPopulationDensity, computeDefenseStrength } from "../utils/matrixPopulation.js";
+import { deriveOwnershipFromLoyalty } from "../utils/matrixKernels.js";
+import { serializeMatrix } from "../utils/matrixSerializer.js";
 
-function ensureTerritoryDelta(nation) {
-  if (!nation.territoryDelta) {
-    nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
-  }
-}
-
-function addTerritoryCellToNation(nation, x, y) {
-  if (!nation.territory) {
-    nation.territory = { x: [], y: [] };
-  }
-  const tx = nation.territory.x;
-  const ty = nation.territory.y;
-  for (let i = 0; i < tx.length; i++) {
-    if (tx[i] === x && ty[i] === y) return;
-  }
-  tx.push(x);
-  ty.push(y);
-  ensureTerritoryDelta(nation);
-  nation.territoryDelta.add.x.push(x);
-  nation.territoryDelta.add.y.push(y);
-}
-
-function removeTerritoryCellFromNation(nation, x, y) {
-  if (!nation?.territory?.x || !nation?.territory?.y) return;
-  const tx = nation.territory.x;
-  const ty = nation.territory.y;
-  for (let i = 0; i < tx.length; i++) {
-    if (tx[i] === x && ty[i] === y) {
-      tx.splice(i, 1);
-      ty.splice(i, 1);
-      ensureTerritoryDelta(nation);
-      nation.territoryDelta.sub.x.push(x);
-      nation.territoryDelta.sub.y.push(y);
-      return;
-    }
-  }
-}
+const loyaltyEnabled = config?.loyalty?.enabled !== false;
+const popDensityEnabled = config?.populationDensity?.enabled !== false;
 
 /**
  * Handle structure capture/destroy when territory changes hands
- * - Cities (town, capital) are transferred to the captor
- * - Towers are destroyed
+ * Matrix-aware version: reads ownership from matrix instead of string-key map
  */
-function handleStructureCapture(gameState, ownershipMap, nationsByOwner) {
+function handleStructureCaptureMatrix(gameState, matrix) {
   if (!gameState?.nations) return;
+
+  const nationsByOwner = new Map(
+    (gameState.nations || []).map((n) => [n.owner, n])
+  );
 
   for (const nation of gameState.nations) {
     if (!nation.cities || nation.cities.length === 0) continue;
 
-    // Check each city/structure
+    const nIdx = matrix.ownerToIndex.get(nation.owner);
     const citiesToRemove = [];
     const citiesToTransfer = [];
 
     for (let i = 0; i < nation.cities.length; i++) {
       const city = nation.cities[i];
-      const key = `${city.x},${city.y}`;
-      const tileOwner = ownershipMap.get(key);
+      const tileOwnerIdx = matrix.getOwner(city.x, city.y);
 
-      // If the tile is no longer owned by this nation
-      if (!tileOwner || tileOwner.owner !== nation.owner) {
+      if (tileOwnerIdx === UNOWNED || tileOwnerIdx !== nIdx) {
+        const tileOwnerStr = tileOwnerIdx !== UNOWNED ? matrix.getOwnerByIndex(tileOwnerIdx) : null;
+
         if (city.type === "tower") {
-          // Towers are destroyed
           citiesToRemove.push(i);
           console.log(`[STRUCTURE] Tower "${city.name}" at (${city.x},${city.y}) destroyed - territory lost by ${nation.owner}`);
         } else if (city.type === "town" || city.type === "capital") {
-          // Cities are transferred to the captor
-          if (tileOwner && tileOwner.owner) {
-            citiesToTransfer.push({ cityIndex: i, newOwner: tileOwner.owner });
-            console.log(`[STRUCTURE] City "${city.name}" at (${city.x},${city.y}) captured by ${tileOwner.owner} from ${nation.owner}`);
+          if (tileOwnerStr) {
+            citiesToTransfer.push({ cityIndex: i, newOwner: tileOwnerStr });
+            console.log(`[STRUCTURE] City "${city.name}" at (${city.x},${city.y}) captured by ${tileOwnerStr} from ${nation.owner}`);
           } else {
-            // No owner - destroy the city
             citiesToRemove.push(i);
           }
         }
       }
     }
 
-    // Process transfers (cities go to new owner)
     for (const transfer of citiesToTransfer) {
       const city = nation.cities[transfer.cityIndex];
       const newOwnerNation = nationsByOwner.get(transfer.newOwner);
       if (newOwnerNation) {
-        // Add to new owner (as a town, not capital)
         const transferredCity = {
           ...city,
           type: city.type === "capital" ? "town" : city.type
@@ -102,7 +71,6 @@ function handleStructureCapture(gameState, ownershipMap, nationsByOwner) {
       }
     }
 
-    // Remove captured/destroyed structures (in reverse order to preserve indices)
     const allToRemove = [
       ...citiesToRemove,
       ...citiesToTransfer.map((t) => t.cityIndex)
@@ -115,11 +83,10 @@ function handleStructureCapture(gameState, ownershipMap, nationsByOwner) {
 }
 
 /**
- * Apply city auto-expansion for towns
- * Towns slowly expand into adjacent unowned, non-ocean tiles
+ * Apply city auto-expansion using matrix ownership
  */
-function applyCityAutoExpansion(gameState, mapData, ownershipMap) {
-  if (!gameState?.nations || !mapData) return;
+function applyCityAutoExpansionMatrix(gameState, matrix) {
+  if (!gameState?.nations) return;
 
   const townConfig = config?.structures?.town || {
     autoExpansionRadius: 3,
@@ -127,50 +94,39 @@ function applyCityAutoExpansion(gameState, mapData, ownershipMap) {
   };
   const expansionRadius = townConfig.autoExpansionRadius;
   const expansionRate = townConfig.autoExpansionRate;
-
   if (expansionRate <= 0) return;
 
-  const width = mapData[0]?.length || 0;
-  const height = mapData.length || 0;
-  const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const { width, height } = matrix;
+  const DX = [1, -1, 0, 0];
+  const DY = [0, 0, 1, -1];
 
   for (const nation of gameState.nations) {
     if (nation.status === "defeated") continue;
     if (!nation.cities) continue;
+    const nIdx = matrix.ownerToIndex.get(nation.owner);
+    if (nIdx === undefined) continue;
 
-    // Find towns (not capitals - capitals don't auto-expand)
     const towns = nation.cities.filter((c) => c.type === "town");
     if (towns.length === 0) continue;
 
     for (const town of towns) {
-      // Random chance based on expansion rate
       if (Math.random() > expansionRate) continue;
 
-      // Find adjacent unowned tiles within expansion radius
       const candidates = [];
       for (let dy = -expansionRadius; dy <= expansionRadius; dy++) {
         for (let dx = -expansionRadius; dx <= expansionRadius; dx++) {
           const nx = town.x + dx;
           const ny = town.y + dy;
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-
-          const key = `${nx},${ny}`;
-          const tileOwner = ownershipMap.get(key);
-
-          // Skip if already owned
-          if (tileOwner) continue;
-
-          // Check if it's valid terrain
-          const cell = mapData[ny]?.[nx];
-          if (!cell || cell.biome === "OCEAN") continue;
+          if (!matrix.inBounds(nx, ny)) continue;
+          if (matrix.isOcean(nx, ny)) continue;
+          if (matrix.getOwner(nx, ny) !== UNOWNED) continue;
 
           // Check if adjacent to owned territory
           let adjacentToOwned = false;
-          for (const [ddx, ddy] of neighbors) {
-            const ax = nx + ddx;
-            const ay = ny + ddy;
-            const aKey = `${ax},${ay}`;
-            if (ownershipMap.get(aKey)?.owner === nation.owner) {
+          for (let d = 0; d < 4; d++) {
+            const ax = nx + DX[d];
+            const ay = ny + DY[d];
+            if (matrix.isOwnedBy(ax, ay, nIdx)) {
               adjacentToOwned = true;
               break;
             }
@@ -183,171 +139,56 @@ function applyCityAutoExpansion(gameState, mapData, ownershipMap) {
         }
       }
 
-      // Pick the closest candidate
       if (candidates.length > 0) {
         candidates.sort((a, b) => a.distance - b.distance);
         const target = candidates[0];
-        addTerritoryCellToNation(nation, target.x, target.y);
-        ownershipMap.set(`${target.x},${target.y}`, nation);
+        matrix.setOwner(target.x, target.y, nIdx);
       }
     }
   }
 }
 
-function updateEncircledTerritory(gameState, mapData, ownershipMap) {
-  if (!gameState || !mapData || !ownershipMap) return;
-  const width = mapData[0]?.length || 0;
-  const height = mapData.length || 0;
-  if (!width || !height) return;
+/**
+ * Encirclement detection and capture using matrix
+ */
+function updateEncircledTerritoryMatrix(gameState, matrix) {
+  if (!gameState?.nations) return;
 
-  // Reset encirclement flags each pass; we'll re-mark currently encircled nations.
+  // Reset encirclement flags
   for (const nation of gameState.nations || []) {
     nation.isEncircled = false;
     nation.encircledBy = null;
   }
 
-  const visited = new Set();
-  const encircledUnowned = new Map(); // key -> encircler owner (for unowned cells)
-  const encircledOwned = new Map(); // key -> { owner, encircler } (for enemy cells)
+  const results = detectEncirclement(matrix, gameState.nations);
   const nationsByOwner = new Map(
     (gameState.nations || []).map((n) => [n.owner, n])
   );
 
-  // Build a set of capital/city locations for each nation
-  const capitalLocations = new Map(); // owner -> Set of "x,y" keys
-  for (const nation of gameState.nations || []) {
-    const citySet = new Set();
-    for (const city of nation.cities || []) {
-      citySet.add(`${city.x},${city.y}`);
-    }
-    capitalLocations.set(nation.owner, citySet);
-  }
+  for (const result of results) {
+    const { cells, ownerIdx, encirclerIdx, hasCapital } = result;
+    const encirclerOwner = matrix.getOwnerByIndex(encirclerIdx);
 
-  const neighbors = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ];
-
-  // Find all cells that don't connect to the map edge
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const cell = mapData?.[y]?.[x];
-      if (!cell || cell.biome === "OCEAN") continue;
-      const key = `${x},${y}`;
-      if (visited.has(key)) continue;
-      const ownerId = ownershipMap.get(key)?.owner ?? null;
-      const queue = [key];
-      const component = [];
-      const boundaryOwners = new Set();
-      let touchesEdge = false;
-
-      while (queue.length) {
-        const current = queue.pop();
-        if (visited.has(current)) continue;
-        visited.add(current);
-        component.push(current);
-        const [xStr, yStr] = current.split(",");
-        const cx = Number(xStr);
-        const cy = Number(yStr);
-        for (const [dx, dy] of neighbors) {
-          const nx = cx + dx;
-          const ny = cy + dy;
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-            touchesEdge = true;
-            continue;
-          }
-          const neighborCell = mapData?.[ny]?.[nx];
-          if (!neighborCell || neighborCell.biome === "OCEAN") {
-            touchesEdge = true;
-            continue;
-          }
-          const nKey = `${nx},${ny}`;
-          const neighborOwner = ownershipMap.get(nKey)?.owner ?? null;
-          if (neighborOwner === ownerId) {
-            if (!visited.has(nKey)) queue.push(nKey);
-            continue;
-          }
-          boundaryOwners.add(neighborOwner);
-        }
+    if (ownerIdx === UNOWNED) {
+      // Unowned territory — instant capture
+      for (const ci of cells) {
+        matrix.ownership[ci] = encirclerIdx;
       }
-
-      if (touchesEdge) continue;
-      if (boundaryOwners.size !== 1) continue;
-      const [encircler] = boundaryOwners;
-      if (!encircler || encircler === ownerId) continue;
-
-      if (!ownerId) {
-        // Unowned territory - instant capture
-        for (const cellKey of component) {
-          encircledUnowned.set(cellKey, encircler);
-        }
-      } else {
-        // Owned territory - check if it contains a capital
-        const ownerCities = capitalLocations.get(ownerId) || new Set();
-        let hasCapital = false;
-        for (const cellKey of component) {
-          if (ownerCities.has(cellKey)) {
-            hasCapital = true;
-            break;
-          }
-        }
-
-        if (hasCapital) {
-          // Has capital - mark for attack bonus only
-          const nation = nationsByOwner.get(ownerId);
-          if (nation) {
-            nation.isEncircled = true;
-            nation.encircledBy = encircler;
-          }
-        } else {
-          // No capital - instant capture!
-          for (const cellKey of component) {
-            encircledOwned.set(cellKey, { owner: ownerId, encircler });
-          }
-        }
+    } else if (hasCapital) {
+      // Has capital — mark for attack bonus only
+      const ownerStr = matrix.getOwnerByIndex(ownerIdx);
+      const nation = nationsByOwner.get(ownerStr);
+      if (nation) {
+        nation.isEncircled = true;
+        nation.encircledBy = encirclerOwner;
       }
-    }
-  }
-
-  // Instant capture for unowned territory
-  for (const [cellKey, encircler] of encircledUnowned.entries()) {
-    const [xStr, yStr] = cellKey.split(",");
-    const x = Number(xStr);
-    const y = Number(yStr);
-
-    const targetNation = nationsByOwner.get(encircler);
-    if (targetNation) {
-      addTerritoryCellToNation(targetNation, x, y);
-      ownershipMap.set(cellKey, targetNation);
-    }
-  }
-
-  // Instant capture for enemy territory WITHOUT capital
-  for (const [cellKey, data] of encircledOwned.entries()) {
-    const [xStr, yStr] = cellKey.split(",");
-    const x = Number(xStr);
-    const y = Number(yStr);
-
-    // Remove from current owner
-    const currentNation = nationsByOwner.get(data.owner);
-    if (currentNation) {
-      removeTerritoryCellFromNation(currentNation, x, y);
-    }
-
-    // Add to encircler
-    const targetNation = nationsByOwner.get(data.encircler);
-    if (targetNation) {
-      addTerritoryCellToNation(targetNation, x, y);
-      ownershipMap.set(cellKey, targetNation);
     } else {
-      ownershipMap.delete(cellKey);
+      // No capital — instant capture
+      for (const ci of cells) {
+        matrix.ownership[ci] = encirclerIdx;
+      }
+      console.log(`[ENCIRCLE] Captured ${cells.length} enemy cells without capital`);
     }
-  }
-
-  if (encircledOwned.size > 0) {
-    console.log(`[ENCIRCLE] Captured ${encircledOwned.size} enemy cells without capital`);
   }
 
   gameState.encirclementClaims = {};
@@ -358,11 +199,9 @@ function applyResourceNodeIncome(gameState, mapData) {
   const claims = gameState.resourceNodeClaims || {};
   if (!claims || Object.keys(claims).length === 0) return;
 
-  const baseYield =
-    config?.territorial?.resourceYieldPerTick ?? 0;
+  const baseYield = config?.territorial?.resourceYieldPerTick ?? 0;
   if (baseYield <= 0) return;
-  const yieldByType =
-    config?.territorial?.resourceYieldByType || {};
+  const yieldByType = config?.territorial?.resourceYieldByType || {};
   const upgrades = gameState.resourceUpgrades || {};
 
   const totalsByOwner = {};
@@ -398,59 +237,65 @@ function applyResourceNodeIncome(gameState, mapData) {
   });
 }
 
-function updateResourceNodeClaims(gameState, mapData, ownershipMapParam = null) {
+/**
+ * Resource node claims using matrix ownership
+ */
+function updateResourceNodeClaimsMatrix(gameState, mapData, matrix) {
   if (!gameState || !Array.isArray(mapData)) return;
   const claims = gameState.resourceNodeClaims || {};
   const captureTicks = config?.territorial?.resourceCaptureTicks ?? 20;
-  // OPTIMIZATION 1: Use passed ownership map if available, otherwise build (fallback)
-  const ownershipMap = ownershipMapParam || buildOwnershipMap(gameState.nations);
+  const { width, height } = matrix;
+
   const seen = new Set();
 
-  ownershipMap.forEach((ownerNation, key) => {
-    const [xStr, yStr] = key.split(",");
-    const x = Number(xStr);
-    const y = Number(yStr);
-    const cell = mapData?.[y]?.[x];
-    if (!cell?.resourceNode?.type) return;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const cell = mapData?.[y]?.[x];
+      if (!cell?.resourceNode?.type) continue;
+      const ownerIdx = matrix.getOwner(x, y);
+      if (ownerIdx === UNOWNED) continue;
 
-    seen.add(key);
-    const ownerId = ownerNation?.owner;
-    if (!ownerId) return;
+      const ownerId = matrix.getOwnerByIndex(ownerIdx);
+      if (!ownerId) continue;
 
-    let claim = claims[key];
-    if (!claim) {
-      claim = {
-        type: cell.resourceNode.type,
-        owner: null,
-        progressOwner: null,
-        progress: 0,
-      };
-    }
+      const key = `${x},${y}`;
+      seen.add(key);
 
-    if (claim.owner && claim.owner !== ownerId) {
-      claim.owner = null;
-      claim.progressOwner = null;
-      claim.progress = 0;
-    }
+      let claim = claims[key];
+      if (!claim) {
+        claim = {
+          type: cell.resourceNode.type,
+          owner: null,
+          progressOwner: null,
+          progress: 0,
+        };
+      }
 
-    if (claim.owner === ownerId) {
+      if (claim.owner && claim.owner !== ownerId) {
+        claim.owner = null;
+        claim.progressOwner = null;
+        claim.progress = 0;
+      }
+
+      if (claim.owner === ownerId) {
+        claim.type = cell.resourceNode.type;
+        claims[key] = claim;
+        continue;
+      }
+
+      if (claim.progressOwner !== ownerId) {
+        claim.progressOwner = ownerId;
+        claim.progress = 0;
+      }
+
+      claim.progress = Math.min(captureTicks, (claim.progress || 0) + 1);
+      if (claim.progress >= captureTicks) {
+        claim.owner = ownerId;
+      }
       claim.type = cell.resourceNode.type;
       claims[key] = claim;
-      return;
     }
-
-    if (claim.progressOwner !== ownerId) {
-      claim.progressOwner = ownerId;
-      claim.progress = 0;
-    }
-
-    claim.progress = Math.min(captureTicks, (claim.progress || 0) + 1);
-    if (claim.progress >= captureTicks) {
-      claim.owner = ownerId;
-    }
-    claim.type = cell.resourceNode.type;
-    claims[key] = claim;
-  });
+  }
 
   Object.keys(claims).forEach((key) => {
     if (seen.has(key)) return;
@@ -468,20 +313,22 @@ function updateResourceNodeClaims(gameState, mapData, ownershipMapParam = null) 
 
 class GameLoop {
   constructor() {
-    this.timers = new Map(); // roomId -> timer
-    this.cachedMapData = new Map(); // roomId -> cached mapData
-    this.cachedMapStats = new Map(); // roomId -> { totalClaimable }
-    this.cachedGameRoom = new Map(); // roomId -> cached gameRoom document (avoid DB fetch each tick)
-    this.cachedOwnershipMap = new Map(); // roomId -> Map<"x,y", nation> (OPTIMIZATION 1)
-    this.cachedNationCount = new Map(); // roomId -> nation count for cache invalidation
-    this.cachedFrontierSets = new Map(); // roomId -> Map<owner, Set<"x,y">> (OPTIMIZATION 3)
-    this.lastSaveTick = new Map(); // roomId -> tick number (OPTIMIZATION 2)
-    this.savingRooms = new Set(); // Rooms with a save in progress (prevent parallel saves)
-    this.pendingRooms = new Set(); // Rooms being initialized (race condition prevention)
-    this.processingRooms = new Set(); // Rooms currently being processed (prevents duplicate processing)
-    this.roomMutationLocks = new Set(); // Rooms with active API mutations (prevents tick/mutation races)
-    this.loopIds = new Map(); // roomId -> current loopId (kills duplicate loops)
-    this.roomTickCount = new Map(); // roomId -> current tick count (in-memory, not from stale DB)
+    this.timers = new Map();
+    this.cachedMapData = new Map();
+    this.cachedMapStats = new Map();
+    this.cachedGameRoom = new Map();
+    this.cachedMatrix = new Map(); // roomId -> TerritoryMatrix
+    // String-key caches used by gameLogic.js updateNation() for compatibility
+    this.cachedOwnershipMap = new Map();
+    this.cachedNationCount = new Map();
+    this.cachedFrontierSets = new Map();
+    this.lastSaveTick = new Map();
+    this.savingRooms = new Set();
+    this.pendingRooms = new Set();
+    this.processingRooms = new Set();
+    this.roomMutationLocks = new Set();
+    this.loopIds = new Map();
+    this.roomTickCount = new Map();
     const tickRate =
       Number(process.env.TICK_RATE_MS) ||
       Number(config?.territorial?.tickRateMs);
@@ -492,14 +339,75 @@ class GameLoop {
     const configuredBroadcastRate = Number.isFinite(broadcastRate)
       ? broadcastRate
       : this.targetTickRate;
-    // Delta payloads are tick-based; broadcasting slower than ticks drops deltas on clients.
     this.broadcastIntervalMs = Math.max(
       10,
       Math.min(configuredBroadcastRate, this.targetTickRate)
     );
-    this.lastBroadcast = new Map(); // roomId -> timestamp
-    this.dbSaveIntervalTicks = config?.territorial?.dbSaveIntervalTicks ?? 5; // OPTIMIZATION 2
+    this.lastBroadcast = new Map();
+    this.dbSaveIntervalTicks = config?.territorial?.dbSaveIntervalTicks ?? 5;
   }
+
+  // ─── Matrix management ──────────────────────────────────────────
+
+  /** Get or create the TerritoryMatrix for a room */
+  getMatrix(roomKey, mapData, nations) {
+    let matrix = this.cachedMatrix.get(roomKey);
+    if (!matrix) {
+      const height = mapData.length;
+      const width = mapData[0]?.length || 0;
+      const maxNations = config?.matrix?.maxNations || 64;
+      matrix = new TerritoryMatrix(width, height, maxNations);
+      matrix.initFromMapData(mapData, config?.matrix);
+      matrix.populateFromNations(nations);
+      this.cachedMatrix.set(roomKey, matrix);
+      console.log(`[MATRIX] Created ${width}x${height} matrix for room ${roomKey} (${matrix.nextNationSlot} nations)`);
+    } else {
+      // Ensure any new nations are registered
+      for (const nation of nations) {
+        if (nation.status === "defeated") continue;
+        if (!matrix.ownerToIndex.has(nation.owner)) {
+          matrix.getNationIndex(nation.owner);
+        }
+      }
+    }
+    return matrix;
+  }
+
+  /**
+   * Sync matrix ownership from nations' territory arrays.
+   * Used after route mutations (foundNation, quit) to keep matrix in sync.
+   */
+  syncMatrixFromNations(roomKey, nations) {
+    const matrix = this.cachedMatrix.get(roomKey);
+    if (!matrix) return;
+
+    // Build set of active nation owners for targeted cleanup
+    const activeOwners = new Set();
+    for (const nation of nations) {
+      if (nation.status !== "defeated" && nation.owner) {
+        activeOwners.add(nation.owner);
+      }
+    }
+
+    // Clear ownership for removed/defeated nations only, preserve loyalty for active nations
+    for (let i = 0; i < matrix.size; i++) {
+      const ownerIdx = matrix.ownership[i];
+      if (ownerIdx === UNOWNED) continue;
+      const ownerStr = matrix.getOwnerByIndex(ownerIdx);
+      if (!ownerStr || !activeOwners.has(ownerStr)) {
+        matrix.ownership[i] = UNOWNED;
+        // Clear loyalty for removed nations at this cell
+        if (ownerIdx >= 0 && ownerIdx < matrix.maxNations) {
+          matrix.loyalty[ownerIdx * matrix.size + i] = 0;
+        }
+      }
+    }
+
+    // Re-populate from nation territories (sets ownership + loyalty=1.0 for owned cells)
+    matrix.populateFromNations(nations);
+  }
+
+  // ─── Map data management ────────────────────────────────────────
 
   async initializeMapData(roomId) {
     const roomKey = roomId?.toString();
@@ -521,19 +429,16 @@ class GameLoop {
         return null;
       }
 
-      // Initialize empty map data as a proper 2D array
       let mapData = Array.from({ length: gameMap.height }, () =>
         Array.from({ length: gameMap.width }, () => null)
       );
 
       const chunks = await MapChunk.find({ map: gameMap._id }).lean();
 
-      // Process chunks and ensure we maintain array structure
       chunks.forEach((chunk) => {
         const startRow = chunk.startRow;
         chunk.rows.forEach((row, rowIndex) => {
           if (startRow + rowIndex < mapData.length) {
-            // Ensure row is an array
             const processedRow = Array.isArray(row)
               ? row
               : Object.keys(row)
@@ -549,10 +454,8 @@ class GameLoop {
         });
       });
 
-      // Process resources for the map
       mapData = assignResourcesToMap(mapData, gameMap.seed || gameMap._id.toString());
 
-      // Verify array structure before caching
       mapData = mapData.map((row) => {
         if (!Array.isArray(row)) {
           console.warn("Converting non-array row to array");
@@ -564,7 +467,6 @@ class GameLoop {
         return row;
       });
 
-      // Store in cache
       this.cachedMapData.set(roomKey, mapData);
       let totalClaimable = 0;
       if (process.env.DEBUG_RESOURCES === "true") {
@@ -586,13 +488,7 @@ class GameLoop {
               }
             }
             if (!sampleCell && cell.biome !== "OCEAN") {
-              sampleCell = {
-                x,
-                y,
-                biome: cell.biome,
-                resources: resList,
-                resourceNode: cell.resourceNode || null,
-              };
+              sampleCell = { x, y, biome: cell.biome, resources: resList, resourceNode: cell.resourceNode || null };
             }
           }
         }
@@ -686,14 +582,13 @@ class GameLoop {
     }
   }
 
-  // Build ownership map from nations AND clean up any duplicate ownership
-  // (tiles that exist in multiple nations' territory arrays)
+  // ─── String-key ownership map methods (used by gameLogic.js) ───
+
   buildInitialOwnershipMap(nations) {
     const ownership = new Map();
     if (!Array.isArray(nations)) return ownership;
 
-    // First pass: detect and collect all tiles and their claimants
-    const tileClaims = new Map(); // key -> [nation1, nation2, ...]
+    const tileClaims = new Map();
     for (const nation of nations) {
       if (!nation?.territory?.x || !nation?.territory?.y) continue;
       for (let i = 0; i < nation.territory.x.length; i++) {
@@ -705,22 +600,16 @@ class GameLoop {
       }
     }
 
-    // Second pass: resolve conflicts and build ownership map
     for (const [key, claimants] of tileClaims.entries()) {
       if (claimants.length > 1) {
-        // Multiple nations claim this tile - keep the first, remove from others
         const [xStr, yStr] = key.split(",");
         const x = Number(xStr);
         const y = Number(yStr);
-
-        // Keep the first claimant (arbitrary but consistent)
         const winner = claimants[0].nation;
         ownership.set(key, winner);
 
-        // Remove from all other claimants (in reverse index order to preserve indices)
         for (let i = claimants.length - 1; i >= 1; i--) {
           const loser = claimants[i].nation;
-          // Find and remove this tile from the loser's territory
           for (let j = loser.territory.x.length - 1; j >= 0; j--) {
             if (loser.territory.x[j] === x && loser.territory.y[j] === y) {
               loser.territory.x.splice(j, 1);
@@ -731,7 +620,6 @@ class GameLoop {
           }
         }
       } else {
-        // Only one claimant - normal case
         ownership.set(key, claimants[0].nation);
       }
     }
@@ -739,13 +627,11 @@ class GameLoop {
     return ownership;
   }
 
-  // Get ownership map for a room - use cache when possible, rebuild when nation count changes
   getOwnershipMap(roomKey, nations, forceRebuild = false) {
     let ownershipMap = this.cachedOwnershipMap.get(roomKey);
     const cachedCount = this.cachedNationCount.get(roomKey) ?? 0;
     const currentCount = (nations || []).length;
 
-    // Only rebuild if no cache, forced, or nation count changed
     if (!ownershipMap || forceRebuild || cachedCount !== currentCount) {
       ownershipMap = this.buildInitialOwnershipMap(nations);
       this.cachedOwnershipMap.set(roomKey, ownershipMap);
@@ -754,13 +640,11 @@ class GameLoop {
     return ownershipMap;
   }
 
-  // OPTIMIZATION 1: Update ownership map incrementally from territory deltas
   updateOwnershipMapFromDeltas(ownershipMap, nations) {
     for (const nation of nations) {
       const delta = nation.territoryDelta;
       if (!delta) continue;
 
-      // Process additions
       if (delta.add?.x && delta.add?.y) {
         for (let i = 0; i < delta.add.x.length; i++) {
           const key = `${delta.add.x[i]},${delta.add.y[i]}`;
@@ -768,11 +652,9 @@ class GameLoop {
         }
       }
 
-      // Process removals
       if (delta.sub?.x && delta.sub?.y) {
         for (let i = 0; i < delta.sub.x.length; i++) {
           const key = `${delta.sub.x[i]},${delta.sub.y[i]}`;
-          // Only delete if this nation still owns it (might have been taken by another)
           if (ownershipMap.get(key) === nation) {
             ownershipMap.delete(key);
           }
@@ -781,11 +663,9 @@ class GameLoop {
     }
   }
 
-  // OPTIMIZATION 3: Build initial frontier set for a nation
   buildFrontierSetForNation(nation, mapData, ownershipMap) {
     const frontier = new Set();
     if (!nation?.territory?.x || !nation?.territory?.y) return frontier;
-
     const width = mapData[0]?.length || 0;
     const height = mapData.length || 0;
     const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -793,34 +673,27 @@ class GameLoop {
     for (let i = 0; i < nation.territory.x.length; i++) {
       const x = nation.territory.x[i];
       const y = nation.territory.y[i];
-
       for (const [dx, dy] of neighbors) {
         const nx = x + dx;
         const ny = y + dy;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-
         const key = `${nx},${ny}`;
         const owner = ownershipMap.get(key);
         if (owner?.owner === nation.owner) continue;
-
         const cell = mapData[ny]?.[nx];
         if (!cell || cell.biome === "OCEAN") continue;
-
         frontier.add(key);
       }
     }
     return frontier;
   }
 
-  // OPTIMIZATION 3: Get or create cached frontier sets for a room
   getFrontierSets(roomKey, nations, mapData, ownershipMap) {
     let frontierSets = this.cachedFrontierSets.get(roomKey);
     if (!frontierSets) {
       frontierSets = new Map();
       this.cachedFrontierSets.set(roomKey, frontierSets);
     }
-
-    // Check for any nations that don't have a frontier set yet (newly founded nations)
     for (const nation of nations) {
       if (nation.status === "defeated") continue;
       if (!frontierSets.has(nation.owner)) {
@@ -828,11 +701,9 @@ class GameLoop {
         frontierSets.set(nation.owner, frontier);
       }
     }
-
     return frontierSets;
   }
 
-  // OPTIMIZATION 3: Update frontier sets incrementally from territory deltas
   updateFrontierSetsFromDeltas(frontierSets, nations, mapData, ownershipMap) {
     const width = mapData[0]?.length || 0;
     const height = mapData.length || 0;
@@ -848,26 +719,19 @@ class GameLoop {
         frontierSets.set(nation.owner, frontier);
       }
 
-      // Process added tiles - they are no longer frontier, but their neighbors might be
       if (delta.add?.x && delta.add?.y) {
         for (let i = 0; i < delta.add.x.length; i++) {
           const x = delta.add.x[i];
           const y = delta.add.y[i];
           const key = `${x},${y}`;
-
-          // This tile is no longer frontier for this nation
           frontier.delete(key);
 
-          // Check neighbors - they might become frontier
           for (const [dx, dy] of neighbors) {
             const nx = x + dx;
             const ny = y + dy;
             if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-
             const nKey = `${nx},${ny}`;
             const owner = ownershipMap.get(nKey);
-
-            // If neighbor is not owned by this nation and is valid terrain, it's frontier
             if (owner?.owner !== nation.owner) {
               const cell = mapData[ny]?.[nx];
               if (cell && cell.biome !== "OCEAN") {
@@ -876,13 +740,10 @@ class GameLoop {
             }
           }
 
-          // This tile might become frontier for other nations
           for (const otherNation of nations) {
             if (otherNation.owner === nation.owner) continue;
             const otherFrontier = frontierSets.get(otherNation.owner);
             if (!otherFrontier) continue;
-
-            // Check if any of the other nation's territory is adjacent
             let isAdjacentToOther = false;
             for (const [dx, dy] of neighbors) {
               const nx = x + dx;
@@ -900,14 +761,11 @@ class GameLoop {
         }
       }
 
-      // Process removed tiles - they might become frontier again
       if (delta.sub?.x && delta.sub?.y) {
         for (let i = 0; i < delta.sub.x.length; i++) {
           const x = delta.sub.x[i];
           const y = delta.sub.y[i];
           const key = `${x},${y}`;
-
-          // Check if this removed tile should become frontier
           let isAdjacentToOwned = false;
           for (const [dx, dy] of neighbors) {
             const nx = x + dx;
@@ -918,20 +776,16 @@ class GameLoop {
               break;
             }
           }
-
           const cell = mapData[y]?.[x];
           if (isAdjacentToOwned && cell && cell.biome !== "OCEAN") {
             frontier.add(key);
           }
 
-          // Neighbors might no longer be frontier if they were only adjacent via this tile
           for (const [dx, dy] of neighbors) {
             const nx = x + dx;
             const ny = y + dy;
             if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
             const nKey = `${nx},${ny}`;
-
-            // If neighbor is in frontier, check if it's still valid
             if (frontier.has(nKey)) {
               let stillFrontier = false;
               for (const [ddx, ddy] of neighbors) {
@@ -953,6 +807,8 @@ class GameLoop {
     }
   }
 
+  // ─── Process room ───────────────────────────────────────────────
+
   async processRoom(roomId) {
     const roomKey = roomId?.toString();
 
@@ -960,7 +816,6 @@ class GameLoop {
       return 0;
     }
 
-    // Prevent concurrent processing of the same room
     if (this.processingRooms.has(roomKey)) {
       console.warn(`[LOCK] Skipping room ${roomKey} - already being processed`);
       return 0;
@@ -969,7 +824,6 @@ class GameLoop {
 
     const startTime = process.hrtime();
     try {
-      // Use cached gameRoom to avoid DB fetch each tick (eliminates version conflicts)
       let gameRoom = this.cachedGameRoom.get(roomKey);
       if (!gameRoom) {
         const GameRoom = mongoose.model("GameRoom");
@@ -978,33 +832,27 @@ class GameLoop {
           this.cachedGameRoom.set(roomKey, gameRoom);
         }
       }
-      if (
-        !gameRoom ||
-        gameRoom.status !== "open" ||
-        !gameRoom?.gameState?.nations
-      ) {
+      if (!gameRoom || gameRoom.status !== "open" || !gameRoom?.gameState?.nations) {
         return;
       }
 
-      // Use in-memory tick count
       if (!this.roomTickCount.has(roomKey)) {
         this.roomTickCount.set(roomKey, gameRoom.tickCount || 0);
       }
       const currentTick = this.roomTickCount.get(roomKey);
 
-      // Get or initialize the cached mapData
       let mapData = await this.getMapData(roomKey);
       if (!mapData) {
         console.error(`Failed to get map data for room ${roomKey}`);
         return;
       }
 
-      // OPTIMIZATION 1: Use cached ownership map instead of rebuilding
-      const ownershipMap = this.getOwnershipMap(roomKey, gameRoom.gameState.nations);
+      const matrix = this.getMatrix(roomKey, mapData, gameRoom.gameState.nations);
 
-      // OPTIMIZATION 3: Get cached frontier sets
-      const frontierSets = this.getFrontierSets(roomKey, gameRoom.gameState.nations, mapData, ownershipMap);
+      // 1. Snapshot ownership for delta derivation at end of tick
+      matrix.snapshotOwnership();
 
+      // 2. Compute bonuses
       const bonusesByOwner = computeBonusesByOwner(
         gameRoom.gameState.nations,
         mapData,
@@ -1012,15 +860,56 @@ class GameLoop {
         gameRoom.gameState?.resourceNodeClaims || null
       );
 
+      // 3. Loyalty diffusion + derive ownership from loyalty
+      if (loyaltyEnabled) {
+        tickLoyaltyDiffusion(matrix, config.loyalty, gameRoom.gameState.nations);
+        deriveOwnershipFromLoyalty(matrix, config.loyalty?.ownershipThreshold || 0.6);
+      }
+
+      // 4. Population density + defense strength
+      if (popDensityEnabled) {
+        tickPopulationDensity(matrix, config.populationDensity, gameRoom.gameState.nations);
+        computeDefenseStrength(
+          matrix,
+          gameRoom.gameState.nations,
+          config.structures,
+          config.populationDensity?.densityDefenseScale || 0.5
+        );
+      }
+
+      // 5. Build ownershipMap for gameLogic.js compatibility
+      const ownershipMap = this.getOwnershipMap(roomKey, gameRoom.gameState.nations);
+      const frontierSets = this.getFrontierSets(roomKey, gameRoom.gameState.nations, mapData, ownershipMap);
+
       const nationOrder = [...gameRoom.gameState.nations];
       const botCount = nationOrder.filter(n => n.isBot && n.status !== 'defeated').length;
-      const activeArrows = nationOrder.filter(n => n.arrowOrders?.attack || n.arrowOrders?.defend).length;
-      const botArrows = nationOrder.filter(n => n.isBot && n.arrowOrders?.attack).length;
+      const activeArrows = nationOrder.filter(n => n.arrowOrders?.attacks?.length > 0 || n.arrowOrders?.attack || n.arrowOrders?.defend).length;
+      const botArrows = nationOrder.filter(n => n.isBot && (n.arrowOrders?.attacks?.length > 0 || n.arrowOrders?.attack)).length;
 
-      // Log nation counts every 50 ticks (or every 10 when debugging)
       const logInterval = process.env.DEBUG_TICKS === "true" ? 10 : 50;
       if (currentTick % logInterval === 0) {
         console.log(`[TICK ${currentTick}] Nations: ${nationOrder.length}, Bots: ${botCount}, BotArrows: ${botArrows}, PlayerArrows: ${activeArrows - botArrows}`);
+      }
+
+      // ═══ HYPOTHESIS DIAGNOSTICS (every 10 ticks) ═══
+      if (currentTick % 10 === 0) {
+        for (const n of nationOrder) {
+          const ao = n.arrowOrders;
+          const attacksLen = ao?.attacks?.length || 0;
+          const hasLegacySingular = !!ao?.attack; // H2: legacy field check
+          const hasDefend = !!ao?.defend;
+          if (attacksLen > 0 || hasLegacySingular || hasDefend) {
+            console.log(`[H-DIAG ${currentTick}] ${n.isBot ? 'BOT' : 'PLAYER'} "${n.name || n.owner}": attacks[]=${attacksLen}, attack(singular)=${hasLegacySingular}, defend=${hasDefend}${hasLegacySingular ? ' *** LEGACY FIELD PRESENT ***' : ''}`);
+            if (attacksLen > 0) {
+              ao.attacks.forEach((a, i) => {
+                console.log(`  arrow[${i}] id=${a.id} power=${a.remainingPower?.toFixed(0)} status=${a.status} idx=${a.currentIndex}/${a.path?.length} age=${a.createdAt ? Date.now() - new Date(a.createdAt).getTime() : '?'}ms`);
+              });
+            }
+            if (hasLegacySingular) {
+              console.log(`  *** LEGACY attack(singular): id=${ao.attack?.id} power=${ao.attack?.remainingPower?.toFixed(0)} path=${ao.attack?.path?.length}`);
+            }
+          }
+        }
       }
 
       for (let i = nationOrder.length - 1; i > 0; i--) {
@@ -1028,6 +917,7 @@ class GameLoop {
         [nationOrder[i], nationOrder[j]] = [nationOrder[j], nationOrder[i]];
       }
 
+      // 6. Update nations (arrows write to both matrix and ownershipMap via gameLogic.js)
       const updatedNations = nationOrder.map((nation) =>
         updateNation(
           nation,
@@ -1036,21 +926,20 @@ class GameLoop {
           ownershipMap,
           bonusesByOwner,
           currentTick,
-          frontierSets.get(nation.owner) // OPTIMIZATION 3: Pass frontier set
+          frontierSets.get(nation.owner),
+          matrix
         )
       );
 
-      // OPTIMIZATION 1 & 3: Update caches incrementally from deltas
+      // 7. Sync string-key caches from gameLogic.js changes (territory deltas)
       this.updateOwnershipMapFromDeltas(ownershipMap, updatedNations);
       this.updateFrontierSetsFromDeltas(frontierSets, updatedNations, mapData, ownershipMap);
 
-      // Track if any changes occurred - used for encirclement/structure checks
       const hasChanges = updatedNations.some(n =>
         (n.territoryDelta?.add?.x?.length || 0) > 0 ||
         (n.territoryDelta?.sub?.x?.length || 0) > 0
       );
 
-      // Debug: Log changes per nation
       if (process.env.DEBUG_TICKS === "true" && currentTick % 10 === 0) {
         const changeDetails = updatedNations
           .filter(n => (n.territoryDelta?.add?.x?.length || 0) > 0)
@@ -1063,74 +952,75 @@ class GameLoop {
         }
       }
 
-      // Reset territory deltas after they've been used for cache updates and change detection
+      // Reset territory deltas
       for (const nation of updatedNations) {
         if (nation.territoryDelta) {
           nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
         }
       }
 
+      // 7.5 Passive concavity fill — fill gaps between tendrils (cascading passes)
+      const concavityMinNeighbors = config?.loyalty?.concavityFillMinNeighbors ?? 5;
+      const concavityMaxPasses = config?.loyalty?.concavityFillMaxPasses ?? 3;
+      passiveConcavityFill(matrix, updatedNations, concavityMinNeighbors, concavityMaxPasses);
+
       gameRoom.gameState.nations = updatedNations;
 
-      // Build nationsByOwner map for structure handling
-      const nationsByOwner = new Map(
-        updatedNations.map((n) => [n.owner, n])
-      );
-
-      // Handle structure capture/destroy when territory changes hands
+      // 8. Structure capture
       if (hasChanges) {
-        handleStructureCapture(gameRoom.gameState, ownershipMap, nationsByOwner);
+        handleStructureCaptureMatrix(gameRoom.gameState, matrix);
       }
 
-      // Apply city auto-expansion (slow passive expansion from towns)
-      applyCityAutoExpansion(gameRoom.gameState, mapData, ownershipMap);
-      // Only run encirclement check when territory actually changed (performance optimization)
+      // 9. City auto-expansion
+      applyCityAutoExpansionMatrix(gameRoom.gameState, matrix);
+
+      // 10. Encirclement
       const encirclementInterval = config?.territorial?.encirclementCheckIntervalTicks ?? 6;
-      if (
-        hasChanges &&
-        currentTick % encirclementInterval === 0
-      ) {
-        updateEncircledTerritory(
-          gameRoom.gameState,
-          mapData,
-          ownershipMap
-        );
+      if (hasChanges && currentTick % encirclementInterval === 0) {
+        updateEncircledTerritoryMatrix(gameRoom.gameState, matrix);
       }
-      updateResourceNodeClaims(gameRoom.gameState, mapData, ownershipMap); // Pass ownershipMap to avoid rebuild
+
+      // 11. Resource claims
+      updateResourceNodeClaimsMatrix(gameRoom.gameState, mapData, matrix);
       applyResourceNodeIncome(gameRoom.gameState, mapData);
+
+      // 12. Derive client-compatible deltas from matrix snapshot diff
+      const stats = this.cachedMapStats.get(roomKey);
+      applyMatrixToNations(matrix, updatedNations, stats?.totalClaimable || 0);
+
       gameRoom.markModified("gameState.resourceNodeClaims");
       gameRoom.markModified("gameState.encirclementClaims");
       gameRoom.markModified("gameState.nations");
+
       if (process.env.DEBUG_BOTS === "true") {
-        const botCount = updatedNations.filter((n) => n.isBot).length;
-        console.log(
-          `[BOTS] tick room=${roomKey} nations=${updatedNations.length} bots=${botCount}`
-        );
+        const bc = (gameRoom.gameState.nations || []).filter((n) => n.isBot).length;
+        console.log(`[BOTS] tick room=${roomKey} nations=${gameRoom.gameState.nations.length} bots=${bc}`);
       }
 
-      const winCheckInterval =
-        config?.territorial?.winConditionCheckIntervalTicks ?? 5;
+      const winCheckInterval = config?.territorial?.winConditionCheckIntervalTicks ?? 5;
       if (currentTick % winCheckInterval === 0) {
         const stats = this.cachedMapStats.get(roomKey);
-        checkWinCondition(
-          gameRoom.gameState,
-          mapData,
-          stats?.totalClaimable
-        );
+        checkWinCondition(gameRoom.gameState, mapData, stats?.totalClaimable);
       }
 
-      // Increment tick count in both memory and gameRoom (for DB sync)
       const nextTick = currentTick + 1;
       this.roomTickCount.set(roomKey, nextTick);
       gameRoom.tickCount = nextTick;
 
-      // Periodic DB save for crash recovery (~30 seconds)
       const lastSave = this.lastSaveTick.get(roomKey) || 0;
       const ticksSinceLastSave = nextTick - lastSave;
 
       if (ticksSinceLastSave >= this.dbSaveIntervalTicks && !this.savingRooms.has(roomKey)) {
         this.savingRooms.add(roomKey);
         gameRoom.markModified("gameState.nations");
+
+        // Serialize matrix state for persistence
+        const matrix = this.cachedMatrix.get(roomKey);
+        if (matrix) {
+          gameRoom.matrixState = serializeMatrix(matrix);
+          gameRoom.markModified("matrixState");
+        }
+
         gameRoom.save()
           .then(() => {
             this.savingRooms.delete(roomKey);
@@ -1142,9 +1032,12 @@ class GameLoop {
               this.cachedGameRoom.delete(roomKey);
               this.cachedOwnershipMap.delete(roomKey);
               this.cachedFrontierSets.delete(roomKey);
+              this.cachedMatrix.delete(roomKey);
               console.log(`[DB] Version conflict for room ${roomKey}, cache invalidated`);
             } else {
               console.error(`[DB] Error saving room ${roomKey}:`, err.message);
+              // Reset lastSaveTick so we retry on the next interval instead of waiting
+              this.lastSaveTick.set(roomKey, nextTick - this.dbSaveIntervalTicks + 5);
             }
           });
         this.lastSaveTick.set(roomKey, nextTick);
@@ -1154,17 +1047,28 @@ class GameLoop {
       const last = this.lastBroadcast.get(roomKey) || 0;
       if (now - last >= this.broadcastIntervalMs) {
         this.lastBroadcast.set(roomKey, now);
+        // H1 diagnostic: log arrow state being broadcast to clients (every 10th broadcast)
+        if (currentTick % 10 === 0) {
+          for (const n of gameRoom.gameState.nations) {
+            if (n.isBot) continue;
+            const ao = n.arrowOrders;
+            const atkCount = ao?.attacks?.length || 0;
+            const legacyAtk = !!ao?.attack;
+            const defend = !!ao?.defend;
+            if (atkCount > 0 || legacyAtk || defend) {
+              console.log(`[H1-BROADCAST] PLAYER "${n.name || n.owner}": broadcasting attacks[]=${atkCount} attack(singular)=${legacyAtk} defend=${defend}`);
+            }
+          }
+        }
         broadcastRoomUpdate(roomKey, gameRoom);
       }
 
-      // Calculate processing time
       const elapsed = process.hrtime(startTime);
       const elapsedMs = elapsed[0] * 1000 + elapsed[1] / 1e6;
       if (process.env.DEBUG_TICKS === "true") {
         console.log(`Room ${roomId} processed in ${elapsedMs.toFixed(2)} ms`);
       }
 
-      // Return processing time for tick rate adjustment
       return elapsedMs;
     } catch (error) {
       if (error.name === "VersionError") {
@@ -1174,9 +1078,8 @@ class GameLoop {
       } else {
         console.error(`Error processing room ${roomKey}:`, error);
       }
-      return 0; // Return 0 for error cases to maintain tick rate
+      return 0;
     } finally {
-      // Always release the processing lock
       this.processingRooms.delete(roomKey);
     }
   }
@@ -1185,7 +1088,6 @@ class GameLoop {
     const roomKey = roomId?.toString();
     console.log(`[LOOP] startRoom called for ${roomKey}`);
 
-    // If a loop is already running, just return (don't kill it)
     if (this.timers.has(roomKey) || this.loopIds.has(roomKey)) {
       console.log(`[LOOP] Room ${roomKey} already has a running loop, skipping`);
       return;
@@ -1197,7 +1099,6 @@ class GameLoop {
     this.pendingRooms.add(roomKey);
     console.log(`[LOOP] Initializing map data for room ${roomKey}`);
 
-    // Initialize map data before starting the game loop
     const mapData = await this.initializeMapData(roomKey);
     if (!mapData) {
       console.error(`Failed to initialize map data for room ${roomKey}`);
@@ -1205,19 +1106,22 @@ class GameLoop {
       return;
     }
 
-    // Double-check no timer was created while we were initializing
     if (this.timers.has(roomKey)) {
       console.log(`[LOOP] Room ${roomKey} timer was created while initializing, skipping`);
       this.pendingRooms.delete(roomKey);
       return;
     }
 
-    // Generate unique loop ID - any duplicate loops will detect this and stop
+    // Initialize matrix
+    const gameRoom = await this.getLiveGameRoom(roomKey);
+    if (gameRoom?.gameState?.nations) {
+      this.getMatrix(roomKey, mapData, gameRoom.gameState.nations);
+    }
+
     const loopId = Date.now() + Math.random();
     this.loopIds.set(roomKey, loopId);
 
     const tick = async () => {
-      // Check if this tick belongs to the current loop (kills duplicate loops)
       if (this.loopIds.get(roomKey) !== loopId) {
         console.log(`[LOOP] Old loop detected for ${roomKey}, stopping`);
         return;
@@ -1232,13 +1136,11 @@ class GameLoop {
         console.error(`[TICK] Unhandled error in room ${roomKey}:`, tickError);
       }
 
-      // If processRoom returned -1, this is a duplicate loop - stop
       if (result === -1) {
         console.log(`[LOOP] This loop is a duplicate for ${roomKey}, terminating`);
         return;
       }
 
-      // Re-check loop ownership after async processing
       if (this.loopIds.get(roomKey) !== loopId || !this.timers.has(roomKey)) return;
 
       const elapsedTime = Date.now() - startTime;
@@ -1255,10 +1157,9 @@ class GameLoop {
     const timer = setTimeout(tick, 0);
     this.timers.set(roomKey, timer);
     this.pendingRooms.delete(roomKey);
-    console.log(`[LOOP] Started room ${roomKey} (loopId: ${loopId.toFixed(0)})`);
+    console.log(`[LOOP] Started room ${roomKey} (loopId: ${loopId.toFixed(0)}) [MATRIX]`);
   }
 
-  // Called by routes after modifying gameState to update the in-memory cache
   async refreshRoomCache(roomId) {
     const roomKey = roomId?.toString();
     try {
@@ -1266,9 +1167,10 @@ class GameLoop {
       const freshRoom = await GameRoom.findById(roomKey);
       if (freshRoom) {
         this.cachedGameRoom.set(roomKey, freshRoom);
-        // Rebuild ownership/frontier caches since nations may have changed
         this.cachedOwnershipMap.delete(roomKey);
         this.cachedFrontierSets.delete(roomKey);
+        // Invalidate matrix cache so it gets rebuilt with new nation data
+        this.cachedMatrix.delete(roomKey);
         console.log(`[LOOP] Cache refreshed for room ${roomKey}`);
       }
     } catch (err) {
@@ -1278,13 +1180,12 @@ class GameLoop {
 
   stopRoom(roomId) {
     const roomKey = roomId?.toString();
-    // Clear all flags for this room
     this.pendingRooms.delete(roomKey);
     this.processingRooms.delete(roomKey);
     this.savingRooms.delete(roomKey);
     this.roomMutationLocks.delete(roomKey);
-    this.loopIds.delete(roomKey); // This will cause any running tick to stop
-    this.roomTickCount.delete(roomKey); // Clean up in-memory tick count
+    this.loopIds.delete(roomKey);
+    this.roomTickCount.delete(roomKey);
     const timer = this.timers.get(roomKey);
     if (timer) {
       clearTimeout(timer);
@@ -1295,6 +1196,7 @@ class GameLoop {
       this.cachedOwnershipMap.delete(roomKey);
       this.cachedNationCount.delete(roomKey);
       this.cachedFrontierSets.delete(roomKey);
+      this.cachedMatrix.delete(roomKey);
       this.lastSaveTick.delete(roomKey);
       this.lastBroadcast.delete(roomKey);
       console.log(`[LOOP] Stopped room ${roomKey}`);

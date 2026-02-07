@@ -91,9 +91,13 @@ const ActionBar = ({
   drawingArrowType,
   onStartDrawArrow,
   onCancelArrow,
-  activeAttackArrow,
+  activeAttackArrows,
   activeDefendArrow,
+  maxAttackArrows,
 }) => {
+  const attackArrowCount = activeAttackArrows?.length || 0;
+  const maxArrows = maxAttackArrows || 3;
+  const atMaxAttackArrows = attackArrowCount >= maxArrows;
   // If no userState, show the found-nation button.
   if (!hasFounded) {
     if (isSpectating) {
@@ -155,12 +159,12 @@ const ActionBar = ({
                 <ArrowButton
                   type="attack"
                   icon="⚔️"
-                  label="Attack"
-                  active={drawingArrowType === "attack" || activeAttackArrow}
+                  label={`Attack (${attackArrowCount}/${maxArrows})`}
+                  active={drawingArrowType === "attack" || attackArrowCount > 0}
                   onClick={() => {
                     if (drawingArrowType === "attack") {
                       onCancelArrow?.();
-                    } else {
+                    } else if (!atMaxAttackArrows) {
                       onStartDrawArrow?.("attack");
                     }
                   }}
@@ -179,10 +183,10 @@ const ActionBar = ({
                   }}
                 />
               </div>
-              {(activeAttackArrow || activeDefendArrow) && (
+              {(attackArrowCount > 0 || activeDefendArrow) && (
                 <div className="text-xs text-yellow-400 mt-1">
-                  {activeAttackArrow && "Attack arrow active"}
-                  {activeAttackArrow && activeDefendArrow && " • "}
+                  {attackArrowCount > 0 && `${attackArrowCount} attack arrow${attackArrowCount > 1 ? "s" : ""} active`}
+                  {attackArrowCount > 0 && activeDefendArrow && " • "}
                   {activeDefendArrow && "Defend arrow active"}
                 </div>
               )}

@@ -19,6 +19,10 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 
+const CLEAR_ROOMS =
+  process.argv.includes("--clear-rooms") ||
+  process.env.CLEAR_ROOMS === "true";
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -60,10 +64,47 @@ if (process.env.RESET_DB === "true") {
 }
 
 // -------------------------------------------------------------------
+// Clear all open/paused rooms (--clear-rooms flag or CLEAR_ROOMS=true)
+// -------------------------------------------------------------------
+async function clearAllRooms() {
+  try {
+    const rooms = await GameRoom.find({
+      status: { $in: ["open", "paused", "initializing"] },
+    })
+      .select("_id map")
+      .lean();
+
+    if (rooms.length === 0) {
+      console.log("[CLEAR] No open rooms to clear.");
+      return;
+    }
+
+    const MapModel = mongoose.model("Map");
+    const MapChunk = mongoose.model("MapChunk");
+
+    for (const room of rooms) {
+      const roomId = room._id.toString();
+      gameLoop.stopRoom(roomId);
+      await MapChunk.deleteMany({ map: room.map });
+      await MapModel.findByIdAndDelete(room.map);
+      await GameRoom.findByIdAndDelete(room._id);
+    }
+
+    console.log(`[CLEAR] Removed ${rooms.length} room(s) and their map data.`);
+  } catch (error) {
+    console.error("[CLEAR] Error clearing rooms:", error);
+  }
+}
+
+// -------------------------------------------------------------------
 // Function to resume game loops for all open rooms
 // -------------------------------------------------------------------
 async function resumeActiveGameLoops() {
   try {
+    if (CLEAR_ROOMS) {
+      await clearAllRooms();
+    }
+
     const openRooms = await GameRoom.find({ status: "open" });
     openRooms.forEach((room) => {
       // Make sure to pass the room id as a string

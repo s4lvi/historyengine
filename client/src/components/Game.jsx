@@ -8,6 +8,7 @@ import StatsBar from "./StatsBar";
 import SettingsModal from "./SettingsModal";
 import PlayerListModal from "./PlayerListModal";
 import ActionBar from "./ActionBar";
+import ArrowPanel from "./ArrowPanel";
 import { unpackTerritoryDelta } from "../utils/packedDelta";
 
 const Game = () => {
@@ -85,10 +86,9 @@ const Game = () => {
   // ----------------------------
   const [drawingArrowType, setDrawingArrowType] = useState(null); // "attack" or "defend"
   const [currentArrowPath, setCurrentArrowPath] = useState([]); // [{x, y}, ...]
-  const [activeAttackArrow, setActiveAttackArrow] = useState(null); // {path: [{x,y}...], remainingPower, ...}
+  const [activeAttackArrows, setActiveAttackArrows] = useState([]); // [{path, remainingPower, status, ...}]
   const [activeDefendArrow, setActiveDefendArrow] = useState(null); // {path: [{x,y}...], remainingPower, ...}
-  const [completedArrows, setCompletedArrows] = useState([]); // [{type, path, success, troops, id, createdAt}]
-  const prevArrowsRef = useRef({ attack: null, defend: null });
+  const prevArrowsRef = useRef({ attacks: [], defend: null });
 
   useEffect(() => {
     actionModalRef.current = actionModal;
@@ -190,7 +190,7 @@ const Game = () => {
     const incomingTick = Number(data.tickCount);
     const lastAppliedTick = Number(lastAppliedTickRef.current);
     if (Number.isFinite(incomingTick) && Number.isFinite(lastAppliedTick)) {
-      if (!isFullState && incomingTick < lastAppliedTick) {
+      if (!isFullState && incomingTick <= lastAppliedTick) {
         return false;
       }
       if (!isFullState && lastAppliedTick >= 0 && incomingTick > lastAppliedTick + 1) {
@@ -565,6 +565,7 @@ const Game = () => {
       // If an action modal is active (win/defeat popup), skip full state update.
       if (actionModal) {
         fullInFlightRef.current = false;
+        pendingGapSyncRef.current = false;
         return;
       }
 
@@ -868,7 +869,6 @@ const Game = () => {
     if (!userId || !storedPassword) return;
     if (!path || path.length < 2) return;
 
-    // Calculate initial troop count for immediate display
     const playerNation = gameState?.gameState?.nations?.find(
       (n) => n.owner === userId
     );
@@ -884,8 +884,8 @@ const Game = () => {
           body: JSON.stringify({
             userId,
             password: storedPassword,
-            type, // "attack" or "defend"
-            path, // [{x, y}, ...]
+            type,
+            path,
             percent: attackPercent,
           }),
         }
@@ -895,29 +895,45 @@ const Game = () => {
         throw new Error(errData.error || "Failed to send arrow command");
       }
 
-      // Set the active arrow with initial power estimate
-      const arrowData = {
-        path,
-        percent: attackPercent,
-        remainingPower: initialPower,
-        currentIndex: 0,
-      };
+      const result = await response.json();
 
       if (type === "attack") {
-        setActiveAttackArrow(arrowData);
+        setActiveAttackArrows((prev) => [
+          ...prev,
+          {
+            id: result.arrowId,
+            path,
+            percent: attackPercent,
+            remainingPower: initialPower,
+            initialPower,
+            currentIndex: 1,
+            status: "advancing",
+            frontWidth: 0,
+            opposingForces: [],
+            headX: path[0].x,
+            headY: path[0].y,
+          },
+        ]);
       } else if (type === "defend") {
-        setActiveDefendArrow(arrowData);
+        setActiveDefendArrow({
+          path,
+          percent: attackPercent,
+          remainingPower: initialPower,
+          currentIndex: 0,
+        });
       }
 
-      // Clear drawing state
       setDrawingArrowType(null);
       setCurrentArrowPath([]);
     } catch (err) {
-      setError(err.message);
+      // Clear drawing state so the red line goes away
+      setDrawingArrowType(null);
+      setCurrentArrowPath([]);
+      console.warn("[ARROW] Error:", err.message);
     }
   };
 
-  const handleClearActiveArrow = async (type) => {
+  const handleClearActiveArrow = async (type, arrowId) => {
     if (!userId || !storedPassword) return;
 
     try {
@@ -930,17 +946,63 @@ const Game = () => {
             userId,
             password: storedPassword,
             type,
+            arrowId,
           }),
         }
       );
 
       if (type === "attack") {
-        setActiveAttackArrow(null);
+        if (arrowId) {
+          setActiveAttackArrows((prev) => prev.filter((a) => a.id !== arrowId));
+        } else {
+          setActiveAttackArrows([]);
+        }
       } else if (type === "defend") {
         setActiveDefendArrow(null);
       }
     } catch (err) {
       console.error("Failed to clear arrow:", err);
+    }
+  };
+
+  const handleReinforceArrow = async (arrowId, percent = 0.1) => {
+    if (!userId || !storedPassword) return;
+    try {
+      await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/reinforceArrow`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId,
+            password: storedPassword,
+            arrowId,
+            percent,
+          }),
+        }
+      );
+    } catch (err) {
+      console.error("Failed to reinforce arrow:", err);
+    }
+  };
+
+  const handleRetreatArrow = async (arrowId) => {
+    if (!userId || !storedPassword) return;
+    try {
+      await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/retreatArrow`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId,
+            password: storedPassword,
+            arrowId,
+          }),
+        }
+      );
+    } catch (err) {
+      console.error("Failed to retreat arrow:", err);
     }
   };
 
@@ -951,78 +1013,33 @@ const Game = () => {
     );
     const serverArrows = playerNation?.arrowOrders || {};
 
-    // Detect when arrows complete (check before updating state)
-    const prevAttack = prevArrowsRef.current.attack;
-    const prevDefend = prevArrowsRef.current.defend;
-
-    // Check if attack arrow completed (had arrow before, doesn't now on server)
-    if (prevAttack && prevAttack.path && !serverArrows.attack) {
-      const wasSuccessful = (prevAttack.currentIndex || 0) >= (prevAttack.path?.length || 1) - 1;
-      const remainingTroops = Math.round(prevAttack.remainingPower || 0);
-      setCompletedArrows((prev) => [
-        ...prev,
-        {
-          type: "attack",
-          path: prevAttack.path,
-          success: wasSuccessful && remainingTroops > 0,
-          troops: remainingTroops,
-          id: `attack-${Date.now()}`,
-          createdAt: Date.now(),
-        },
-      ]);
-      setActiveAttackArrow(null);
+    // Handle legacy single attack -> attacks[] migration on client
+    let serverAttacks = serverArrows.attacks || [];
+    if (serverArrows.attack && !serverArrows.attacks) {
+      serverAttacks = [serverArrows.attack];
     }
 
-    // Check if defend arrow completed
-    if (prevDefend && prevDefend.path && !serverArrows.defend) {
-      const remainingTroops = Math.round(prevDefend.remainingPower || 0);
-      setCompletedArrows((prev) => [
-        ...prev,
-        {
-          type: "defend",
-          path: prevDefend.path,
-          success: true, // Defend arrows always "succeed" (troops returned)
-          troops: remainingTroops,
-          id: `defend-${Date.now()}`,
-          createdAt: Date.now(),
-        },
-      ]);
-      setActiveDefendArrow(null);
+    // H1 diagnostic: log what client receives from server
+    const prevAttacks = prevArrowsRef.current?.attacks || [];
+    if (serverAttacks.length > 0 || prevAttacks.length > 0) {
+      console.log(`[H1-CLIENT] server arrows: ${serverAttacks.length} (ids: ${serverAttacks.map(a => a.id?.slice(-6)).join(',')}) prev: ${prevAttacks.length}`);
     }
 
-    // Update active arrows from server state (only if server has arrow data)
-    if (serverArrows.attack && serverArrows.attack.path) {
-      setActiveAttackArrow(serverArrows.attack);
-    } else if (!serverArrows.attack && activeAttackArrow) {
-      // Server doesn't have arrow but we still do - clear it
-      setActiveAttackArrow(null);
-    }
+    // Always sync client arrows to match server state
+    setActiveAttackArrows(serverAttacks);
 
     if (serverArrows.defend && serverArrows.defend.path) {
       setActiveDefendArrow(serverArrows.defend);
-    } else if (!serverArrows.defend && activeDefendArrow) {
-      // Server doesn't have arrow but we still do - clear it
+    } else if (!serverArrows.defend) {
       setActiveDefendArrow(null);
     }
 
-    // Update refs for next comparison
     prevArrowsRef.current = {
-      attack: serverArrows.attack || null,
+      attacks: serverAttacks,
       defend: serverArrows.defend || null,
     };
-  }, [gameState, userId, activeAttackArrow, activeDefendArrow]);
+  }, [gameState, userId]);
 
-  // Clean up old completed arrows after animation
-  useEffect(() => {
-    if (completedArrows.length === 0) return;
-    const timer = setInterval(() => {
-      const now = Date.now();
-      setCompletedArrows((prev) =>
-        prev.filter((arrow) => now - arrow.createdAt < 2000)
-      );
-    }, 500);
-    return () => clearInterval(timer);
-  }, [completedArrows.length]);
 
   const handlePlaceTower = async (x, y) => {
     if (!userId || !storedPassword) return;
@@ -1165,13 +1182,14 @@ const Game = () => {
             placingTower={placingTower}
             onPlaceTower={handlePlaceTower}
             drawingArrowType={drawingArrowType}
+            onStartDrawArrow={handleStartDrawArrow}
             currentArrowPath={currentArrowPath}
             onArrowPathUpdate={handleArrowPathUpdate}
             onSendArrow={handleSendArrow}
             onCancelArrow={handleCancelArrow}
-            activeAttackArrow={activeAttackArrow}
+            activeAttackArrows={activeAttackArrows}
             activeDefendArrow={activeDefendArrow}
-            completedArrows={completedArrows}
+
           />
         )}
       </div>
@@ -1187,8 +1205,16 @@ const Game = () => {
         drawingArrowType={drawingArrowType}
         onStartDrawArrow={handleStartDrawArrow}
         onCancelArrow={handleCancelArrow}
-        activeAttackArrow={activeAttackArrow}
+        activeAttackArrows={activeAttackArrows}
         activeDefendArrow={activeDefendArrow}
+        maxAttackArrows={config?.territorial?.maxAttackArrows ?? 3}
+      />
+      <ArrowPanel
+        activeAttackArrows={activeAttackArrows}
+        activeDefendArrow={activeDefendArrow}
+        onReinforceArrow={handleReinforceArrow}
+        onRetreatArrow={handleRetreatArrow}
+        onClearArrow={handleClearActiveArrow}
       />
       {/* The join/login modal now appears only if the map is loaded */}
       <Modal
