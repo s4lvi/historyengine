@@ -16,6 +16,7 @@ import { tickPopulationDensity, computeDefenseStrength } from "../utils/matrixPo
 import { tickMobilization, tickTroopDensityDiffusion } from "../utils/matrixTroopDensity.js";
 import { deriveOwnershipFromLoyalty } from "../utils/matrixKernels.js";
 import { serializeMatrix } from "../utils/matrixSerializer.js";
+import { generateRegions } from "../utils/regionGenerator.js";
 
 const loyaltyEnabled = config?.loyalty?.enabled !== false;
 const popDensityEnabled = config?.populationDensity?.enabled !== false;
@@ -324,6 +325,7 @@ class GameLoop {
     this.cachedMapStats = new Map();
     this.cachedGameRoom = new Map();
     this.cachedMatrix = new Map(); // roomId -> TerritoryMatrix
+    this.cachedRegionData = new Map(); // roomId -> { seeds, assignment, regionCount, width, height }
     // String-key caches used by gameLogic.js updateNation() for compatibility
     this.cachedOwnershipMap = new Map();
     this.cachedNationCount = new Map();
@@ -517,6 +519,43 @@ class GameLoop {
         `Map data cached successfully for room ${roomKey}. Dimensions: ${mapData.length}x${mapData[0].length}`
       );
 
+      // Lazy-generate region data if not already persisted
+      if (config?.regions?.enabled !== false) {
+        try {
+          const MapRegion = mongoose.model("MapRegion");
+          let regionDoc = await MapRegion.findOne({ map: gameMap._id }).lean();
+          if (!regionDoc) {
+            console.log(`[REGIONS] Generating regions for map ${gameMap._id}`);
+            const regionData = generateRegions(mapData, gameMap.width, gameMap.height, gameMap.seed || 0, config.regions);
+            regionDoc = await MapRegion.create({
+              map: gameMap._id,
+              width: gameMap.width,
+              height: gameMap.height,
+              regionCount: regionData.regionCount,
+              seeds: regionData.seeds,
+              assignmentBuffer: Buffer.from(regionData.assignment.buffer),
+            });
+            console.log(`[REGIONS] Generated ${regionData.regionCount} regions for map ${gameMap._id}`);
+          }
+          // Cache the assignment as Uint16Array
+          const assignment = new Uint16Array(
+            regionDoc.assignmentBuffer.buffer.slice(
+              regionDoc.assignmentBuffer.byteOffset,
+              regionDoc.assignmentBuffer.byteOffset + regionDoc.assignmentBuffer.byteLength
+            )
+          );
+          this.cachedRegionData.set(roomKey, {
+            seeds: regionDoc.seeds,
+            assignment,
+            regionCount: regionDoc.regionCount,
+            width: regionDoc.width,
+            height: regionDoc.height,
+          });
+        } catch (regionErr) {
+          console.error(`[REGIONS] Error loading/generating regions for room ${roomKey}:`, regionErr);
+        }
+      }
+
       return mapData;
     } catch (error) {
       console.error(`Error initializing map data for room ${roomKey}:`, error);
@@ -532,6 +571,11 @@ class GameLoop {
       mapData = await this.initializeMapData(roomKey);
     }
     return mapData;
+  }
+
+  getRegionData(roomId) {
+    const roomKey = roomId?.toString();
+    return this.cachedRegionData.get(roomKey) || null;
   }
 
   getCachedGameRoom(roomId) {
@@ -734,8 +778,9 @@ class GameLoop {
       }
 
       // 4. Population density diffusion
+      const regionData = this.cachedRegionData.get(roomKey) || null;
       if (popDensityEnabled) {
-        tickPopulationDensity(matrix, config.populationDensity, gameRoom.gameState.nations);
+        tickPopulationDensity(matrix, config.populationDensity, gameRoom.gameState.nations, regionData, config.regions);
       }
 
       // 4.5 Troop density: mobilization + diffusion
@@ -751,7 +796,9 @@ class GameLoop {
           gameRoom.gameState.nations,
           config.structures,
           config.populationDensity?.densityDefenseScale || 0.5,
-          troopDensityEnabled ? (config.troopDensity?.troopDefenseScale || 0.8) : 0
+          troopDensityEnabled ? (config.troopDensity?.troopDefenseScale || 0.8) : 0,
+          regionData,
+          config.regions
         );
       }
 
@@ -803,7 +850,8 @@ class GameLoop {
           bonusesByOwner,
           currentTick,
           null,
-          matrix
+          matrix,
+          regionData
         )
       );
 
@@ -1061,6 +1109,7 @@ class GameLoop {
       this.cachedOwnershipMap.delete(roomKey);
       this.cachedNationCount.delete(roomKey);
       this.cachedMatrix.delete(roomKey);
+      this.cachedRegionData.delete(roomKey);
       this.lastSaveTick.delete(roomKey);
       this.lastBroadcast.delete(roomKey);
       console.log(`[LOOP] Stopped room ${roomKey}`);

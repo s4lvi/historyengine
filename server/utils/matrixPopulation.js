@@ -13,7 +13,7 @@ const DY = [0, 0, 1, -1];
  * @param {object} cfg - populationDensity config section
  * @param {Array} nations - gameState.nations array
  */
-export function tickPopulationDensity(matrix, cfg, nations) {
+export function tickPopulationDensity(matrix, cfg, nations, regionData = null, regionCfg = null) {
   const {
     diffusionRate = 0.05,
     decayRate = 0.02,
@@ -43,6 +43,27 @@ export function tickPopulationDensity(matrix, cfg, nations) {
     }
   }
 
+  // Pre-compute region-based city density boost map
+  // Maps "nIdx:regionId" -> true for regions with a city
+  let cityRegionSet = null;
+  const cityDensityMult = regionCfg?.cityDensityMultiplier || 1.0;
+  if (regionData && cityDensityMult > 1.0) {
+    cityRegionSet = new Set();
+    for (const nation of nations) {
+      if (nation.status === "defeated") continue;
+      const nIdx = matrix.ownerToIndex.get(nation.owner);
+      if (nIdx === undefined) continue;
+      for (const city of nation.cities || []) {
+        if (city.type !== "town" && city.type !== "capital") continue;
+        if (!matrix.inBounds(city.x, city.y)) continue;
+        const rId = regionData.assignment[city.y * width + city.x];
+        if (rId !== 65535) {
+          cityRegionSet.add(`${nIdx}:${rId}`);
+        }
+      }
+    }
+  }
+
   for (let i = 0; i < size; i++) {
     if (oceanMask[i] === 1) continue;
 
@@ -64,10 +85,21 @@ export function tickPopulationDensity(matrix, cfg, nations) {
 
     let newVal = readBuffer[i];
 
-    // Diffusion
+    // Diffusion — boosted in regions with cities
+    let effectiveDiffRate = diffusionRate;
+    if (cityRegionSet && cityRegionSet.size > 0) {
+      const ownerIdx = ownership[i];
+      if (ownerIdx !== UNOWNED) {
+        const rId = regionData.assignment[i];
+        if (rId !== 65535 && cityRegionSet.has(`${ownerIdx}:${rId}`)) {
+          effectiveDiffRate *= cityDensityMult;
+        }
+      }
+    }
+
     if (neighborCount > 0) {
       const avgNeighbor = neighborSum / neighborCount;
-      newVal += (avgNeighbor - newVal) * diffusionRate;
+      newVal += (avgNeighbor - newVal) * effectiveDiffRate;
     }
 
     // Natural decay
@@ -96,7 +128,7 @@ export function tickPopulationDensity(matrix, cfg, nations) {
  * @param {object} structureConfig - config.structures
  * @param {number} densityDefenseScale - config.populationDensity.densityDefenseScale
  */
-export function computeDefenseStrength(matrix, nations, structureConfig, densityDefenseScale = 0.5, troopDefenseScale = 0) {
+export function computeDefenseStrength(matrix, nations, structureConfig, densityDefenseScale = 0.5, troopDefenseScale = 0, regionData = null, regionCfg = null) {
   const { width, height, size, ownership, populationDensity, defenseStrength, oceanMask } = matrix;
 
   const townConfig = structureConfig?.town || { defenseRadius: 20 };
@@ -158,6 +190,53 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
 
           const falloff = 1 - d2 / r2; // quadratic falloff, avoids sqrt per cell
           defenseStrength[ci] += bonusMult * falloff;
+        }
+      }
+    }
+  }
+
+  // Region-based tower defense bonus
+  if (regionData && regionCfg?.towerDefenseBonus) {
+    const towerBonusTiers = regionCfg.towerDefenseBonus; // [0.50, 0.25]
+    const assignment = regionData.assignment;
+
+    // Count towers per nation per region
+    const regionTowerCount = new Map(); // "nIdx:regionId" -> count
+    for (const nation of nations) {
+      if (nation.status === "defeated") continue;
+      const nIdx = matrix.ownerToIndex.get(nation.owner);
+      if (nIdx === undefined) continue;
+      for (const city of nation.cities || []) {
+        if (city.type !== "tower") continue;
+        if (!matrix.inBounds(city.x, city.y)) continue;
+        const rId = assignment[city.y * width + city.x];
+        if (rId === 65535) continue;
+        const key = `${nIdx}:${rId}`;
+        regionTowerCount.set(key, (regionTowerCount.get(key) || 0) + 1);
+      }
+    }
+
+    // Apply regional bonus multiplier
+    if (regionTowerCount.size > 0) {
+      // Pre-compute bonus per nation:region
+      const regionBonus = new Map();
+      for (const [key, count] of regionTowerCount) {
+        let bonus = 0;
+        for (let t = 0; t < Math.min(count, towerBonusTiers.length); t++) {
+          bonus += towerBonusTiers[t];
+        }
+        regionBonus.set(key, bonus);
+      }
+
+      for (let i = 0; i < size; i++) {
+        if (oceanMask[i] === 1) continue;
+        const ownerIdx = ownership[i];
+        if (ownerIdx === UNOWNED) continue;
+        const rId = assignment[i];
+        if (rId === 65535) continue;
+        const bonus = regionBonus.get(`${ownerIdx}:${rId}`);
+        if (bonus) {
+          defenseStrength[i] *= (1 + bonus);
         }
       }
     }

@@ -12,6 +12,8 @@ import ArrowPanel from "./ArrowPanel";
 import { unpackTerritoryDelta } from "../utils/packedDelta";
 import MobileActionDock from "./MobileActionDock";
 import ContextPanel from "./ContextPanel";
+import { useAuth } from "../context/AuthContext";
+import { apiFetch, getWsUrl } from "../utils/api";
 
 const Game = () => {
   // Get game room ID from URL params.
@@ -51,19 +53,22 @@ const Game = () => {
   // ----------------------------
   // Login and credentials state
   // ----------------------------
-  const [loginName, setLoginName] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
+  const {
+    user,
+    profile,
+    loading: authLoading,
+    loginWithGoogle,
+    updateProfile,
+    logout,
+  } = useAuth();
+  const userId = user?.id || null;
   const roomKey = `gameRoom-${id}-userId`;
   const [joinCode, setJoinCode] = useState(
-    localStorage.getItem(`${roomKey}-joinCode`)
+    localStorage.getItem(`${roomKey}-joinCode`) || ""
   );
-  const [userId, setUserId] = useState(
-    localStorage.getItem(`${roomKey}-userId`)
-  );
-  const [storedPassword, setStoredPassword] = useState(
-    localStorage.getItem(`${roomKey}-password`)
-  );
+  const [joinError, setJoinError] = useState("");
+  const [isJoining, setIsJoining] = useState(false);
+  const [hasJoined, setHasJoined] = useState(false);
 
   // ----------------------------
   // Modal and cell selection state
@@ -82,6 +87,7 @@ const Game = () => {
   const [selectedCellInfo, setSelectedCellInfo] = useState(null);
   const [isMobile, setIsMobile] = useState(false);
   const [combatFlashes, setCombatFlashes] = useState([]);
+  const [regionData, setRegionData] = useState(null);
   const actionModalRef = useRef(actionModal);
   const isDefeatedRef = useRef(isDefeated);
   const hasFoundedRef = useRef(hasFounded);
@@ -95,6 +101,21 @@ const Game = () => {
   const [activeAttackArrows, setActiveAttackArrows] = useState([]); // [{path, remainingPower, status, ...}]
   const [activeDefendArrow, setActiveDefendArrow] = useState(null); // {path: [{x,y}...], remainingPower, ...}
   const prevArrowsRef = useRef({ attacks: [], defend: null });
+
+  useEffect(() => {
+    setHasJoined(false);
+    setJoinError("");
+  }, [id, userId]);
+
+  useEffect(() => {
+    setJoinCode(localStorage.getItem(`${roomKey}-joinCode`) || "");
+  }, [roomKey]);
+
+  useEffect(() => {
+    if (joinError) {
+      setJoinError("");
+    }
+  }, [joinCode]);
 
   useEffect(() => {
     actionModalRef.current = actionModal;
@@ -178,9 +199,7 @@ const Game = () => {
   // ----------------------------
   const fetchMapMetadata = async () => {
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/metadata`
-      );
+      const response = await apiFetch(`api/gamerooms/${id}/metadata`);
       if (!response.ok) throw new Error("Failed to fetch map metadata");
       const data = await response.json();
       setMapMetadata(data.map);
@@ -194,8 +213,8 @@ const Game = () => {
   const fetchMapChunk = async (startRow) => {
     try {
       const endRow = startRow + CHUNK_SIZE;
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/data?startRow=${startRow}&endRow=${endRow}`
+      const response = await apiFetch(
+        `api/gamerooms/${id}/data?startRow=${startRow}&endRow=${endRow}`
       );
       if (!response.ok) throw new Error("Failed to fetch map chunk");
       const data = await response.json();
@@ -377,6 +396,9 @@ const Game = () => {
     const winningNation = data.gameState.nations?.find(
       (n) => n.status === "winner"
     );
+    const winningLabel = winningNation
+      ? winningNation.nationName || winningNation.displayName || winningNation.owner
+      : null;
     if (winningNation) {
       if (winningNation.owner === userId) {
         if (!actionModalRef.current || actionModalRef.current.type !== "win") {
@@ -397,7 +419,7 @@ const Game = () => {
         ) {
           setActionModal({
             type: "defeat",
-            message: `${winningNation.owner} has won the game. Your nation has been defeated.`,
+            message: `${winningLabel} has won the game. Your nation has been defeated.`,
             onSpectate: beginSpectate,
           });
         }
@@ -468,6 +490,36 @@ const Game = () => {
     applyDeltaGameStateRef.current = applyDeltaGameState;
   }, [applyDeltaGameState]);
 
+  useEffect(() => {
+    if (!id || !userId || hasJoined || authLoading) return;
+    let isActive = true;
+    const checkAccess = async () => {
+      try {
+        const response = await apiFetch(`api/gamerooms/${id}/state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!isActive) return;
+        if (response.ok) {
+          const data = await response.json();
+          applyDeltaGameStateRef.current?.(data, { isFullState: true });
+          setHasJoined(true);
+          return;
+        }
+        if (response.status === 404) {
+          navigate("/rooms");
+        }
+      } catch (err) {
+        console.warn("Failed to check join status:", err);
+      }
+    };
+    checkAccess();
+    return () => {
+      isActive = false;
+    };
+  }, [id, userId, hasJoined, authLoading, navigate]);
+
   // ----------------------------
   // Fetch metadata on mount
   // ----------------------------
@@ -476,6 +528,37 @@ const Game = () => {
       fetchMapMetadata();
     }
   }, [id]);
+
+  // ----------------------------
+  // Fetch region data after metadata loads
+  // ----------------------------
+  useEffect(() => {
+    if (!id || !mapMetadata) return;
+    const fetchRegions = async () => {
+      try {
+        const response = await apiFetch(`api/gamerooms/${id}/regions`);
+        if (!response.ok) return; // Regions may not exist for older maps
+        const data = await response.json();
+        // Decode base64 assignmentBuffer into Uint16Array
+        const binaryStr = atob(data.assignmentBuffer);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const assignment = new Uint16Array(bytes.buffer);
+        setRegionData({
+          seeds: data.seeds,
+          assignment,
+          width: data.width,
+          height: data.height,
+          regionCount: data.regionCount,
+        });
+      } catch (err) {
+        console.warn("Failed to load region data:", err);
+      }
+    };
+    fetchRegions();
+  }, [id, mapMetadata]);
 
   // ----------------------------
   // Fetch map chunks sequentially
@@ -510,14 +593,10 @@ const Game = () => {
   // WebSocket: subscribe to game state updates
   // ----------------------------
   useEffect(() => {
-    if (!id || !userId || !storedPassword) return;
+    if (!id || !userId || !hasJoined) return;
     let isActive = true;
 
-    const apiBase = process.env.REACT_APP_API_URL;
-    const wsBase = apiBase
-      ? apiBase.replace(/^http/, "ws")
-      : window.location.origin.replace(/^http/, "ws");
-    const wsUrl = wsBase.endsWith("/") ? `${wsBase}ws` : `${wsBase}/ws`;
+    const wsUrl = getWsUrl();
 
     const scheduleReconnect = () => {
       if (!isActive) return;
@@ -544,8 +623,6 @@ const Game = () => {
           JSON.stringify({
             type: "subscribe",
             roomId: id,
-            userId,
-            password: storedPassword,
           })
         );
       };
@@ -592,14 +669,14 @@ const Game = () => {
       }
       wsRef.current?.close();
     };
-  }, [id, userId, storedPassword]);
+  }, [id, userId, hasJoined]);
 
   // ----------------------------
   // Poll game state (every 200ms)
   // ----------------------------
   // In your useEffect that polls game state:
   useEffect(() => {
-    if (!userId || !storedPassword) return;
+    if (!userId || !hasJoined) return;
 
     const fetchGameState = async () => {
       if (
@@ -612,16 +689,17 @@ const Game = () => {
       pollInFlightRef.current = true;
       const requestId = ++pollRequestIdRef.current;
       try {
-        const response = await fetch(
-          `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ userId, password: storedPassword }),
-          }
-        );
+        const response = await apiFetch(`api/gamerooms/${id}/state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
 
         if (!response.ok) {
+          if (response.status === 403) {
+            setHasJoined(false);
+            return;
+          }
           navigate("/rooms");
           return;
         }
@@ -643,11 +721,11 @@ const Game = () => {
     const intervalMs = wsConnected ? 250 : 250;
     const interval = setInterval(fetchGameState, intervalMs);
     return () => clearInterval(interval);
-  }, [id, userId, storedPassword, navigate, wsConnected]);
+  }, [id, userId, hasJoined, navigate, wsConnected]);
 
   // Full state polling effect: every 5 seconds, fetch the full state to overwrite local territory.
   useEffect(() => {
-    if (!userId || !storedPassword) return;
+    if (!userId || !hasJoined) return;
 
     const fetchFullState = async () => {
       if (fullInFlightRef.current) return;
@@ -662,19 +740,18 @@ const Game = () => {
       }
 
       try {
-        const response = await fetch(
-          `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              userId,
-              password: storedPassword,
-              full: "true",
-            }),
-          }
-        );
+        const response = await apiFetch(`api/gamerooms/${id}/state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            full: "true",
+          }),
+        });
         if (!response.ok) {
+          if (response.status === 403) {
+            setHasJoined(false);
+            return;
+          }
           navigate("/rooms");
           return;
         }
@@ -706,66 +783,58 @@ const Game = () => {
         requestFullStateRef.current = null;
       }
     };
-  }, [id, userId, storedPassword, navigate, actionModal, wsConnected]);
+  }, [id, userId, hasJoined, navigate, actionModal, wsConnected]);
 
   // ----------------------------
-  // Handle login form submission
+  // Handle join form submission
   // ----------------------------
-  const handleLoginSubmit = async (e) => {
+  const handleJoinSubmit = async (e) => {
     e?.preventDefault();
-    setLoginError("");
+    if (!user) {
+      loginWithGoogle(`/rooms/${id}`);
+      return;
+    }
+    setJoinError("");
+    if (!joinCode) {
+      setJoinError("Join code is required");
+      return;
+    }
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/join`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userName: userId ? userId : loginName,
-            password: storedPassword ? storedPassword : loginPassword,
-            joinCode: joinCode,
-          }),
-        }
-      );
+      setIsJoining(true);
+      const response = await apiFetch(`api/gamerooms/${id}/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          joinCode: joinCode,
+        }),
+      });
       if (!response.ok) {
-        const errData = await response.json();
+        const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || "Failed to join game room");
       }
-      const data = await response.json();
-      console.log("Join response:", data);
-      // Store credentials if needed.
-      if (loginName) {
-        localStorage.setItem(`${roomKey}-userId`, loginName);
-        localStorage.setItem(`${roomKey}-password`, loginPassword);
-        localStorage.setItem(`${roomKey}-joinCode`, joinCode);
-        setUserId(loginName);
-        setStoredPassword(loginPassword);
+      await response.json();
+      localStorage.setItem(`${roomKey}-joinCode`, joinCode);
+      setHasJoined(true);
 
-        // Immediately fetch the full state so the new player gets all territories.
-        try {
-          const fullResp = await fetch(
-            `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/state`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                userId: loginName,
-                password: loginPassword,
-                full: "true",
-              }),
-            }
-          );
-          if (fullResp.ok) {
-            const fullData = await fullResp.json();
-            applyDeltaGameState(fullData, { isFullState: true });
-          }
-        } catch (err) {
-          console.error("Error fetching full state on join:", err);
+      // Immediately fetch the full state so the new player gets all territories.
+      try {
+        const fullResp = await apiFetch(`api/gamerooms/${id}/state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ full: "true" }),
+        });
+        if (fullResp.ok) {
+          const fullData = await fullResp.json();
+          applyDeltaGameState(fullData, { isFullState: true });
         }
+      } catch (err) {
+        console.error("Error fetching full state on join:", err);
       }
     } catch (err) {
       console.error("Join error:", err);
-      setLoginError(err.message);
+      setJoinError(err.message);
+    } finally {
+      setIsJoining(false);
     }
   };
 
@@ -773,17 +842,14 @@ const Game = () => {
   // API call wrappers for game actions
   // ----------------------------
   const handleFoundNation = async (x, y) => {
-    if (!userId || !storedPassword) return;
+    if (!userId || !hasJoined) return;
 
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/foundNation`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, password: storedPassword, x, y }),
-        }
-      );
+      const response = await apiFetch(`api/gamerooms/${id}/foundNation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ x, y }),
+      });
 
       if (!response.ok) {
         const errData = await response.json();
@@ -823,25 +889,19 @@ const Game = () => {
     }
 
     // Otherwise, we're actually building at the selected location
-    const password = storedPassword || loginPassword;
-    if (!userId || !password) return;
+    if (!userId || !hasJoined) return;
 
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/buildCity`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password,
-            x,
-            y,
-            cityType,
-            cityName,
-          }),
-        }
-      );
+      const response = await apiFetch(`api/gamerooms/${id}/buildCity`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          x,
+          y,
+          cityType,
+          cityName,
+        }),
+      });
       if (!response.ok) throw new Error("Failed to build city");
       // Clear building mode after successful build
       setBuildingStructure(null);
@@ -857,14 +917,11 @@ const Game = () => {
 
   const handlePauseGame = async () => {
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/pause`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, password: storedPassword }),
-        }
-      );
+      const response = await apiFetch(`api/gamerooms/${id}/pause`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
       if (!response.ok) {
         throw new Error("Failed to pause game");
       }
@@ -878,14 +935,11 @@ const Game = () => {
 
   const handleUnPauseGame = async () => {
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/unpause`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, password: storedPassword }),
-        }
-      );
+      const response = await apiFetch(`api/gamerooms/${id}/unpause`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
       if (!response.ok) {
         throw new Error("Failed to unpause game");
       }
@@ -899,14 +953,11 @@ const Game = () => {
 
   const handleEndGame = async () => {
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/end`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userName: userId, password: storedPassword }),
-        }
-      );
+      const response = await apiFetch(`api/gamerooms/${id}/end`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
       if (!response.ok) {
         throw new Error("Failed to end game");
       }
@@ -921,17 +972,15 @@ const Game = () => {
 
   const handleQuitGame = async () => {
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/quit`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: userId, password: storedPassword }),
-        }
-      );
+      const response = await apiFetch(`api/gamerooms/${id}/quit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
       if (!response.ok) {
         throw new Error("Failed to quit game");
       }
+      setHasJoined(false);
       setFoundingNation(true);
       setHasFounded(false);
       setActionModal(null);
@@ -965,7 +1014,7 @@ const Game = () => {
   };
 
   const handleSendArrow = async (type, path) => {
-    if (!userId || !storedPassword) return;
+    if (!userId || !hasJoined) return;
     if (!path || path.length < 2) return;
 
     const playerNation = gameState?.gameState?.nations?.find(
@@ -975,20 +1024,15 @@ const Game = () => {
     const initialPower = population * attackPercent;
 
     try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/arrow`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password: storedPassword,
-            type,
-            path,
-            percent: attackPercent,
-          }),
-        }
-      );
+      const response = await apiFetch(`api/gamerooms/${id}/arrow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type,
+          path,
+          percent: attackPercent,
+        }),
+      });
       if (!response.ok) {
         const errData = await response.json();
         throw new Error(errData.error || "Failed to send arrow command");
@@ -1039,22 +1083,17 @@ const Game = () => {
   };
 
   const handleClearActiveArrow = async (type, arrowId) => {
-    if (!userId || !storedPassword) return;
+    if (!userId || !hasJoined) return;
 
     try {
-      await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/clearArrow`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password: storedPassword,
-            type,
-            arrowId,
-          }),
-        }
-      );
+      await apiFetch(`api/gamerooms/${id}/clearArrow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type,
+          arrowId,
+        }),
+      });
 
       if (type === "attack") {
         if (arrowId) {
@@ -1071,41 +1110,31 @@ const Game = () => {
   };
 
   const handleReinforceArrow = async (arrowId, percent = 0.1) => {
-    if (!userId || !storedPassword) return;
+    if (!userId || !hasJoined) return;
     try {
-      await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/reinforceArrow`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password: storedPassword,
-            arrowId,
-            percent,
-          }),
-        }
-      );
+      await apiFetch(`api/gamerooms/${id}/reinforceArrow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          arrowId,
+          percent,
+        }),
+      });
     } catch (err) {
       console.error("Failed to reinforce arrow:", err);
     }
   };
 
   const handleRetreatArrow = async (arrowId) => {
-    if (!userId || !storedPassword) return;
+    if (!userId || !hasJoined) return;
     try {
-      await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/retreatArrow`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password: storedPassword,
-            arrowId,
-          }),
-        }
-      );
+      await apiFetch(`api/gamerooms/${id}/retreatArrow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          arrowId,
+        }),
+      });
     } catch (err) {
       console.error("Failed to retreat arrow:", err);
     }
@@ -1113,20 +1142,15 @@ const Game = () => {
 
   const handleSetTroopTarget = async (newTarget) => {
     setTroopTarget(newTarget);
-    if (!userId || !storedPassword) return;
+    if (!userId || !hasJoined) return;
     try {
-      await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/troopTarget`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId,
-            password: storedPassword,
-            troopTarget: newTarget,
-          }),
-        }
-      );
+      await apiFetch(`api/gamerooms/${id}/troopTarget`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          troopTarget: newTarget,
+        }),
+      });
     } catch (err) {
       console.error("Failed to set troop target:", err);
     }
@@ -1292,26 +1316,42 @@ const Game = () => {
       "#3A86FF",
       "#2A9D8F",
     ];
-    const owners = (gameState?.gameState?.nations || [])
-      .map((n) => n.owner)
-      .filter(Boolean)
-      .sort();
-    const uniqueOwners = Array.from(new Set(owners));
+    const nations = (gameState?.gameState?.nations || [])
+      .filter((n) => n?.owner)
+      .sort((a, b) => (a.owner || "").localeCompare(b.owner || ""));
     const colorMap = {};
-    uniqueOwners.forEach((owner, idx) => {
+    let idx = 0;
+    nations.forEach((nation) => {
+      if (colorMap[nation.owner]) return;
+      if (nation.color) {
+        colorMap[nation.owner] = nation.color;
+        return;
+      }
       if (idx < palette.length) {
-        colorMap[owner] = palette[idx];
+        colorMap[nation.owner] = palette[idx];
       } else {
         const hue = (idx * 137.508) % 360;
-        colorMap[owner] = `hsl(${hue.toFixed(0)}, 75%, 55%)`;
+        colorMap[nation.owner] = `hsl(${hue.toFixed(0)}, 75%, 55%)`;
       }
+      idx += 1;
     });
     return colorMap;
   }, [gameState]);
 
+  const nationLabels = React.useMemo(() => {
+    const labels = {};
+    (gameState?.gameState?.nations || []).forEach((nation) => {
+      if (nation.owner) {
+        labels[nation.owner] =
+          nation.nationName || nation.displayName || nation.owner;
+      }
+    });
+    return labels;
+  }, [gameState]);
+
   const getNationColor = (nation) => {
     if (!nation?.owner) return "#999999";
-    return nationColors[nation.owner] || "#999999";
+    return nation.color || nationColors[nation.owner] || "#999999";
   };
 
   const isMapLoaded = mapMetadata && loadedRows >= mapMetadata.height;
@@ -1328,6 +1368,11 @@ const Game = () => {
         onClose={() => setShowSettings(false)}
         gameState={gameState}
         userId={userId}
+        profile={profile}
+        onLogin={() => loginWithGoogle(`/rooms/${id}`)}
+        onLogout={logout}
+        onUpdateProfile={updateProfile}
+        isAuthenticated={!!userId}
         paused={paused}
         onPause={handlePauseGame}
         onUnpause={handleUnPauseGame}
@@ -1385,6 +1430,7 @@ const Game = () => {
             troopDensityMap={playerTroopDensityMap}
             combatFlashes={combatFlashes}
             setCombatFlashes={setCombatFlashes}
+            regionData={regionData}
           />
         )}
       </div>
@@ -1412,6 +1458,8 @@ const Game = () => {
           uiMode={uiMode}
           onSetMode={setMode}
           onExitMode={exitModes}
+          arrowCosts={config?.arrowCosts}
+          gameState={gameState}
         />
       )}
       {isMobile && (
@@ -1436,6 +1484,7 @@ const Game = () => {
         cellInfo={selectedCellInfo}
         onClose={() => setSelectedCellInfo(null)}
         nationColors={nationColors}
+        nationLabels={nationLabels}
       />
       <ArrowPanel
         activeAttackArrows={activeAttackArrows}
@@ -1446,15 +1495,15 @@ const Game = () => {
       />
       {/* The join/login modal now appears only if the map is loaded */}
       <Modal
-        showLoginModal={!userId && isMapLoaded}
-        onLoginSubmit={handleLoginSubmit}
-        loginName={loginName}
-        setLoginName={setLoginName}
-        loginPassword={loginPassword}
-        setLoginPassword={setLoginPassword}
+        showLoginModal={isMapLoaded && !authLoading && (!userId || !hasJoined)}
+        onJoinSubmit={handleJoinSubmit}
+        onLogin={() => loginWithGoogle(`/rooms/${id}`)}
+        isAuthenticated={!!userId}
         joinCode={joinCode}
         setJoinCode={setJoinCode}
-        loginError={loginError}
+        joinError={joinError}
+        isJoining={isJoining}
+        profile={profile}
         actionModal={actionModal}
         setActionModal={setActionModal}
         onBuildCity={handleBuildCity}

@@ -12,12 +12,14 @@ const gameRoomSchema = new mongoose.Schema({
   },
   creator: {
     userId: { type: String, required: true },
-    password: { type: String, required: true },
+    password: { type: String, default: null },
+    profile: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   players: [
     {
       userId: { type: String, required: true },
-      password: { type: String, required: true },
+      password: { type: String, default: null },
+      profile: { type: mongoose.Schema.Types.Mixed, default: {} },
       userState: { type: mongoose.Schema.Types.Mixed, default: {} },
     },
   ],

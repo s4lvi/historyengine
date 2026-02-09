@@ -100,14 +100,14 @@ const BuildCityForm = ({
 // ====================
 const Modal = ({
   showLoginModal,
-  onLoginSubmit,
-  loginName,
-  setLoginName,
-  loginPassword,
-  setLoginPassword,
+  onJoinSubmit,
+  onLogin,
+  isAuthenticated,
   joinCode,
   setJoinCode,
-  loginError,
+  joinError,
+  isJoining,
+  profile,
   actionModal,
   setActionModal,
   onBuildCity,
@@ -119,51 +119,50 @@ const Modal = ({
       {showLoginModal && (
         <ModalWrapper onClose={() => {}}>
           <h2 className="text-xl font-semibold mb-4 text-center">Join Game</h2>
-          <form onSubmit={onLoginSubmit}>
-            <div className="mb-3">
-              <label className="block text-sm font-medium mb-1">
-                User Name
-              </label>
-              <input
-                type="text"
-                value={loginName}
-                onChange={(e) => setLoginName(e.target.value)}
-                required
-                className="w-full border rounded p-2"
-              />
+          {!isAuthenticated ? (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-700 text-center">
+                Sign in to join this room.
+              </p>
+              <button
+                type="button"
+                onClick={onLogin}
+                className="w-full bg-blue-500 hover:bg-blue-600 text-white py-2 rounded"
+              >
+                Sign in with Google
+              </button>
             </div>
-            <div className="mb-3">
-              <label className="block text-sm font-medium mb-1">Password</label>
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                required
-                className="w-full border rounded p-2"
-              />
-            </div>
-            <div className="mb-4">
-              <label className="block text-sm font-medium mb-1">
-                Join Code
-              </label>
-              <input
-                type="text"
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value)}
-                required
-                className="w-full border rounded p-2"
-              />
-            </div>
-            {loginError && (
-              <p className="text-red-500 text-sm mb-3">{loginError}</p>
-            )}
-            <button
-              type="submit"
-              className="w-full bg-blue-500 hover:bg-blue-600 text-white py-2 rounded"
-            >
-              Join Game
-            </button>
-          </form>
+          ) : (
+            <form onSubmit={onJoinSubmit}>
+              {profile?.displayName && (
+                <div className="text-sm text-gray-600 mb-3">
+                  Signed in as <span className="font-medium">{profile.displayName}</span>
+                </div>
+              )}
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-1">
+                  Join Code
+                </label>
+                <input
+                  type="text"
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value)}
+                  required
+                  className="w-full border rounded p-2"
+                />
+              </div>
+              {joinError && (
+                <p className="text-red-500 text-sm mb-3">{joinError}</p>
+              )}
+              <button
+                type="submit"
+                disabled={isJoining}
+                className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white py-2 rounded"
+              >
+                {isJoining ? "Joining..." : "Join Game"}
+              </button>
+            </form>
+          )}
         </ModalWrapper>
       )}
 

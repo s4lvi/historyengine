@@ -11,6 +11,7 @@ import {
 } from "./matrixKernels.js";
 import { applyArrowLoyaltyPressure } from "./matrixLoyalty.js";
 import { resolveDensityCombat } from "./matrixTroopDensity.js";
+import { generateCityName, generateTowerName, generateUniqueName } from "./nameGenerator.js";
 
 export function checkWinCondition(gameState, mapData, totalClaimableOverride) {
   const totalClaimable =
@@ -89,6 +90,7 @@ export function updateNation(
   currentTick = 0,
   cachedFrontierSet = null, // unused, kept for call-site compat
   matrix = null, // Matrix system: when provided, uses typed-array operations
+  regionData = null,
 ) {
   return updateNationTerritorial(
     nation,
@@ -98,6 +100,7 @@ export function updateNation(
     bonusesByOwner,
     currentTick,
     matrix,
+    regionData,
   );
 }
 
@@ -109,6 +112,7 @@ function updateNationTerritorial(
   bonusesByOwner,
   currentTick,
   matrix = null, // Matrix system
+  regionData = null,
 ) {
   if (!Array.isArray(mapData) || !Array.isArray(mapData[0])) {
     console.warn("Invalid map data structure in updateNationTerritorial");
@@ -336,6 +340,13 @@ function updateNationTerritorial(
         gameState,
         matrix,
       );
+      maybeEnqueueBotBuild(
+        updatedNation,
+        mapData,
+        gameState,
+        currentTick,
+        regionData,
+      );
     }
 
     // Apply arrow orders (Big Arrow system)
@@ -482,6 +493,183 @@ function computeConnectedTerritorySet(nation, mapData) {
     }
   }
   return connected;
+}
+
+/**
+ * Bot building logic: attempts to build towns and towers when affordable.
+ * Runs every ~50 ticks to avoid spamming.
+ */
+function maybeEnqueueBotBuild(nation, mapData, gameState, currentTick, regionData) {
+  if (nation.status === "defeated") return;
+
+  // Only try building every 50 ticks (~5 seconds)
+  const lastBuildTick = nation._lastBotBuildTick ?? -Infinity;
+  if (currentTick - lastBuildTick < 50) return;
+  nation._lastBotBuildTick = currentTick;
+
+  const buildCosts = config?.buildCosts?.structures;
+  if (!buildCosts) return;
+
+  const resources = nation.resources || {};
+  const territory = nation.territory;
+  if (!territory?.x?.length || territory.x.length < 30) return; // Need some territory first
+
+  const regionCfg = config?.regions;
+  const assignment = regionData?.assignment;
+  const regWidth = regionData?.width;
+
+  // Determine what to build: prefer town first, then tower
+  const buildOrder = ["town", "tower"];
+
+  for (const buildType of buildOrder) {
+    const cost = buildCosts[buildType];
+    if (!cost) continue;
+
+    // Check affordability
+    let canAfford = true;
+    for (const res in cost) {
+      if ((resources[res] || 0) < cost[res]) {
+        canAfford = false;
+        break;
+      }
+    }
+    if (!canAfford) continue;
+
+    // Count existing structures of this type
+    const existing = (nation.cities || []).filter(
+      (c) => c.type === buildType || (buildType === "town" && c.type === "capital")
+    );
+
+    // Bots limit: 1 town per ~100 territory, up to 3; towers: 1 per ~60 territory, up to 4
+    const maxForBot = buildType === "town"
+      ? Math.min(3, Math.floor(territory.x.length / 100))
+      : Math.min(4, Math.floor(territory.x.length / 60));
+    if (existing.length >= maxForBot) continue;
+
+    // Find a valid cell to build on
+    const anchor = getNationAnchor(nation);
+    if (!anchor) continue;
+
+    const tx = territory.x;
+    const ty = territory.y;
+
+    // Build a set of all nations' structures for distance checks
+    const allCities = [];
+    for (const n of gameState?.nations || []) {
+      for (const c of n.cities || []) {
+        allCities.push(c);
+      }
+    }
+
+    let bestCell = null;
+    let bestScore = -Infinity;
+
+    // Sample territory cells (check up to 200 random cells to avoid O(n) on huge territories)
+    const sampleSize = Math.min(territory.x.length, 200);
+    const step = Math.max(1, Math.floor(territory.x.length / sampleSize));
+
+    for (let i = 0; i < territory.x.length; i += step) {
+      const cx = tx[i];
+      const cy = ty[i];
+
+      // Skip if out of map bounds
+      if (!mapData[cy] || !mapData[cy][cx]) continue;
+
+      // Skip ocean
+      const cell = mapData[cy][cx];
+      if (cell.biome === "OCEAN") continue;
+
+      // Skip if a structure already exists here
+      if (allCities.some((c) => c.x === cx && c.y === cy)) continue;
+
+      // Distance checks
+      if (buildType === "town") {
+        // Must be 5+ cells from other towns/capitals
+        const tooClose = allCities.some(
+          (c) => (c.type === "town" || c.type === "capital") &&
+            Math.abs(c.x - cx) + Math.abs(c.y - cy) < 5
+        );
+        if (tooClose) continue;
+      } else if (buildType === "tower") {
+        // Must be 3+ cells from other towers
+        const tooClose = (nation.cities || []).some(
+          (c) => c.type === "tower" && Math.abs(c.x - cx) + Math.abs(c.y - cy) < 3
+        );
+        if (tooClose) continue;
+      }
+
+      // Region limit check
+      if (assignment && regWidth && regionCfg) {
+        const rId = assignment[cy * regWidth + cx];
+        if (rId !== 65535) {
+          if (buildType === "town") {
+            let townCount = 0;
+            for (const c of allCities) {
+              if ((c.type === "town" || c.type === "capital") &&
+                  assignment[c.y * regWidth + c.x] === rId) {
+                townCount++;
+              }
+            }
+            if (townCount >= (regionCfg.maxTownsPerRegion ?? 1)) continue;
+          } else if (buildType === "tower") {
+            let towerCount = 0;
+            for (const c of nation.cities || []) {
+              if (c.type === "tower" && assignment[c.y * regWidth + c.x] === rId) {
+                towerCount++;
+              }
+            }
+            if (towerCount >= (regionCfg.maxTowersPerRegion ?? 2)) continue;
+          }
+        }
+      }
+
+      // Scoring: prefer cells away from capital (for spread), closer to border (for towers)
+      const distFromAnchor = Math.hypot(cx - anchor.x, cy - anchor.y);
+      let score = 0;
+
+      if (buildType === "town") {
+        // Towns: prefer moderate distance from anchor, not too far
+        score = distFromAnchor - Math.abs(distFromAnchor - 15) * 0.5;
+      } else {
+        // Towers: prefer border regions (cells near territory edge)
+        score = distFromAnchor * 0.5; // further from capital is better for defense
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestCell = { x: cx, y: cy };
+      }
+    }
+
+    if (!bestCell) continue;
+
+    // Deduct resources
+    for (const res in cost) {
+      nation.resources[res] = (nation.resources[res] || 0) - cost[res];
+    }
+
+    // Create the structure with a proper generated name
+    const existingNames = new Set((nation.cities || []).map((c) => c.name));
+    const structureName = buildType === "town"
+      ? generateUniqueName(generateCityName, existingNames)
+      : generateUniqueName(generateTowerName, existingNames);
+
+    nation.cities = nation.cities || [];
+    nation.cities.push({
+      name: structureName,
+      x: bestCell.x,
+      y: bestCell.y,
+      population: buildType === "tower" ? 0 : 50,
+      type: buildType,
+    });
+
+    console.log(
+      `[BOTS] ${nation.name || nation.owner} built ${buildType} "${structureName}" at (${bestCell.x},${bestCell.y})`
+    );
+
+    // Only build one structure per tick
+    return;
+  }
 }
 
 function selectBotTargetCellAny(
@@ -676,6 +864,27 @@ function maybeEnqueueBotArrow(
   }
 
   const actualPower = available < 10 ? available : power;
+
+  // Arrow resource cost check for bots
+  const arrowCostCfg = config?.arrowCosts;
+  if (arrowCostCfg) {
+    const attacks = nation.arrowOrders?.attacks || [];
+    // First arrow free: applies when bot has no active arrows at all
+    const isFirstArrow = arrowCostCfg.firstArrowFree && attacks.length === 0;
+    if (!isFirstArrow) {
+      const estPathLen = Math.hypot(candidate.x - anchor.x, candidate.y - anchor.y);
+      const foodCost = Math.ceil(arrowCostCfg.food.base + arrowCostCfg.food.perTile * estPathLen);
+      const goldCost = Math.ceil(arrowCostCfg.gold.base + arrowCostCfg.gold.perTile * estPathLen);
+      // Bots keep a resource buffer — don't spend last 30% of resources on arrows
+      const foodAvail = (nation.resources?.food || 0) * 0.7;
+      const goldAvail = (nation.resources?.gold || 0) * 0.7;
+      if (foodAvail < foodCost || goldAvail < goldCost) {
+        return; // Can't afford arrow, save resources
+      }
+      nation.resources.food -= foodCost;
+      nation.resources.gold -= goldCost;
+    }
+  }
 
   // Only deduct population in legacy mode
   if (!troopDensityEnabled) {

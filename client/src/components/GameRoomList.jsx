@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
 import MapCreationPoller from "./MapCreationPoller";
+import { useAuth } from "../context/AuthContext";
+import { apiFetch } from "../utils/api";
 
 const MAP_SIZES = {
   Small: { width: 250, height: 250, erosion_passes: 3, num_blobs: 7 },
@@ -9,7 +11,13 @@ const MAP_SIZES = {
   Large: { width: 1000, height: 1000, erosion_passes: 3, num_blobs: 12 },
 };
 
-const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
+const CreateGameRoomForm = ({
+  isOpen,
+  onClose,
+  onSubmit,
+  isCreating,
+  creatorLabel,
+}) => {
   const [formData, setFormData] = useState({
     roomName: "",
     selectedMapId: "",
@@ -20,8 +28,6 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
     height: MAP_SIZES.Normal.height,
     erosion_passes: MAP_SIZES.Normal.erosion_passes,
     num_blobs: MAP_SIZES.Normal.num_blobs,
-    creatorName: "",
-    creatorPassword: "",
     joinCode: "",
     botCount: 0,
     allowRefound: true,
@@ -113,46 +119,11 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                     value={formData.joinCode}
                     onChange={handleChange}
                     className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    required
                   />
                 </div>
 
-                {/* Creator Name */}
-                <div>
-                  <label
-                    htmlFor="creatorName"
-                    className="block text-sm font-medium text-gray-500"
-                  >
-                    Creator Name
-                  </label>
-                  <input
-                    type="text"
-                    id="creatorName"
-                    name="creatorName"
-                    value={formData.creatorName}
-                    onChange={handleChange}
-                    className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    required
-                  />
-                </div>
-
-                {/* Creator Password */}
-                <div>
-                  <label
-                    htmlFor="creatorPassword"
-                    className="block text-sm font-medium text-gray-500"
-                  >
-                    Creator Password
-                  </label>
-                  <input
-                    type="password"
-                    id="creatorPassword"
-                    name="creatorPassword"
-                    value={formData.creatorPassword}
-                    onChange={handleChange}
-                    className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    required
-                  />
+                <div className="text-sm text-gray-400">
+                  Creator: <span className="text-gray-200">{creatorLabel}</span>
                 </div>
 
                 {/* Map Generation Options */}
@@ -257,7 +228,6 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
 
 const GameRoomList = () => {
   const [gameRooms, setGameRooms] = useState([]);
-  const [availableMaps, setAvailableMaps] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState(null);
@@ -270,15 +240,14 @@ const GameRoomList = () => {
     formData: null,
   });
   const navigate = useNavigate();
+  const { user, profile, loading: authLoading, loginWithGoogle } = useAuth();
 
   const fetchGameRooms = async () => {
     try {
       setIsLoading(true);
       setError(null);
 
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms`
-      );
+      const response = await apiFetch("api/gamerooms");
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -301,34 +270,33 @@ const GameRoomList = () => {
 
   const handleCreateGameRoom = async (formData) => {
     if (isCreating) return;
+    if (!user) {
+      loginWithGoogle("/rooms");
+      return;
+    }
 
     try {
       setIsCreating(true);
       setCreateError(null);
 
       // Use the new endpoint to create a game room with asynchronous map generation
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/init`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            roomName: formData.roomName,
-            joinCode: formData.joinCode,
-            creatorName: formData.creatorName,
-            creatorPassword: formData.creatorPassword,
-            mapName: `Room:${formData.creatorName}`,
-            width: formData.width,
-            height: formData.height,
-            erosion_passes: formData.erosion_passes,
-            num_blobs: formData.num_blobs,
-            botCount: Number(formData.botCount || 0),
-            allowRefound: !!formData.allowRefound,
-          }),
-        }
-      );
+      const response = await apiFetch("api/gamerooms/init", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          roomName: formData.roomName,
+          joinCode: formData.joinCode,
+          mapName: `Room:${profile?.displayName || user.id}`,
+          width: formData.width,
+          height: formData.height,
+          erosion_passes: formData.erosion_passes,
+          num_blobs: formData.num_blobs,
+          botCount: Number(formData.botCount || 0),
+          allowRefound: !!formData.allowRefound,
+        }),
+      });
 
       if (!response.ok) {
         throw new Error("Failed to create game room");
@@ -356,20 +324,14 @@ const GameRoomList = () => {
       data
     );
 
-    // Store credentials
+    // Store join code for convenience
     const roomKey = `gameRoom-${mapGenerationState.gameRoomId}-userId`;
-    localStorage.setItem(
-      `${roomKey}-userId`,
-      mapGenerationState.formData.creatorName
-    );
-    localStorage.setItem(
-      `${roomKey}-password`,
-      mapGenerationState.formData.creatorPassword
-    );
-    localStorage.setItem(
-      `${roomKey}-joinCode`,
-      mapGenerationState.formData.joinCode
-    );
+    if (mapGenerationState.formData?.joinCode) {
+      localStorage.setItem(
+        `${roomKey}-joinCode`,
+        mapGenerationState.formData.joinCode
+      );
+    }
     // Optionally, you can store credentials or any additional data here.
     navigate(`/rooms/${mapGenerationState.gameRoomId}`);
   };
@@ -386,6 +348,7 @@ const GameRoomList = () => {
   }, []);
 
   if (isLoading && gameRooms.length === 0) return <LoadingSpinner />;
+  const displayName = profile?.displayName || user?.id || "Unknown";
 
   return (
     <div className="max-w-4xl mx-auto p-6">
@@ -393,7 +356,8 @@ const GameRoomList = () => {
         <h1 className="text-3xl font-bold">Open Games</h1>
         <button
           onClick={() => setIsCreateDialogOpen(true)}
-          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300  px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
+          disabled={!user || authLoading}
+          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300 px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
         >
           Create New Game
         </button>
@@ -405,7 +369,7 @@ const GameRoomList = () => {
           onClose={() => setIsCreateDialogOpen(false)}
           onSubmit={handleCreateGameRoom}
           isCreating={isCreating}
-          availableMaps={availableMaps}
+          creatorLabel={displayName}
         />
       )}
       {mapGenerationState.isPolling && (

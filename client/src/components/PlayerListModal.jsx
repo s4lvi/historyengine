@@ -27,6 +27,12 @@ const PlayerListModal = ({ isOpen, onClose, gameState, getNationColor }) => {
             .sort((a, b) => (a?.owner || "").localeCompare(b?.owner || ""))
             .map((nation) => {
               const defeated = nation.status === "defeated";
+              const displayLabel =
+                nation.nationName || nation.displayName || nation.owner;
+              const playerLabel =
+                nation.displayName && nation.displayName !== displayLabel
+                  ? nation.displayName
+                  : nation.owner;
               return (
                 <div
                   key={nation.owner}
@@ -57,9 +63,10 @@ const PlayerListModal = ({ isOpen, onClose, gameState, getNationColor }) => {
                     </svg>
                   )}
                   <div className="relative z-20 flex justify-between items-center mb-2">
-                    <span className="font-medium">{nation.owner}</span>
+                    <span className="font-medium">{displayLabel}</span>
                   </div>
                   <div className="relative z-20 flex gap-4 text-sm text-gray-600">
+                    <span className="text-sm text-gray-400">{playerLabel}</span>
                     <span className="text-sm text-gray-500">
                       {nation.territory?.x?.length || 0} tiles
                     </span>

@@ -8,7 +8,71 @@ import {
 import Game from "./components/Game";
 import GameRoomList from "./components/GameRoomList";
 import { ErrorBoundary } from "./components/ErrorHandling";
-import { FaDiscord } from "react-icons/fa";
+import { FaDiscord, FaUserCircle } from "react-icons/fa";
+import { AuthProvider } from "./context/AuthContext";
+import { useAuth } from "./context/AuthContext";
+import ProfileModal from "./components/ProfileModal";
+
+const ProfileMenu = () => {
+  const { user, profile, loginWithGoogle, logout } = useAuth();
+  const [open, setOpen] = React.useState(false);
+  const [showProfileModal, setShowProfileModal] = React.useState(false);
+  const displayName = profile?.displayName || user?.id || "Player";
+
+  if (!user) {
+    return (
+      <button
+        onClick={() => loginWithGoogle("/rooms")}
+        className="bg-gray-900/80 hover:bg-gray-700 px-3 py-2 rounded-lg text-sm text-white border border-gray-700 shadow"
+        aria-label="Sign in"
+        title="Sign in"
+      >
+        <FaUserCircle className="text-xl" />
+      </button>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((prev) => !prev)}
+        className="bg-gray-900/80 hover:bg-gray-700 px-3 py-2 rounded-lg text-sm text-white border border-gray-700 shadow"
+        aria-label="Profile"
+        title="Profile"
+      >
+        <FaUserCircle className="text-xl" />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-48 rounded-lg border border-gray-700 bg-gray-900 p-3 shadow-lg">
+          <div className="text-xs text-gray-400">Signed in as</div>
+          <div className="text-sm text-gray-200 mb-2 truncate">{displayName}</div>
+          <button
+            onClick={() => {
+              setOpen(false);
+              setShowProfileModal(true);
+            }}
+            className="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-white mb-2"
+          >
+            Edit Profile
+          </button>
+          <button
+            onClick={() => {
+              setOpen(false);
+              logout();
+            }}
+            className="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-white"
+          >
+            Sign out
+          </button>
+        </div>
+      )}
+      <ProfileModal
+        isOpen={showProfileModal}
+        onClose={() => setShowProfileModal(false)}
+      />
+    </div>
+  );
+};
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -21,7 +85,10 @@ const LandingPage = () => {
         imageRendering: "crisp-edges",
       }} // update with your background image URL
     >
-      <div className=" bg-gray-900 w-full bg-opacity-75">
+      <div style={{ position: "fixed", top: 24, right: 24, zIndex: 1000 }}>
+        <ProfileMenu />
+      </div>
+      <div className="bg-gray-900 w-full bg-opacity-75 relative">
         <img
           src="annexilogo.png"
           alt="Annexi Logo"
@@ -68,7 +135,10 @@ const HowToPlay = () => {
         imageRendering: "crisp-edges",
       }} // update with your background image URL
     >
-      <div className=" bg-gray-900 w-full bg-opacity-75">
+      <div style={{ position: "fixed", top: 24, right: 24, zIndex: 1000 }}>
+        <ProfileMenu />
+      </div>
+      <div className="bg-gray-900 w-full bg-opacity-75 relative">
         <img
           src="annexilogo.png"
           alt="Annexi Logo"
@@ -103,19 +173,21 @@ const HowToPlay = () => {
 function App() {
   return (
     <ErrorBoundary>
-      <Router>
-        <div className="App min-h-screen bg-gray-50">
-          {/* <Header /> */}
-          <main className="pb-12 max-w-7xl mx-auto ">
-            <Routes>
-              <Route path="/" element={<LandingPage />} />
-              <Route path="/rooms" element={<LandingPage />} />
-              <Route path="/rooms/:id" element={<Game />} />
-              <Route path="/how-to-play" element={<HowToPlay />} />
-            </Routes>
-          </main>
-        </div>
-      </Router>
+      <AuthProvider>
+        <Router>
+          <div className="App min-h-screen bg-gray-50">
+            {/* <Header /> */}
+            <main className="pb-12 max-w-7xl mx-auto ">
+              <Routes>
+                <Route path="/" element={<LandingPage />} />
+                <Route path="/rooms" element={<LandingPage />} />
+                <Route path="/rooms/:id" element={<Game />} />
+                <Route path="/how-to-play" element={<HowToPlay />} />
+              </Routes>
+            </main>
+          </div>
+        </Router>
+      </AuthProvider>
     </ErrorBoundary>
   );
 }

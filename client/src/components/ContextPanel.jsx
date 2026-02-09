@@ -1,6 +1,6 @@
 import React from "react";
 
-const ContextPanel = ({ isMobile, cellInfo, onClose, nationColors }) => {
+const ContextPanel = ({ isMobile, cellInfo, onClose, nationColors, nationLabels }) => {
   if (!cellInfo) return null;
 
   const {
@@ -14,6 +14,13 @@ const ContextPanel = ({ isMobile, cellInfo, onClose, nationColors }) => {
   } = cellInfo;
 
   const ownerColor = owner ? nationColors?.[owner] : null;
+  const ownerLabel = owner ? nationLabels?.[owner] || owner : "Unowned";
+  const claimOwner =
+    claim?.owner || claim?.progressOwner
+      ? nationLabels?.[claim?.owner || claim?.progressOwner] ||
+        claim?.owner ||
+        claim?.progressOwner
+      : "None";
 
   return (
     <div
@@ -34,7 +41,7 @@ const ContextPanel = ({ isMobile, cellInfo, onClose, nationColors }) => {
         Resources: {resources?.length ? resources.join(", ") : "None"}
       </div>
       <div className="text-xs text-gray-300 mb-1 flex items-center gap-2">
-        Owner: {owner || "Unowned"}
+        Owner: {ownerLabel}
         {ownerColor && (
           <span
             className="inline-block w-3 h-3 rounded-full"
@@ -49,7 +56,7 @@ const ContextPanel = ({ isMobile, cellInfo, onClose, nationColors }) => {
       )}
       {claim && (
         <div className="text-xs text-gray-400">
-          Node claim: {claim.owner || claim.progressOwner || "None"}
+          Node claim: {claimOwner}
         </div>
       )}
     </div>

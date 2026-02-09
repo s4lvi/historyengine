@@ -1,15 +1,17 @@
 // index.js (or server.js)
+import dotenv from "dotenv";
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import http from "http";
+import path from "path";
+import { fileURLToPath } from "url";
 
 import mapRoutes from "./routes/mapRoutes.js";
 import gameRoutes from "./routes/gameRoutes.js";
+import authRoutes from "./routes/authRoutes.js";
 import { gameLoop } from "./workers/gameLoop.js";
 import GameRoom from "./models/GameRoom.js";
-import path from "path";
-import { fileURLToPath } from "url";
 import {
   initWebSocket,
   hasActiveConnections,
@@ -18,13 +20,32 @@ import {
 } from "./wsHub.js";
 
 const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, ".env") });
 
 const CLEAR_ROOMS =
   process.argv.includes("--clear-rooms") ||
   process.env.CLEAR_ROOMS === "true";
 
 const app = express();
-app.use(cors());
+app.set("trust proxy", 1);
+
+const allowedOrigins = (process.env.CLIENT_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.length === 0) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 // -------------------------------------------------------------------
@@ -156,12 +177,12 @@ async function cleanupEmptyRooms() {
 // -------------------------------------------------------------------
 app.use("/api/maps", mapRoutes);
 app.use("/api/gamerooms", gameRoutes);
+app.use("/api/auth", authRoutes);
 
 // -------------------------------------------------------------------
 // Serve static files from the React app in production
 // -------------------------------------------------------------------
 
-const __dirname = path.dirname(__filename);
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(__dirname, "..", "client", "build")));
 

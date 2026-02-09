@@ -1,7 +1,7 @@
 { "winConditionPercentage": 75,
   "buildCosts": {
     "structures": {
-      "town": { "wood": 200, "stone": 100, "food": 500 },
+      "town": { "wood": 400, "stone": 200, "food": 1000 },
       "tower": { "stone": 500, "wood": 200 },
       "fort": { "stone": 2000, "wood": 500, "food": 300 },
       "workshop": { "wood": 300, "stone": 300, "bronze": 100 },
@@ -197,6 +197,23 @@
     "citySource": 0.5,
     "capitalSource": 1.0,
     "densityDefenseScale": 0.5
+  },
+  "regions": {
+    "enabled": true,
+    "targetSpacing": 25,
+    "mountainBarrierCost": 3,
+    "riverBarrierCost": 2,
+    "smoothingPasses": 2,
+    "maxTownsPerRegion": 1,
+    "maxTowersPerRegion": 2,
+    "towerDefenseBonus": [0.50, 0.25],
+    "cityDensityMultiplier": 1.5
+  },
+  "arrowCosts": {
+    "food": { "base": 20, "perTile": 2 },
+    "gold": { "base": 5, "perTile": 0.5 },
+    "ownTerritoryDiscount": 0.5,
+    "firstArrowFree": true
   },
   "troopDensity": {
     "enabled": true,

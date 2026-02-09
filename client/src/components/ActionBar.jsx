@@ -2,7 +2,7 @@ import React from "react";
 
 // Build costs fallback (should match server config)
 const BUILD_COSTS = {
-  town: { wood: 200, stone: 100, food: 500 },
+  town: { wood: 400, stone: 200, food: 1000 },
   tower: { stone: 500, wood: 200 },
 };
 
@@ -185,6 +185,8 @@ const ActionBar = ({
   uiMode,
   onSetMode,
   onExitMode,
+  arrowCosts,
+  gameState,
 }) => {
   const attackArrowCount = activeAttackArrows?.length || 0;
   const maxArrows = maxAttackArrows || 3;
@@ -340,6 +342,11 @@ const ActionBar = ({
               <div className="text-xs text-gray-300">
                 {Math.round((attackPercent || 0.25) * 100)}%
               </div>
+              {arrowCosts && (drawingArrowType === "attack" || uiMode === "drawAttack") && (
+                <div className="text-xs text-yellow-400 mt-0.5">
+                  Arrow cost: ~{arrowCosts.food.base}-{arrowCosts.food.base + arrowCosts.food.perTile * 60} food, ~{arrowCosts.gold.base}-{Math.round(arrowCosts.gold.base + arrowCosts.gold.perTile * 60)} gold
+                </div>
+              )}
             </div>
 
             {/* Build Structures Section */}

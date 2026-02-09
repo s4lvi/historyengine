@@ -20,6 +20,7 @@ import { SCALE_MODES } from "@pixi/constants";
 import MapTiles from "./MapTiles";
 import { SCALE_MODES as PIXI_SCALE_MODES } from "pixi.js";
 import { TerritoryLayer } from "./TerritoryRenderer";
+import RegionOverlay from "./RegionOverlay";
 
 // Feature flag for optimized territory rendering (set via environment or default false)
 const USE_OPTIMIZED_TERRITORY = process.env.REACT_APP_OPTIMIZED_TERRITORY === "true";
@@ -194,11 +195,12 @@ const renderArrowPath = (
   isActive,
   key,
   troopCount = null,
-  scale = 1
+  scale = 1,
+  colorOverride = null
 ) => {
   if (!path || path.length < 2) return null;
 
-  const color = type === "attack" ? 0xff4444 : 0x4444ff;
+  const color = colorOverride ?? (type === "attack" ? 0xff4444 : 0x4444ff);
   const alpha = isActive ? 0.8 : 0.6;
 
   const midIndex = Math.floor(path.length / 2);
@@ -1055,6 +1057,7 @@ const NationOverlay = ({
     "#5E5CE6",
   ];
   const nationColor =
+    nation.color ||
     nationColors?.[nation.owner] ||
     palette[nationIndex % palette.length];
   const baseColor = string2hex(nationColor);
@@ -1191,7 +1194,7 @@ const NationOverlay = ({
       />
       {showLabels && territoryCentroid && (
         <NationLabel
-          text={nation.owner}
+          text={nation.nationName || nation.displayName || nation.owner}
           x={territoryCentroid.x * cellSize}
           y={territoryCentroid.y * cellSize}
           fontSize={labelFontSize}
@@ -1208,7 +1211,7 @@ const NationOverlay = ({
           return (
             <React.Fragment key={`city-${nation.owner}-${idx}`}>
               <BorderedSprite
-                texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
+                texture={buildIconMap[city.type] || `/${city.type.toLowerCase().replace(" ", "_")}.png`}
                 x={centerX}
                 y={centerY}
                 width={iconSize}
@@ -1270,6 +1273,7 @@ const GameCanvas = ({
   troopDensityMap,
   combatFlashes,
   setCombatFlashes,
+  regionData,
 }) => {
   const stageWidth = window.innerWidth;
   const stageHeight = window.innerHeight;
@@ -1779,6 +1783,33 @@ const GameCanvas = ({
       drawTypeRef.current = null;
 
       if (submit) {
+        // Check affordability before sending
+        const arrowCostCfg = config?.arrowCosts;
+        if (arrowCostCfg && drawType === "attack") {
+          let pathLen = 0;
+          for (let i = 1; i < path.length; i++) {
+            const dx = path[i].x - path[i-1].x;
+            const dy = path[i].y - path[i-1].y;
+            pathLen += Math.sqrt(dx*dx + dy*dy);
+          }
+          let foodCost = arrowCostCfg.food.base + arrowCostCfg.food.perTile * pathLen;
+          let goldCost = arrowCostCfg.gold.base + arrowCostCfg.gold.perTile * pathLen;
+          const pNation = nations.find((n) => n.owner === userId);
+          const activeAttacks = pNation?.arrowOrders?.attacks?.length || 0;
+          if (arrowCostCfg.firstArrowFree && activeAttacks === 0) {
+            foodCost = 0;
+            goldCost = 0;
+          }
+          foodCost = Math.ceil(foodCost);
+          goldCost = Math.ceil(goldCost);
+          const playerFood = pNation?.resources?.food || 0;
+          const playerGold = pNation?.resources?.gold || 0;
+          if (playerFood < foodCost || playerGold < goldCost) {
+            onCancelArrow?.();
+            return;
+          }
+        }
+
         const simplifiedPath = simplifyArrowPath(path, 3);
         if (simplifiedPath.length >= 2) {
           onSendArrow?.(drawType, simplifiedPath);
@@ -1789,7 +1820,7 @@ const GameCanvas = ({
         onCancelArrow?.();
       }
     },
-    [drawingArrowType, onSendArrow, onCancelArrow]
+    [drawingArrowType, onSendArrow, onCancelArrow, config, nations, userId]
   );
 
   const handlePointerLeave = useCallback(() => {
@@ -1915,7 +1946,7 @@ const GameCanvas = ({
         result[key] = `/biomes/${key}.png`;
       });
     }
-    result["default"] = `/grassland.png`;
+    result["default"] = `/biomes/grassland.png`;
     return result;
   }, [mappings]);
 
@@ -2067,6 +2098,55 @@ const GameCanvas = ({
     !!fullMapImageUrl && (scale <= 0.65 || visibleTileCount > 60000);
 
   // Build mode preview for structures
+  // Compute region info for build mode
+  const hoveredRegionId = useMemo(() => {
+    if (!regionData || !hoveredCell) return null;
+    const { assignment, width } = regionData;
+    const idx = hoveredCell.y * width + hoveredCell.x;
+    if (idx < 0 || idx >= assignment.length) return null;
+    return assignment[idx];
+  }, [regionData, hoveredCell]);
+
+  const regionBuildable = useMemo(() => {
+    if (!regionData || hoveredRegionId === null || hoveredRegionId === 65535) return true;
+    if (!buildingStructure) return true;
+    const allNations = gameState?.gameState?.nations || [];
+    const regionCfg = config?.regions;
+    if (!regionCfg?.enabled) return true;
+
+    const { assignment, width } = regionData;
+
+    if (buildingStructure === "town") {
+      let townCount = 0;
+      for (const n of allNations) {
+        for (const c of n.cities || []) {
+          if ((c.type === "town" || c.type === "capital") &&
+              c.y * width + c.x >= 0 && c.y * width + c.x < assignment.length &&
+              assignment[c.y * width + c.x] === hoveredRegionId) {
+            townCount++;
+          }
+        }
+      }
+      return townCount < (regionCfg.maxTownsPerRegion ?? 1);
+    }
+
+    if (buildingStructure === "tower") {
+      const playerNation = allNations.find((n) => n.owner === userId);
+      if (!playerNation) return true;
+      let towerCount = 0;
+      for (const c of playerNation.cities || []) {
+        if (c.type === "tower" &&
+            c.y * width + c.x >= 0 && c.y * width + c.x < assignment.length &&
+            assignment[c.y * width + c.x] === hoveredRegionId) {
+          towerCount++;
+        }
+      }
+      return towerCount < (regionCfg.maxTowersPerRegion ?? 2);
+    }
+
+    return true;
+  }, [regionData, hoveredRegionId, buildingStructure, gameState, config, userId]);
+
   let buildPreview = null;
   if (buildingStructure && hoveredCell) {
     const gridCell = mapGrid.find(
@@ -2225,7 +2305,66 @@ const GameCanvas = ({
     // (directly in the JSX below) so they always reflect the latest state
     // and don't get stuck from stale memoization.
 
+    // Region overlay
+    if (regionData) {
+      children.push(
+        <RegionOverlay
+          key="region-overlay"
+          regionData={regionData}
+          cellSize={cellSize}
+          visibleBounds={visibleBounds}
+          scale={scale}
+          buildMode={!!buildingStructure}
+          hoveredRegionId={hoveredRegionId}
+          regionBuildable={regionBuildable}
+        />
+      );
+    }
+
     if (drawingArrowType && currentArrowPath && currentArrowPath.length > 0) {
+      const arrowCostCfg = config?.arrowCosts;
+      let arrowAffordable = true;
+      let arrowCostText = null;
+
+      if (arrowCostCfg && drawingArrowType === "attack") {
+        // Compute path length
+        let pathLen = 0;
+        for (let i = 1; i < currentArrowPath.length; i++) {
+          const dx = currentArrowPath[i].x - currentArrowPath[i-1].x;
+          const dy = currentArrowPath[i].y - currentArrowPath[i-1].y;
+          pathLen += Math.sqrt(dx*dx + dy*dy);
+        }
+
+        let foodCost = arrowCostCfg.food.base + arrowCostCfg.food.perTile * pathLen;
+        let goldCost = arrowCostCfg.gold.base + arrowCostCfg.gold.perTile * pathLen;
+
+        // First arrow free check
+        const pNation = nations.find((n) => n.owner === userId);
+        const activeAttacks = pNation?.arrowOrders?.attacks?.length || 0;
+        if (arrowCostCfg.firstArrowFree && activeAttacks === 0) {
+          foodCost = 0;
+          goldCost = 0;
+        }
+
+        foodCost = Math.ceil(foodCost);
+        goldCost = Math.ceil(goldCost);
+
+        const playerFood = pNation?.resources?.food || 0;
+        const playerGold = pNation?.resources?.gold || 0;
+        arrowAffordable = playerFood >= foodCost && playerGold >= goldCost;
+
+        if (foodCost > 0 || goldCost > 0) {
+          arrowCostText = `${foodCost} food, ${goldCost} gold`;
+          if (!arrowAffordable) arrowCostText += " (insufficient)";
+        } else {
+          arrowCostText = "Free";
+        }
+      }
+
+      const arrowColor = arrowAffordable
+        ? (drawingArrowType === "attack" ? 0xff4444 : 0x4444ff)
+        : 0x888888;
+
       const node = renderArrowPath(
         currentArrowPath,
         cellSize,
@@ -2233,9 +2372,36 @@ const GameCanvas = ({
         false,
         "drawing-arrow",
         null,
-        scale
+        scale,
+        arrowColor
       );
       if (node) children.push(node);
+
+      // Arrow cost label near the end of the path
+      if (arrowCostText && currentArrowPath.length >= 2) {
+        const lastPt = currentArrowPath[currentArrowPath.length - 1];
+        const invScale = 1 / Math.max(0.35, scale || 1);
+        children.push(
+          <Container
+            key="arrow-cost-label"
+            x={lastPt.x * cellSize + cellSize}
+            y={lastPt.y * cellSize - cellSize}
+            zIndex={250}
+            scale={{ x: invScale, y: invScale }}
+          >
+            <Text
+              text={arrowCostText}
+              style={{
+                fontSize: 12,
+                fill: arrowAffordable ? "#44cc44" : "#ff4444",
+                fontWeight: "bold",
+                stroke: "#000000",
+                strokeThickness: 2,
+              }}
+            />
+          </Container>
+        );
+      }
     }
 
     if (buildPreview) children.push(buildPreview);
@@ -2263,6 +2429,13 @@ const GameCanvas = ({
     buildPreview,
     nations,
     nationColors,
+    regionData,
+    hoveredRegionId,
+    regionBuildable,
+    buildingStructure,
+    config,
+    userId,
+    scale,
   ]);
 
   return (

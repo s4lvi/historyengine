@@ -162,7 +162,7 @@ function normalizeSeed(seed) {
   return 0;
 }
 
-function randFromSeed(seed, x, y, salt = 0) {
+export function randFromSeed(seed, x, y, salt = 0) {
   let h = seed + x * 374761393 + y * 668265263 + salt * 1442695041;
   h = (h ^ (h >> 13)) * 1274126177;
   h = h ^ (h >> 16);

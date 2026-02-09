@@ -3,6 +3,8 @@ import express from "express";
 import mongoose from "mongoose";
 import { Worker } from "worker_threads";
 import { assignResourcesToMap } from "../utils/resourceManagement.js";
+import { generateRegions } from "../utils/regionGenerator.js";
+import config from "../config/config.js";
 
 const router = express.Router();
 
@@ -30,6 +32,16 @@ const mapChunkSchema = new mongoose.Schema({
   rows: { type: [[mongoose.Schema.Types.Mixed]], required: true },
 });
 const MapChunk = mongoose.model("MapChunk", mapChunkSchema);
+
+const mapRegionSchema = new mongoose.Schema({
+  map: { type: mongoose.Schema.Types.ObjectId, ref: "Map", index: true },
+  width: { type: Number, required: true },
+  height: { type: Number, required: true },
+  regionCount: { type: Number, required: true },
+  seeds: [{ id: Number, x: Number, y: Number }],
+  assignmentBuffer: { type: Buffer, required: true },
+});
+const MapRegion = mongoose.model("MapRegion", mapRegionSchema);
 
 // -------------------------------------------------------------------
 // Helper: Run Map Generation in a Worker Thread
@@ -91,6 +103,13 @@ router.post("/", async (req, res, next) => {
     mapData = assignResourcesToMap(mapData, mapSeed);
     console.log("Map generated successfully in worker thread");
 
+    // Generate regions if enabled
+    let regionData = null;
+    if (config?.regions?.enabled !== false) {
+      regionData = generateRegions(mapData, width, height, mapSeed, config.regions);
+      console.log(`Generated ${regionData.regionCount} regions`);
+    }
+
     // Save map metadata (without the huge mapData)
     const newMap = new Map({
       name: name || "Untitled Map",
@@ -117,6 +136,19 @@ router.post("/", async (req, res, next) => {
     console.log(`Saving ${chunks.length} chunks to the database`);
     await MapChunk.insertMany(chunks);
     console.log("All chunks saved successfully");
+
+    // Save region data
+    if (regionData) {
+      await MapRegion.create({
+        map: newMap._id,
+        width,
+        height,
+        regionCount: regionData.regionCount,
+        seeds: regionData.seeds,
+        assignmentBuffer: Buffer.from(regionData.assignment.buffer),
+      });
+      console.log("Region data saved successfully");
+    }
 
     await Map.findByIdAndUpdate(newMap._id, { status: "ready" });
 
@@ -207,6 +239,20 @@ router.post("/gamemap", async (req, res, next) => {
         });
         mapData = assignResourcesToMap(mapData, mapSeed);
         console.log("Map generated successfully in worker thread");
+
+        // Generate regions if enabled
+        if (config?.regions?.enabled !== false) {
+          const regionData = generateRegions(mapData, width, height, mapSeed, config.regions);
+          await MapRegion.create({
+            map: newMap._id,
+            width,
+            height,
+            regionCount: regionData.regionCount,
+            seeds: regionData.seeds,
+            assignmentBuffer: Buffer.from(regionData.assignment.buffer),
+          });
+          console.log(`Generated and saved ${regionData.regionCount} regions`);
+        }
 
         // Define the chunk size and save chunks
         const CHUNK_SIZE = 50;
@@ -417,6 +463,25 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
+// GET /api/maps/:id/regions - Retrieve region data for a map
+router.get("/:id/regions", async (req, res, next) => {
+  try {
+    const region = await MapRegion.findOne({ map: req.params.id }).lean();
+    if (!region) {
+      return res.status(404).json({ error: "Region data not found for this map" });
+    }
+    res.json({
+      seeds: region.seeds,
+      assignmentBuffer: region.assignmentBuffer.toString("base64"),
+      width: region.width,
+      height: region.height,
+      regionCount: region.regionCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // DELETE /api/maps/:id - Delete a map and its associated chunks
 router.delete("/:id", async (req, res, next) => {
   try {
@@ -426,8 +491,9 @@ router.delete("/:id", async (req, res, next) => {
       error.status = 404;
       throw error;
     }
-    // Remove all chunks associated with the map
+    // Remove all chunks and regions associated with the map
     await MapChunk.deleteMany({ map: req.params.id });
+    await MapRegion.deleteMany({ map: req.params.id });
     res.json({ message: "Map and its chunks deleted successfully" });
   } catch (error) {
     console.error("Error in DELETE /api/maps/:id:", error);

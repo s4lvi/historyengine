@@ -9,6 +9,8 @@ import { broadcastRoomUpdate, touchRoom } from "../wsHub.js";
 import { assignResourcesToMap } from "../utils/resourceManagement.js";
 import { generateCityName, generateTowerName, generateUniqueName } from "../utils/nameGenerator.js";
 import { computePathLength, computeMaxArrowRange } from "../utils/gameLogic.js";
+import { getSessionUser } from "../utils/auth.js";
+import { getRegionForCell } from "../utils/regionGenerator.js";
 
 const router = express.Router();
 
@@ -16,6 +18,33 @@ import GameRoom from "../models/GameRoom.js";
 
 const MIN_FOUND_DISTANCE = 5;
 const DEFAULT_ALLOW_REFOUND = config?.territorial?.allowRefound !== false;
+
+router.use(async (req, res, next) => {
+  req.sessionUser = await getSessionUser(req);
+  next();
+});
+
+function getSessionActor(req) {
+  if (!req.sessionUser) return null;
+  return {
+    userId: req.sessionUser.id,
+    profile: req.sessionUser.profile || {},
+  };
+}
+
+function getLegacyActor(req, gameRoom) {
+  const { userId, userName, password } = req.body || {};
+  const actor = userId || userName;
+  if (!actor) return null;
+  if (!gameRoom) {
+    return { userId: actor, profile: {} };
+  }
+  const player = gameRoom.players?.find((p) => p.userId === actor);
+  if (!player) return null;
+  if (player.password && player.password !== password) return null;
+  if (player.password && !password) return null;
+  return { userId: actor, profile: player.profile || {} };
+}
 
 function parseBoolean(value, fallback = false) {
   if (value === undefined || value === null) return fallback;
@@ -30,7 +59,7 @@ async function getAuthoritativeRoom(roomId) {
 
 function hasValidPlayerCredentials(gameRoom, userId, password) {
   return !!gameRoom?.players?.find(
-    (p) => p.userId === userId && p.password === password
+    (p) => p.userId === userId && (!p.password || p.password === password)
   );
 }
 
@@ -418,10 +447,11 @@ async function spawnBotsForRoom(roomId, mapData, desiredCount) {
 }
 
 async function requireCreator(req, res) {
+  const sessionActor = getSessionActor(req);
   const { userId, userName, password } = req.body || {};
-  const actor = userId || userName;
-  if (!actor || !password) {
-    res.status(400).json({ error: "userId and password are required" });
+  const actor = sessionActor?.userId || userId || userName;
+  if (!actor) {
+    res.status(400).json({ error: "userId is required" });
     return null;
   }
   const gameRoom = await GameRoom.findById(req.params.id);
@@ -429,11 +459,11 @@ async function requireCreator(req, res) {
     res.status(404).json({ error: "Game room not found" });
     return null;
   }
-  if (
-    !gameRoom.creator ||
-    gameRoom.creator.userId !== actor ||
-    gameRoom.creator.password !== password
-  ) {
+  if (!gameRoom.creator || gameRoom.creator.userId !== actor) {
+    res.status(403).json({ error: "Invalid room creator credentials" });
+    return null;
+  }
+  if (!sessionActor && gameRoom.creator.password && gameRoom.creator.password !== password) {
     res.status(403).json({ error: "Invalid room creator credentials" });
     return null;
   }
@@ -446,7 +476,6 @@ router.post("/init", async (req, res, next) => {
       roomName,
       joinCode,
       creatorName,
-      creatorPassword,
       mapName,
       width,
       height,
@@ -457,6 +486,15 @@ router.post("/init", async (req, res, next) => {
       allowRefound,
     } = req.body;
     console.log(`[BOTS] init botCount=${botCount}`);
+
+    const sessionActor = getSessionActor(req);
+    const creatorId = sessionActor?.userId || creatorName;
+    const creatorProfile = sessionActor?.profile || {};
+    if (!creatorId) {
+      const error = new Error("Creator userId is required");
+      error.status = 400;
+      throw error;
+    }
 
     if (!width || !height) {
       const error = new Error("Width and height must be provided");
@@ -494,9 +532,9 @@ router.post("/init", async (req, res, next) => {
       roomName: roomName || "Game Room",
       joinCode: generatedJoinCode,
       status: "initializing", // initial status while map is generating
-      creator: { userId: creatorName, password: creatorPassword },
+      creator: { userId: creatorId, password: null, profile: creatorProfile },
       players: [
-        { userId: creatorName, password: creatorPassword, userState: {} },
+        { userId: creatorId, password: null, profile: creatorProfile, userState: {} },
       ],
       gameState: {
         nations: [],
@@ -644,24 +682,23 @@ router.post("/", async (req, res, next) => {
       mapId,
       roomName,
       joinCode,
-      creatorName,
-      creatorPassword,
       botCount,
       allowRefound,
     } = req.body;
     console.log(`[BOTS] create botCount=${botCount}`);
     if (!mapId) return res.status(400).json({ error: "mapId is required" });
-    if (!creatorName || !creatorPassword) {
-      return res
-        .status(400)
-        .json({ error: "Room creator name and password are required" });
+    const sessionActor = getSessionActor(req);
+    const creatorId = sessionActor?.userId;
+    const creatorProfile = sessionActor?.profile || {};
+    if (!creatorId) {
+      return res.status(400).json({ error: "Authenticated creator required" });
     }
     const Map = mongoose.model("Map");
     const originalMap = await Map.findById(mapId).lean();
     if (!originalMap)
       return res.status(404).json({ error: "Original map not found" });
     const mapCopyData = {
-      name: "Room:" + creatorName,
+      name: "Room:" + creatorId,
       width: originalMap.width,
       height: originalMap.height,
     };
@@ -686,13 +723,15 @@ router.post("/", async (req, res, next) => {
       joinCode: generatedJoinCode,
       status: "open",
       creator: {
-        userId: creatorName,
-        password: creatorPassword,
+        userId: creatorId,
+        password: null,
+        profile: creatorProfile,
       },
       players: [
         {
-          userId: creatorName,
-          password: creatorPassword,
+          userId: creatorId,
+          password: null,
+          profile: creatorProfile,
           userState: {},
         },
       ],
@@ -918,28 +957,51 @@ router.get("/:id/data", async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------
+// GET /api/gamerooms/:id/regions - Get region data for the room's map
+// -------------------------------------------------------------------
+router.get("/:id/regions", async (req, res, next) => {
+  try {
+    // First try cached region data from gameLoop
+    const regionData = gameLoop.getRegionData(req.params.id);
+    if (regionData) {
+      return res.json({
+        seeds: regionData.seeds,
+        assignmentBuffer: Buffer.from(regionData.assignment.buffer).toString("base64"),
+        width: regionData.width,
+        height: regionData.height,
+        regionCount: regionData.regionCount,
+      });
+    }
+
+    // Fall back to DB lookup via game room's map reference
+    const gameRoom = await GameRoom.findById(req.params.id).lean();
+    if (!gameRoom) return res.status(404).json({ error: "Game room not found" });
+
+    const MapRegion = mongoose.model("MapRegion");
+    const region = await MapRegion.findOne({ map: gameRoom.map }).lean();
+    if (!region) {
+      return res.status(404).json({ error: "Region data not found" });
+    }
+    res.json({
+      seeds: region.seeds,
+      assignmentBuffer: region.assignmentBuffer.toString("base64"),
+      width: region.width,
+      height: region.height,
+      regionCount: region.regionCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
 // DELETE /api/gamerooms/:id - Delete a game room (room creator only)
 // -------------------------------------------------------------------
 router.delete("/:id", async (req, res, next) => {
   try {
-    const { userName, password } = req.body;
-    if (!userName || !password) {
-      return res
-        .status(400)
-        .json({ error: "userName and password are required" });
-    }
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-    if (
-      !gameRoom.creator ||
-      gameRoom.creator.userId !== userName ||
-      gameRoom.creator.password !== password
-    ) {
-      return res
-        .status(403)
-        .json({ error: "Invalid room creator credentials" });
-    }
+    const auth = await requireCreator(req, res);
+    if (!auth) return;
+    const { gameRoom } = auth;
     await gameLoop.stopRoom(req.params.id.toString());
     const MapModel = mongoose.model("Map");
     const MapChunk = mongoose.model("MapChunk");
@@ -1019,11 +1081,11 @@ router.post("/:id/unpause", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/quit", async (req, res, next) => {
   try {
-    const { userId, password } = req.body;
-    if (!userId || !password) {
-      return res
-        .status(400)
-        .json({ error: "userId and password are required" });
+    const sessionActor = getSessionActor(req);
+    const { userId: legacyUserId, password } = req.body || {};
+    const userId = sessionActor?.userId || legacyUserId;
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
     }
 
     // First, verify the game room exists
@@ -1033,7 +1095,7 @@ router.post("/:id/quit", async (req, res, next) => {
     }
 
     // Verify player credentials
-    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+    if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
@@ -1071,11 +1133,12 @@ router.post("/:id/quit", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/join", async (req, res, next) => {
   try {
-    const { joinCode, userName, password } = req.body;
-    if (!userName || !password) {
-      return res
-        .status(400)
-        .json({ error: "userName and password are required" });
+    const { joinCode, userName, password } = req.body || {};
+    const sessionActor = getSessionActor(req);
+    const actorId = sessionActor?.userId || userName;
+    const actorProfile = sessionActor?.profile || {};
+    if (!actorId) {
+      return res.status(400).json({ error: "userName is required" });
     }
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
@@ -1084,12 +1147,15 @@ router.post("/:id/join", async (req, res, next) => {
       return res.status(400).json({ error: "Game room is not open" });
     if (gameRoom.joinCode !== joinCode)
       return res.status(403).json({ error: "Invalid join code" });
-    let player = gameRoom.players.find((p) => p.userId === userName);
+    let player = gameRoom.players.find((p) => p.userId === actorId);
     if (player) {
-      if (player.password !== password) {
+      if (!sessionActor && player.password && player.password !== password) {
         return res
           .status(403)
           .json({ error: "Invalid password for existing user" });
+      }
+      if (sessionActor) {
+        player.profile = actorProfile;
       }
       touchRoom(gameRoom._id.toString());
       res.json({
@@ -1098,7 +1164,17 @@ router.post("/:id/join", async (req, res, next) => {
         config: config,
       });
     } else {
-      player = { userId: userName, password, userState: {} };
+      if (!sessionActor && !password) {
+        return res
+          .status(400)
+          .json({ error: "password is required for non-session join" });
+      }
+      player = {
+        userId: actorId,
+        password: sessionActor ? null : password,
+        profile: actorProfile,
+        userState: {},
+      };
       gameRoom.players.push(player);
       touchRoom(gameRoom._id.toString());
       await persistRoomMutation(gameRoom, req.params.id, ["players"]);
@@ -1118,11 +1194,11 @@ router.post("/:id/join", async (req, res, next) => {
 // In gameRoutes.js
 router.post("/:id/state", async (req, res, next) => {
   try {
-    const { userId, password, full } = req.body;
-    if (!userId || !password) {
-      return res
-        .status(400)
-        .json({ error: "userId and password are required" });
+    const sessionActor = getSessionActor(req);
+    const { userId: legacyUserId, password, full } = req.body || {};
+    const userId = sessionActor?.userId || legacyUserId;
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
     }
 
     const gameRoom = await getAuthoritativeRoom(req.params.id);
@@ -1130,11 +1206,13 @@ router.post("/:id/state", async (req, res, next) => {
       return res.status(404).json({ error: "Game room not found" });
     }
 
-    const player = gameRoom.players.find(
-      (p) => p.userId === userId && p.password === password
-    );
-    if (!player) {
-      return res.status(403).json({ error: "Invalid credentials" });
+    if (!sessionActor) {
+      const player = gameRoom.players.find(
+        (p) => p.userId === userId && (!p.password || p.password === password)
+      );
+      if (!player) {
+        return res.status(403).json({ error: "Invalid credentials" });
+      }
     }
     touchRoom(gameRoom._id.toString());
 
@@ -1151,7 +1229,13 @@ router.post("/:id/state", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/foundNation", async (req, res, next) => {
   try {
-    const { userId, password, x: rawX, y: rawY } = req.body;
+    const { userId: legacyUserId, password, x: rawX, y: rawY } = req.body;
+    const sessionActor = getSessionActor(req);
+    const userId = sessionActor?.userId || legacyUserId;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
 
     // Validate coordinates are integers
     const x = Number(rawX);
@@ -1169,10 +1253,11 @@ router.post("/:id/foundNation", async (req, res, next) => {
     }
 
     // 2. Validate
-    const player = gameRoom.players.find(
-      (p) => p.userId === userId && p.password === password
-    );
+    const player = gameRoom.players.find((p) => p.userId === userId);
     if (!player) {
+      return res.status(403).json({ error: "You must join the room first" });
+    }
+    if (!sessionActor && player.password && player.password !== password) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
@@ -1291,10 +1376,19 @@ router.post("/:id/foundNation", async (req, res, next) => {
       }
     }
 
+    const actorProfile = sessionActor?.profile || player.profile || {};
+    const displayName = actorProfile.displayName || userId;
+    const nationName = actorProfile.nationName || displayName;
+    const capitalName = actorProfile.capitalName || "Capital";
+    const color = actorProfile.color || null;
+
     const initialDelta = { add: { x: [...territoryX], y: [...territoryY] }, sub: { x: [], y: [] } };
     const newNation = {
       owner: userId,
       status: "active",
+      displayName,
+      nationName,
+      color,
       startingCell: { x, y },
       territory: { x: territoryX, y: territoryY },
       territoryDelta: initialDelta,
@@ -1310,7 +1404,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
       },
       cities: [
         {
-          name: generateUniqueName(generateCityName, new Set()),
+          name: capitalName || generateUniqueName(generateCityName, new Set()),
           x,
           y,
           population: 50,
@@ -1375,16 +1469,18 @@ router.post("/:id/foundNation", async (req, res, next) => {
 router.post("/:id/buildCity", async (req, res, next) => {
   console.log("[ROUTE] Build structure request:", req.body);
   try {
-    const { userId, password, x, y, cityType, cityName } = req.body;
-    if (!userId || !password || x == null || y == null || !cityType) {
+    const { userId: legacyUserId, password, x, y, cityType, cityName } = req.body;
+    const sessionActor = getSessionActor(req);
+    const userId = sessionActor?.userId || legacyUserId;
+    if (!userId || x == null || y == null || !cityType) {
       return res
         .status(400)
-        .json({ error: "userId, password, x, y, and cityType are required" });
+        .json({ error: "userId, x, y, and cityType are required" });
     }
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+    if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
@@ -1446,6 +1542,55 @@ router.post("/:id/buildCity", async (req, res, next) => {
       return res.status(400).json({
         error: "A structure already exists on this tile",
       });
+    }
+
+    // Region-based building constraints
+    const regionCfg = config?.regions;
+    if (regionCfg?.enabled !== false) {
+      const regionData = gameLoop.getRegionData(req.params.id);
+      if (regionData) {
+        const regionId = getRegionForCell(regionData.assignment, regionData.width, x, y);
+        const UNASSIGNED = 65535;
+
+        if (regionId !== UNASSIGNED) {
+          if (cityType === "town") {
+            // Count existing towns/capitals in this region across ALL nations
+            const allNations = gameRoom.gameState?.nations || [];
+            let townCount = 0;
+            for (const n of allNations) {
+              for (const c of n.cities || []) {
+                if ((c.type === "town" || c.type === "capital") &&
+                    getRegionForCell(regionData.assignment, regionData.width, c.x, c.y) === regionId) {
+                  townCount++;
+                }
+              }
+            }
+            const maxTowns = regionCfg.maxTownsPerRegion ?? 1;
+            if (townCount >= maxTowns) {
+              return res.status(400).json({
+                error: "Region already has a city",
+              });
+            }
+          }
+
+          if (cityType === "tower") {
+            // Count this nation's towers in this region
+            let towerCount = 0;
+            for (const c of nation.cities || []) {
+              if (c.type === "tower" &&
+                  getRegionForCell(regionData.assignment, regionData.width, c.x, c.y) === regionId) {
+                towerCount++;
+              }
+            }
+            const maxTowers = regionCfg.maxTowersPerRegion ?? 2;
+            if (towerCount >= maxTowers) {
+              return res.status(400).json({
+                error: `Region tower limit reached (${maxTowers}/${maxTowers})`,
+              });
+            }
+          }
+        }
+      }
     }
 
     /* ---------------------------------------------
@@ -1605,10 +1750,12 @@ router.post("/:id/upgradeNode", async (req, res) => {
 // -------------------------------------------------------------------
 router.post("/:id/arrow", async (req, res, next) => {
   try {
-    const { userId, password, type, path, percent } = req.body;
-    if (!userId || !password || !type || !path || !Array.isArray(path)) {
+    const { userId: legacyUserId, password, type, path, percent } = req.body;
+    const sessionActor = getSessionActor(req);
+    const userId = sessionActor?.userId || legacyUserId;
+    if (!userId || !type || !path || !Array.isArray(path)) {
       return res.status(400).json({
-        error: "userId, password, type (attack/defend), and path array are required",
+        error: "userId, type (attack/defend), and path array are required",
       });
     }
 
@@ -1627,7 +1774,7 @@ router.post("/:id/arrow", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+    if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
@@ -1706,6 +1853,50 @@ router.post("/:id/arrow", async (req, res, next) => {
       if (type === "defend" && lockedNation.arrowOrders.defend) {
         lockedNation.population = (lockedNation.population || 0) + (lockedNation.arrowOrders.defend.remainingPower || 0);
         delete lockedNation.arrowOrders.defend;
+      }
+
+      // Arrow resource costs
+      const arrowCostCfg = config?.arrowCosts;
+      let arrowFoodCost = 0;
+      let arrowGoldCost = 0;
+      if (arrowCostCfg && type === "attack") {
+        const pathLen = computePathLength(sanitizedPath);
+        arrowFoodCost = arrowCostCfg.food.base + arrowCostCfg.food.perTile * pathLen;
+        arrowGoldCost = arrowCostCfg.gold.base + arrowCostCfg.gold.perTile * pathLen;
+
+        // First arrow free
+        const attacks = lockedNation.arrowOrders?.attacks || [];
+        if (arrowCostCfg.firstArrowFree && attacks.length === 0) {
+          arrowFoodCost = 0;
+          arrowGoldCost = 0;
+        }
+
+        // Own territory discount — if path start+end both in territory
+        if (arrowCostCfg.ownTerritoryDiscount && arrowFoodCost > 0) {
+          const tx = lockedNation.territory?.x || [];
+          const ty = lockedNation.territory?.y || [];
+          const territorySet = new Set();
+          for (let i = 0; i < tx.length; i++) territorySet.add(`${tx[i]},${ty[i]}`);
+          const startIn = territorySet.has(`${sanitizedPath[0].x},${sanitizedPath[0].y}`);
+          const endIn = territorySet.has(`${sanitizedPath[sanitizedPath.length - 1].x},${sanitizedPath[sanitizedPath.length - 1].y}`);
+          if (startIn && endIn) {
+            arrowFoodCost *= arrowCostCfg.ownTerritoryDiscount;
+            arrowGoldCost *= arrowCostCfg.ownTerritoryDiscount;
+          }
+        }
+
+        arrowFoodCost = Math.ceil(arrowFoodCost);
+        arrowGoldCost = Math.ceil(arrowGoldCost);
+
+        if ((lockedNation.resources?.food || 0) < arrowFoodCost ||
+            (lockedNation.resources?.gold || 0) < arrowGoldCost) {
+          throw Object.assign(new Error("Insufficient resources for arrow"), {
+            status: 400,
+            cost: { food: arrowFoodCost, gold: arrowGoldCost },
+          });
+        }
+        lockedNation.resources.food -= arrowFoodCost;
+        lockedNation.resources.gold -= arrowGoldCost;
       }
 
       // Calculate power commitment
@@ -1805,17 +1996,19 @@ router.post("/:id/arrow", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/clearArrow", async (req, res, next) => {
   try {
-    const { userId, password, type, arrowId } = req.body;
-    if (!userId || !password) {
+    const sessionActor = getSessionActor(req);
+    const { userId: legacyUserId, password, type, arrowId } = req.body || {};
+    const userId = sessionActor?.userId || legacyUserId;
+    if (!userId) {
       return res.status(400).json({
-        error: "userId and password are required",
+        error: "userId is required",
       });
     }
 
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+    if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
@@ -1874,17 +2067,19 @@ router.post("/:id/clearArrow", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/reinforceArrow", async (req, res, next) => {
   try {
-    const { userId, password, arrowId, percent } = req.body;
-    if (!userId || !password || !arrowId) {
+    const sessionActor = getSessionActor(req);
+    const { userId: legacyUserId, password, arrowId, percent } = req.body || {};
+    const userId = sessionActor?.userId || legacyUserId;
+    if (!userId || !arrowId) {
       return res.status(400).json({
-        error: "userId, password, and arrowId are required",
+        error: "userId and arrowId are required",
       });
     }
 
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+    if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
@@ -1950,17 +2145,19 @@ router.post("/:id/reinforceArrow", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/retreatArrow", async (req, res, next) => {
   try {
-    const { userId, password, arrowId } = req.body;
-    if (!userId || !password || !arrowId) {
+    const sessionActor = getSessionActor(req);
+    const { userId: legacyUserId, password, arrowId } = req.body || {};
+    const userId = sessionActor?.userId || legacyUserId;
+    if (!userId || !arrowId) {
       return res.status(400).json({
-        error: "userId, password, and arrowId are required",
+        error: "userId and arrowId are required",
       });
     }
 
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+    if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
@@ -1989,17 +2186,19 @@ router.post("/:id/retreatArrow", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/troopTarget", async (req, res, next) => {
   try {
-    const { userId, password, troopTarget } = req.body;
-    if (!userId || !password || troopTarget == null) {
+    const sessionActor = getSessionActor(req);
+    const { userId: legacyUserId, password, troopTarget } = req.body || {};
+    const userId = sessionActor?.userId || legacyUserId;
+    if (!userId || troopTarget == null) {
       return res.status(400).json({
-        error: "userId, password, and troopTarget are required",
+        error: "userId and troopTarget are required",
       });
     }
 
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+    if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
     touchRoom(gameRoom._id.toString());
