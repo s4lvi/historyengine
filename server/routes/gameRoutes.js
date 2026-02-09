@@ -344,7 +344,7 @@ function buildBotNation(botId, x, y, mapData, existingNations) {
     },
     cities: [
       {
-        name: "Capital",
+        name: generateUniqueName(generateCityName, new Set()),
         x,
         y,
         population: 50,
@@ -1138,7 +1138,8 @@ router.post("/:id/state", async (req, res, next) => {
     }
     touchRoom(gameRoom._id.toString());
 
-    res.json(buildGameStateResponse(gameRoom, userId, !!full));
+    const matrix = gameLoop.getCachedMatrix(req.params.id);
+    res.json(buildGameStateResponse(gameRoom, userId, !!full, matrix));
   } catch (error) {
     next(error);
   }
@@ -1309,7 +1310,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
       },
       cities: [
         {
-          name: "Capital",
+          name: generateUniqueName(generateCityName, new Set()),
           x,
           y,
           population: 50,

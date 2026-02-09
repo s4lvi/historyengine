@@ -408,8 +408,17 @@ export function resolveDensityCombat(
 
       // Enemy cells: density combat
       const defenderDensity = troopDensity[cellOwner * size + ci];
-      const defMult = defenseStrength[ci] || 1.0;
-      const effectiveDefense = defenderDensity * combatDefenderAdvantage * defMult;
+      // defenseStrength includes population density, troop density, and structures.
+      // We do NOT use it as a multiplier on defenderDensity (that would double-count
+      // troop density). Instead extract a small terrain/structure bonus from it.
+      // Base defenseStrength is ~1.0 + popDens*0.5 + troopDens*0.8 + structures.
+      // Strip out the troop density contribution to avoid double-counting.
+      const rawDefense = defenseStrength[ci] || 1.0;
+      // Terrain/structure modifier: defenseStrength minus the troop density component
+      // Clamp to [1.0, 3.0] so structures help but don't make cells invincible
+      const defenderTroopComponent = defenderDensity * (cfg.troopDefenseScale || 0.8);
+      const terrainMod = Math.max(1.0, Math.min(3.0, rawDefense - defenderTroopComponent));
+      const effectiveDefense = defenderDensity * combatDefenderAdvantage * terrainMod;
 
       if (effectiveAttack < combatDensityThreshold && defenderDensity < combatDensityThreshold) {
         continue;

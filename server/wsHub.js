@@ -39,10 +39,12 @@ export function hasActiveConnections(roomId) {
 }
 
 let getLiveRoomFn = null;
+let getMatrixFn = null;
 
-export function initWebSocket(server, getLiveRoom) {
+export function initWebSocket(server, getLiveRoom, getMatrix) {
   if (wss) return wss;
   getLiveRoomFn = getLiveRoom || null;
+  getMatrixFn = getMatrix || null;
   wss = new WebSocketServer({ server, path: "/ws" });
 
   wss.on("connection", (ws, req) => {
@@ -100,9 +102,10 @@ export function initWebSocket(server, getLiveRoom) {
         touchRoom(roomId);
 
         safeSend(ws, { type: "subscribed", roomId, full: ws.full });
+        const matrix = getMatrixFn ? getMatrixFn(roomId) : null;
         safeSend(ws, {
           type: "state",
-          ...buildGameStateResponse(gameRoom, userId, ws.full),
+          ...buildGameStateResponse(gameRoom, userId, ws.full, matrix),
         });
         return;
       }

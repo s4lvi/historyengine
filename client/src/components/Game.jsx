@@ -329,7 +329,7 @@ const Game = () => {
               previousTerritory,
               nation.territoryDeltaForClient
             );
-            delete nation.territoryDeltaForClient;
+            // Keep territoryDeltaForClient — TerritoryRenderer uses it for incremental rendering
           }
           return nation;
         });

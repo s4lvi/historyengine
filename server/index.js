@@ -188,7 +188,11 @@ app.use((err, req, res, next) => {
 // -------------------------------------------------------------------
 const PORT = process.env.PORT || 5001;
 const server = http.createServer(app);
-initWebSocket(server, (roomId) => gameLoop.getLiveGameRoom(roomId));
+initWebSocket(
+  server,
+  (roomId) => gameLoop.getLiveGameRoom(roomId),
+  (roomId) => gameLoop.getCachedMatrix(roomId)
+);
 setInterval(cleanupEmptyRooms, EMPTY_ROOM_CLEANUP_INTERVAL_MS);
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

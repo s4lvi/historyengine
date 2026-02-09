@@ -946,7 +946,7 @@ const NationOverlay = ({
               />
               {showName && (
                 <NationLabel
-                  text={city.name}
+                  text={city.type === "capital" ? `${city.name} (Capital)` : city.name}
                   x={centerX}
                   y={centerY + iconSize * 0.6}
                   fontSize={Math.max(12, labelFontSize * 0.75)}
@@ -1563,13 +1563,17 @@ const GameCanvas = ({
         const userNation = gameState?.gameState?.nations?.find(
           (n) => n.owner === userId
         );
-        const territoryValid =
-          userNation &&
-          userNation.territory &&
-          userNation.territory.x &&
-          userNation.territory.y &&
-          userNation.territory.x.includes(cell.x) &&
-          userNation.territory.y.includes(cell.y);
+        let territoryValid = false;
+        if (userNation?.territory?.x && userNation?.territory?.y) {
+          const tx = userNation.territory.x;
+          const ty = userNation.territory.y;
+          for (let ti = 0; ti < tx.length; ti++) {
+            if (tx[ti] === cell.x && ty[ti] === cell.y) {
+              territoryValid = true;
+              break;
+            }
+          }
+        }
         resourceValid =
           resourceValid ||
           ["town", "capital", "fort"].includes(buildingStructure);
@@ -1786,14 +1790,17 @@ const GameCanvas = ({
     const userNation = gameState?.gameState?.nations?.find(
       (n) => n.owner === userId
     );
-    // (Using the old hasCellInTerritory logic here – if needed, this can be optimized similarly.)
-    const territoryValid =
-      userNation &&
-      userNation.territory &&
-      userNation.territory.x &&
-      userNation.territory.y &&
-      userNation.territory.x.includes(hoveredCell.x) &&
-      userNation.territory.y.includes(hoveredCell.y);
+    let territoryValid = false;
+    if (userNation?.territory?.x && userNation?.territory?.y) {
+      const tx = userNation.territory.x;
+      const ty = userNation.territory.y;
+      for (let ti = 0; ti < tx.length; ti++) {
+        if (tx[ti] === hoveredCell.x && ty[ti] === hoveredCell.y) {
+          territoryValid = true;
+          break;
+        }
+      }
+    }
     resourceValid =
       resourceValid || ["town", "capital", "fort", "tower"].includes(buildingStructure);
     const valid = resourceValid && territoryValid;
@@ -1892,29 +1899,9 @@ const GameCanvas = ({
       );
     }
 
-    // Render active attack arrows (broad wedge style)
-    if (activeAttackArrows && activeAttackArrows.length > 0) {
-      for (let i = 0; i < activeAttackArrows.length; i++) {
-        const arrow = activeAttackArrows[i];
-        if (arrow?.path) {
-          const node = renderArrowV2(arrow, cellSize, `active-attack-${arrow.id || i}`, scale);
-          if (node) children.push(node);
-        }
-      }
-    }
-
-    if (activeDefendArrow?.path) {
-      const node = renderArrowPath(
-        activeDefendArrow.path,
-        cellSize,
-        "defend",
-        true,
-        "active-defend-arrow",
-        activeDefendArrow.remainingPower,
-        scale
-      );
-      if (node) children.push(node);
-    }
+    // NOTE: Attack and defend arrows are rendered OUTSIDE this useMemo
+    // (directly in the JSX below) so they always reflect the latest state
+    // and don't get stuck from stale memoization.
 
     if (drawingArrowType && currentArrowPath && currentArrowPath.length > 0) {
       const node = renderArrowPath(
@@ -1946,8 +1933,6 @@ const GameCanvas = ({
     renderNationOverlays,
     troopDensityMap,
     visibleBounds,
-    activeAttackArrows,
-    activeDefendArrow,
     drawingArrowType,
     currentArrowPath,
     buildPreview,
@@ -1996,6 +1981,23 @@ const GameCanvas = ({
         sortableChildren={true}
       >
         {sceneChildren}
+        {/* Attack arrows rendered outside useMemo so they always reflect latest state */}
+        {activeAttackArrows?.map((arrow, i) =>
+          arrow?.path
+            ? renderArrowV2(arrow, cellSize, `active-attack-${arrow.id || i}`, scale)
+            : null
+        )}
+        {activeDefendArrow?.path
+          ? renderArrowPath(
+              activeDefendArrow.path,
+              cellSize,
+              "defend",
+              true,
+              "active-defend-arrow",
+              activeDefendArrow.remainingPower,
+              scale
+            )
+          : null}
       </Container>
     </Stage>
   );

@@ -242,6 +242,7 @@ export function detectEncirclement(matrix, nations = []) {
     if (nIdx === undefined) continue;
     const cellSet = new Set();
     for (const city of nation.cities || []) {
+      if (city.type !== "capital") continue; // only actual capitals prevent encirclement
       if (matrix.inBounds(city.x, city.y)) {
         cellSet.add(matrix.idx(city.x, city.y));
       }

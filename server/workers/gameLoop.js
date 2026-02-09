@@ -378,6 +378,11 @@ class GameLoop {
     return matrix;
   }
 
+  /** Get the cached matrix for a room (or null if not yet created) */
+  getCachedMatrix(roomKey) {
+    return this.cachedMatrix.get(roomKey) || null;
+  }
+
   /**
    * Sync matrix ownership from nations' territory arrays.
    * Used after route mutations (foundNation, quit) to keep matrix in sync.
@@ -728,9 +733,19 @@ class GameLoop {
         deriveOwnershipFromLoyalty(matrix, config.loyalty?.ownershipThreshold || 0.6);
       }
 
-      // 4. Population density + defense strength
+      // 4. Population density diffusion
       if (popDensityEnabled) {
         tickPopulationDensity(matrix, config.populationDensity, gameRoom.gameState.nations);
+      }
+
+      // 4.5 Troop density: mobilization + diffusion
+      if (troopDensityEnabled) {
+        tickMobilization(matrix, config.troopDensity, gameRoom.gameState.nations);
+        tickTroopDensityDiffusion(matrix, config.troopDensity, gameRoom.gameState.nations);
+      }
+
+      // 4.6 Defense strength (after troop density diffusion so it reflects current-tick troops)
+      if (popDensityEnabled) {
         computeDefenseStrength(
           matrix,
           gameRoom.gameState.nations,
@@ -738,12 +753,6 @@ class GameLoop {
           config.populationDensity?.densityDefenseScale || 0.5,
           troopDensityEnabled ? (config.troopDensity?.troopDefenseScale || 0.8) : 0
         );
-      }
-
-      // 4.5 Troop density: mobilization + diffusion
-      if (troopDensityEnabled) {
-        tickMobilization(matrix, config.troopDensity, gameRoom.gameState.nations);
-        tickTroopDensityDiffusion(matrix, config.troopDensity, gameRoom.gameState.nations);
       }
 
       // 5. Build ownershipMap for gameLogic.js compatibility
@@ -827,19 +836,22 @@ class GameLoop {
 
       gameRoom.gameState.nations = updatedNations;
 
-      // 8. Structure capture
-      if (hasChanges) {
-        handleStructureCaptureMatrix(gameRoom.gameState, matrix);
-      }
-
-      // 9. City auto-expansion
+      // 8. City auto-expansion (modifies matrix directly)
       applyCityAutoExpansionMatrix(gameRoom.gameState, matrix);
 
-      // 10. Encirclement
+      // 9. Encirclement (runs before structure capture so encircled structures get handled)
       const encirclementInterval = config?.territorial?.encirclementCheckIntervalTicks ?? 6;
-      if (hasChanges && currentTick % encirclementInterval === 0) {
+      if (currentTick % encirclementInterval === 0) {
         updateEncircledTerritoryMatrix(gameRoom.gameState, matrix);
       }
+
+      // 9.5 Sync ownershipMap after matrix-only mutations (concavity, auto-expansion, encirclement)
+      // These steps modify the matrix directly without updating the string-key cache.
+      // Force rebuild so next tick's arrow processing sees correct ownership.
+      this.getOwnershipMap(roomKey, gameRoom.gameState.nations, true);
+
+      // 10. Structure capture (after encirclement so encircled structures are correctly handled)
+      handleStructureCaptureMatrix(gameRoom.gameState, matrix);
 
       // 11. Resource claims
       updateResourceNodeClaimsMatrix(gameRoom.gameState, mapData, matrix);
@@ -1059,8 +1071,17 @@ class GameLoop {
   async stopAllRooms() {
     const roomKeys = [...this.timers.keys()];
     console.log(`[LOOP] stopAllRooms: saving ${roomKeys.length} active room(s)...`);
-    const GameRoomModel = mongoose.model("GameRoom");
 
+    // Stop all tick timers FIRST to prevent races during serialization
+    for (const roomKey of roomKeys) {
+      const timer = this.timers.get(roomKey);
+      if (timer) clearTimeout(timer);
+      this.timers.delete(roomKey);
+      this.pendingRooms.delete(roomKey);
+      this.processingRooms.delete(roomKey);
+    }
+
+    // Now safely serialize and save each room
     for (const roomKey of roomKeys) {
       try {
         const gameRoom = this.cachedGameRoom.get(roomKey);
@@ -1078,7 +1099,20 @@ class GameLoop {
       } catch (err) {
         console.error(`[LOOP] Error saving room ${roomKey} during shutdown:`, err.message);
       }
-      this.stopRoom(roomKey);
+      // Clean up remaining caches
+      this.cachedGameRoom.delete(roomKey);
+      this.cachedMapData.delete(roomKey);
+      this.cachedMapStats.delete(roomKey);
+      this.cachedOwnershipMap.delete(roomKey);
+      this.cachedNationCount.delete(roomKey);
+      this.cachedMatrix.delete(roomKey);
+      this.lastSaveTick.delete(roomKey);
+      this.lastBroadcast.delete(roomKey);
+      this.savingRooms.delete(roomKey);
+      this.roomMutationLocks.delete(roomKey);
+      this.loopIds.delete(roomKey);
+      this.roomTickCount.delete(roomKey);
+      console.log(`[LOOP] Stopped room ${roomKey}`);
     }
     console.log(`[LOOP] All rooms stopped`);
   }
