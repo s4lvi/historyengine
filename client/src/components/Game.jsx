@@ -10,6 +10,8 @@ import PlayerListModal from "./PlayerListModal";
 import ActionBar from "./ActionBar";
 import ArrowPanel from "./ArrowPanel";
 import { unpackTerritoryDelta } from "../utils/packedDelta";
+import MobileActionDock from "./MobileActionDock";
+import ContextPanel from "./ContextPanel";
 
 const Game = () => {
   // Get game room ID from URL params.
@@ -71,11 +73,14 @@ const Game = () => {
   const [actionModal, setActionModal] = useState(null);
   const [foundingNation, setFoundingNation] = useState(false);
   const [buildingStructure, setBuildingStructure] = useState(null);
-  const [placingTower, setPlacingTower] = useState(false);
   const [isDefeated, setIsDefeated] = useState(false);
   const [isSpectating, setIsSpectating] = useState(false);
   const [hasFounded, setHasFounded] = useState(false);
   const [attackPercent, setAttackPercent] = useState(0.25);
+  const [troopTarget, setTroopTarget] = useState(0.2);
+  const [uiMode, setUiMode] = useState("idle");
+  const [selectedCellInfo, setSelectedCellInfo] = useState(null);
+  const [isMobile, setIsMobile] = useState(false);
   const actionModalRef = useRef(actionModal);
   const isDefeatedRef = useRef(isDefeated);
   const hasFoundedRef = useRef(hasFounded);
@@ -105,7 +110,67 @@ const Game = () => {
   const startFoundNation = () => {
     setIsSpectating(false);
     setFoundingNation(true);
+    setBuildingStructure(null);
+    setUiMode("foundNation");
+    setSelectedCellInfo(null);
   };
+
+  const exitModes = () => {
+    setFoundingNation(false);
+    setBuildingStructure(null);
+    setDrawingArrowType(null);
+    setCurrentArrowPath([]);
+    setUiMode("idle");
+    setSelectedCellInfo(null);
+  };
+
+  const enterDrawMode = (type) => {
+    setFoundingNation(false);
+    setBuildingStructure(null);
+    setDrawingArrowType(type);
+    setUiMode(type === "attack" ? "drawAttack" : "drawDefend");
+    setSelectedCellInfo(null);
+  };
+
+  const setMode = (nextMode) => {
+    if (nextMode === "idle") {
+      exitModes();
+      return;
+    }
+    if (nextMode === "pan") {
+      setFoundingNation(false);
+      setBuildingStructure(null);
+      setDrawingArrowType(null);
+      setCurrentArrowPath([]);
+      setSelectedCellInfo(null);
+    }
+    setUiMode(nextMode);
+  };
+
+  const handleBuildStructure = (type) => {
+    setBuildingStructure(type);
+    setFoundingNation(false);
+    setDrawingArrowType(null);
+    setCurrentArrowPath([]);
+    setUiMode("buildStructure");
+    setSelectedCellInfo(null);
+  };
+
+  const handleInspectCell = (info) => {
+    setSelectedCellInfo(info);
+  };
+
+  useEffect(() => {
+    const updateMobile = () => {
+      const coarse =
+        window.matchMedia &&
+        window.matchMedia("(pointer: coarse)").matches;
+      setIsMobile(coarse || window.innerWidth < 768);
+    };
+    updateMobile();
+    window.addEventListener("resize", updateMobile);
+    return () => window.removeEventListener("resize", updateMobile);
+  }, []);
 
   // ----------------------------
   // API call helpers
@@ -370,6 +435,8 @@ const Game = () => {
     fullInFlightRef.current = false;
     pendingGapSyncRef.current = false;
     lastNationOwnersRef.current = "";
+    exitModes();
+    setSelectedCellInfo(null);
   }, [id]);
 
   useEffect(() => {
@@ -707,20 +774,26 @@ const Game = () => {
       setIsSpectating(false);
       setActionModal(null);
       setHasFounded(true);
+      setUiMode("idle");
     } catch (err) {
       setError(err.message);
       setFoundingNation(false);
+      setUiMode("idle");
     }
   };
 
   const handleCancelBuild = () => {
     setBuildingStructure(null);
+    if (uiMode === "buildStructure") {
+      setUiMode("idle");
+    }
   };
 
   const handleBuildCity = async (x, y, cityType, cityName) => {
     // If x and y are null, it means we're just selecting what to build
     if (x === null && y === null) {
       setBuildingStructure(cityType);
+      setUiMode("buildStructure");
       return;
     }
 
@@ -747,10 +820,12 @@ const Game = () => {
       if (!response.ok) throw new Error("Failed to build city");
       // Clear building mode after successful build
       setBuildingStructure(null);
+      setUiMode("idle");
     } catch (err) {
       setError(err.message);
       // Also clear building mode on error
       setBuildingStructure(null);
+      setUiMode("idle");
     }
   };
 
@@ -849,16 +924,15 @@ const Game = () => {
   const handleStartDrawArrow = (type) => {
     // Clear any existing drawing state
     setCurrentArrowPath([]);
-    setDrawingArrowType(type);
-    // Cancel any other placement modes
-    setBuildingStructure(null);
-    setPlacingTower(false);
-    setFoundingNation(false);
+    enterDrawMode(type);
   };
 
   const handleCancelArrow = () => {
     setDrawingArrowType(null);
     setCurrentArrowPath([]);
+    if (uiMode === "drawAttack" || uiMode === "drawDefend") {
+      setUiMode("idle");
+    }
   };
 
   const handleArrowPathUpdate = (path) => {
@@ -904,8 +978,10 @@ const Game = () => {
             id: result.arrowId,
             path,
             percent: attackPercent,
-            remainingPower: initialPower,
-            initialPower,
+            troopCommitment: attackPercent,
+            remainingPower: 0,
+            initialPower: 0,
+            effectiveDensityAtFront: 0,
             currentIndex: 1,
             status: "advancing",
             frontWidth: 0,
@@ -918,17 +994,21 @@ const Game = () => {
         setActiveDefendArrow({
           path,
           percent: attackPercent,
-          remainingPower: initialPower,
+          troopCommitment: attackPercent,
+          remainingPower: 0,
+          effectiveDensityAtFront: 0,
           currentIndex: 0,
         });
       }
 
       setDrawingArrowType(null);
       setCurrentArrowPath([]);
+      setUiMode("idle");
     } catch (err) {
       // Clear drawing state so the red line goes away
       setDrawingArrowType(null);
       setCurrentArrowPath([]);
+      setUiMode("idle");
       console.warn("[ARROW] Error:", err.message);
     }
   };
@@ -1006,12 +1086,106 @@ const Game = () => {
     }
   };
 
+  const handleSetTroopTarget = async (newTarget) => {
+    setTroopTarget(newTarget);
+    if (!userId || !storedPassword) return;
+    try {
+      await fetch(
+        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/troopTarget`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId,
+            password: storedPassword,
+            troopTarget: newTarget,
+          }),
+        }
+      );
+    } catch (err) {
+      console.error("Failed to set troop target:", err);
+    }
+  };
+
   // Track arrow state from server and detect completions
   useEffect(() => {
     const playerNation = gameState?.gameState?.nations?.find(
       (n) => n.owner === userId && n.status !== "defeated"
     );
     const serverArrows = playerNation?.arrowOrders || {};
+    const tickCount = Number(gameState?.tickCount);
+    const tickRateMs = config?.territorial?.tickRateMs || 100;
+    const minArrowDurationMs = config?.territorial?.minArrowDurationMs ?? 10000;
+    const maxArrowDurationMs = config?.territorial?.maxArrowDurationMs ?? 120000;
+    const arrowDurationPerPowerMs = config?.territorial?.arrowDurationPerPowerMs ?? 25;
+    const arrowMaxStallTicks = config?.territorial?.arrowMaxStallTicks ?? 6;
+
+    const isValidArrowPath = (path) =>
+      Array.isArray(path) &&
+      path.length >= 2 &&
+      path.every(
+        (point) =>
+          point &&
+          Number.isFinite(point.x) &&
+          Number.isFinite(point.y)
+      );
+
+    const isStaleArrow = (arrow) => {
+      if (!arrow) return true;
+      if (!isValidArrowPath(arrow.path)) return true;
+
+      // Density mode: arrows use troopCommitment instead of remainingPower
+      const isDensityArrow = arrow.troopCommitment != null && arrow.troopCommitment > 0;
+
+      if (!isDensityArrow) {
+        // Legacy power-budget mode
+        const remaining = Number(arrow.remainingPower ?? 0);
+        if (!Number.isFinite(remaining) || remaining <= 0) return true;
+        if (arrow.status === "retreating" && remaining <= 1) return true;
+      }
+
+      if (
+        Number.isFinite(arrow.currentIndex) &&
+        arrow.currentIndex >= arrow.path.length
+      ) {
+        return true;
+      }
+      if (Number.isFinite(arrow.stalledTicks) && Number.isFinite(arrowMaxStallTicks)) {
+        if (isDensityArrow) {
+          const densityStallLimit = Math.max(20, arrowMaxStallTicks * 4);
+          if (arrow.stalledTicks >= densityStallLimit) return true;
+        } else {
+          if (arrow.stalledTicks >= arrowMaxStallTicks) return true;
+        }
+      }
+      // Density arrows with no troops at front get removed quickly
+      if (isDensityArrow && Number.isFinite(arrow.emptyFrontTicks) && arrow.emptyFrontTicks >= 10) {
+        return true;
+      }
+
+      if (!isDensityArrow) {
+        const remaining = Number(arrow.remainingPower ?? 0);
+        let initialPower = Number(arrow.initialPower ?? remaining ?? 0);
+        if (!Number.isFinite(initialPower)) initialPower = 0;
+        const scaledDuration =
+          minArrowDurationMs + initialPower * arrowDurationPerPowerMs;
+        const maxDurationMs = Math.max(
+          minArrowDurationMs,
+          Math.min(maxArrowDurationMs, scaledDuration)
+        );
+        if (Number.isFinite(arrow.createdAtTick) && Number.isFinite(tickCount)) {
+          const ageMs = (tickCount - arrow.createdAtTick) * tickRateMs;
+          if (ageMs > maxDurationMs + tickRateMs * 2) return true;
+        } else if (arrow.createdAt) {
+          const rawAge =
+            Date.now() - new Date(arrow.createdAt).getTime();
+          if (Number.isFinite(rawAge) && rawAge > maxDurationMs + 2000) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
 
     // Handle legacy single attack -> attacks[] migration on client
     let serverAttacks = serverArrows.attacks || [];
@@ -1025,11 +1199,15 @@ const Game = () => {
       console.log(`[H1-CLIENT] server arrows: ${serverAttacks.length} (ids: ${serverAttacks.map(a => a.id?.slice(-6)).join(',')}) prev: ${prevAttacks.length}`);
     }
 
-    // Always sync client arrows to match server state
-    setActiveAttackArrows(serverAttacks);
+    // Always sync client arrows to match server state, with stale cleanup
+    const filteredAttacks = Array.isArray(serverAttacks)
+      ? serverAttacks.filter((arrow) => !isStaleArrow(arrow))
+      : [];
+    setActiveAttackArrows(filteredAttacks);
 
-    if (serverArrows.defend && serverArrows.defend.path) {
-      setActiveDefendArrow(serverArrows.defend);
+    if (serverArrows.defend && isValidArrowPath(serverArrows.defend.path)) {
+      const defendArrow = serverArrows.defend;
+      setActiveDefendArrow(isStaleArrow(defendArrow) ? null : defendArrow);
     } else if (!serverArrows.defend) {
       setActiveDefendArrow(null);
     }
@@ -1038,30 +1216,19 @@ const Game = () => {
       attacks: serverAttacks,
       defend: serverArrows.defend || null,
     };
-  }, [gameState, userId]);
+  }, [gameState, userId, config]);
 
-
-  const handlePlaceTower = async (x, y) => {
-    if (!userId || !storedPassword) return;
-    try {
-      const response = await fetch(
-        `${process.env.REACT_APP_API_URL}api/gamerooms/${id}/upgradeNode`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, password: storedPassword, x, y }),
-        }
-      );
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Failed to upgrade node");
-      }
-      setPlacingTower(false);
-    } catch (err) {
-      setError(err.message);
-      setPlacingTower(false);
-    }
-  };
+  const playerNation = gameState?.gameState?.nations?.find(
+    (n) => n.owner === userId && n.status !== "defeated"
+  );
+  const playerResources = playerNation?.resources || {};
+  const playerTroopCount = playerNation?.troopCount ?? 0;
+  // Cache density map — server throttles to every 5 ticks, use last known between updates
+  const lastDensityMapRef = React.useRef(null);
+  if (playerNation?.troopDensityMap) {
+    lastDensityMapRef.current = playerNation.troopDensityMap;
+  }
+  const playerTroopDensityMap = lastDensityMapRef.current;
 
   // ----------------------------
   // Create a flat grid from the loaded map chunks.
@@ -1179,8 +1346,6 @@ const Game = () => {
             buildingStructure={buildingStructure}
             onBuildCity={handleBuildCity}
             onCancelBuild={handleCancelBuild}
-            placingTower={placingTower}
-            onPlaceTower={handlePlaceTower}
             drawingArrowType={drawingArrowType}
             onStartDrawArrow={handleStartDrawArrow}
             currentArrowPath={currentArrowPath}
@@ -1189,25 +1354,61 @@ const Game = () => {
             onCancelArrow={handleCancelArrow}
             activeAttackArrows={activeAttackArrows}
             activeDefendArrow={activeDefendArrow}
-
+            uiMode={uiMode}
+            isMobile={isMobile}
+            onInspectCell={handleInspectCell}
+            troopDensityMap={playerTroopDensityMap}
           />
         )}
       </div>
-      <ActionBar
-        onFoundNation={startFoundNation}
-        userState={userState}
-        hasFounded={hasFounded}
-        isSpectating={isSpectating}
-        allowRefound={allowRefound}
-        attackPercent={attackPercent}
-        setAttackPercent={setAttackPercent}
-        onStartPlaceTower={() => setPlacingTower(true)}
-        drawingArrowType={drawingArrowType}
-        onStartDrawArrow={handleStartDrawArrow}
-        onCancelArrow={handleCancelArrow}
-        activeAttackArrows={activeAttackArrows}
-        activeDefendArrow={activeDefendArrow}
-        maxAttackArrows={config?.territorial?.maxAttackArrows ?? 3}
+      {!isMobile && (
+        <ActionBar
+          onFoundNation={startFoundNation}
+          userState={userState}
+          hasFounded={hasFounded}
+          isSpectating={isSpectating}
+          allowRefound={allowRefound}
+          attackPercent={attackPercent}
+          setAttackPercent={setAttackPercent}
+          troopTarget={troopTarget}
+          onSetTroopTarget={handleSetTroopTarget}
+          troopCount={playerTroopCount}
+          drawingArrowType={drawingArrowType}
+          onStartDrawArrow={handleStartDrawArrow}
+          onCancelArrow={handleCancelArrow}
+          activeAttackArrows={activeAttackArrows}
+          activeDefendArrow={activeDefendArrow}
+          maxAttackArrows={config?.territorial?.maxAttackArrows ?? 3}
+          onBuildStructure={handleBuildStructure}
+          playerResources={playerResources}
+          buildCosts={config?.buildCosts?.structures}
+          uiMode={uiMode}
+          onSetMode={setMode}
+          onExitMode={exitModes}
+        />
+      )}
+      {isMobile && (
+        <MobileActionDock
+          onFoundNation={startFoundNation}
+          hasFounded={hasFounded}
+          isSpectating={isSpectating}
+          allowRefound={allowRefound}
+          attackPercent={attackPercent}
+          setAttackPercent={setAttackPercent}
+          uiMode={uiMode}
+          onSetMode={setMode}
+          onBuildStructure={handleBuildStructure}
+          playerResources={playerResources}
+          buildCosts={config?.buildCosts?.structures}
+          activeAttackArrows={activeAttackArrows}
+          activeDefendArrow={activeDefendArrow}
+        />
+      )}
+      <ContextPanel
+        isMobile={isMobile}
+        cellInfo={selectedCellInfo}
+        onClose={() => setSelectedCellInfo(null)}
+        nationColors={nationColors}
       />
       <ArrowPanel
         activeAttackArrows={activeAttackArrows}

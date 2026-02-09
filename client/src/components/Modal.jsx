@@ -37,8 +37,8 @@ const BuildCityForm = ({
     );
   }
 
-  // Assume config.buildCosts.cities is an object with structure types and their cost objects.
-  const structureOptions = Object.entries(config.buildCosts.cities || {});
+  // Assume config.buildCosts.structures is an object with structure types and their cost objects.
+  const structureOptions = Object.entries(config.buildCosts.structures || {});
 
   const canAfford = (cost) =>
     Object.entries(cost).every(

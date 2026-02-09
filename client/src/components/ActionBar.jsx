@@ -1,6 +1,6 @@
 import React from "react";
 
-// Build costs configuration (should match server config)
+// Build costs fallback (should match server config)
 const BUILD_COSTS = {
   town: { wood: 200, stone: 100, food: 500 },
   tower: { stone: 500, wood: 200 },
@@ -13,6 +13,17 @@ const RESOURCE_ICONS = {
   food: "/food.png",
   iron: "/steel.png",
   gold: "/bronze.png",
+};
+
+const BUILD_ICONS = {
+  town: "/town.png",
+  tower: "/fort.png",
+  fort: "/fort.png",
+  farm: "/farm.png",
+  mine: "/mine.png",
+  stable: "/stable.png",
+  "lumber mill": "/lumber_mill.png",
+  workshop: "/workshop.png",
 };
 
 const BuildButton = ({ type, icon, costs, resources, disabled, onClick }) => {
@@ -77,13 +88,32 @@ const ArrowButton = ({ type, icon, label, active, onClick }) => {
   );
 };
 
+const ModeButton = ({ icon, label, active, onClick }) => {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-2 rounded flex flex-col items-center gap-1 transition-all ${
+        active ? "bg-blue-700 ring-2 ring-blue-400" : "bg-gray-800 hover:bg-gray-700"
+      }`}
+      title={label}
+    >
+      <div className="w-8 h-8 flex items-center justify-center text-2xl">
+        {icon}
+      </div>
+      <span className="text-xs">{label}</span>
+    </button>
+  );
+};
+
 const ActionBar = ({
   onFoundNation,
   userState,
   hasFounded,
   attackPercent,
   setAttackPercent,
-  onStartPlaceTower,
+  troopTarget,
+  onSetTroopTarget,
+  troopCount,
   onBuildStructure,
   playerResources,
   isSpectating,
@@ -94,10 +124,16 @@ const ActionBar = ({
   activeAttackArrows,
   activeDefendArrow,
   maxAttackArrows,
+  buildCosts,
+  uiMode,
+  onSetMode,
+  onExitMode,
 }) => {
   const attackArrowCount = activeAttackArrows?.length || 0;
   const maxArrows = maxAttackArrows || 3;
   const atMaxAttackArrows = attackArrowCount >= maxArrows;
+  const buildCostMap = buildCosts || BUILD_COSTS;
+  const primaryBuilds = ["town", "tower"].filter((b) => buildCostMap[b]);
   // If no userState, show the found-nation button.
   if (!hasFounded) {
     if (isSpectating) {
@@ -160,9 +196,9 @@ const ActionBar = ({
                   type="attack"
                   icon="⚔️"
                   label={`Attack (${attackArrowCount}/${maxArrows})`}
-                  active={drawingArrowType === "attack" || attackArrowCount > 0}
+                  active={uiMode === "drawAttack" || drawingArrowType === "attack" || attackArrowCount > 0}
                   onClick={() => {
-                    if (drawingArrowType === "attack") {
+                    if (uiMode === "drawAttack" || drawingArrowType === "attack") {
                       onCancelArrow?.();
                     } else if (!atMaxAttackArrows) {
                       onStartDrawArrow?.("attack");
@@ -173,12 +209,24 @@ const ActionBar = ({
                   type="defend"
                   icon="🛡️"
                   label="Defend"
-                  active={drawingArrowType === "defend" || activeDefendArrow}
+                  active={uiMode === "drawDefend" || drawingArrowType === "defend" || activeDefendArrow}
                   onClick={() => {
-                    if (drawingArrowType === "defend") {
+                    if (uiMode === "drawDefend" || drawingArrowType === "defend") {
                       onCancelArrow?.();
                     } else {
                       onStartDrawArrow?.("defend");
+                    }
+                  }}
+                />
+                <ModeButton
+                  icon="🖐️"
+                  label="Pan"
+                  active={uiMode === "pan"}
+                  onClick={() => {
+                    if (uiMode === "pan") {
+                      onExitMode?.();
+                    } else {
+                      onSetMode?.("pan");
                     }
                   }}
                 />
@@ -192,9 +240,31 @@ const ActionBar = ({
               )}
             </div>
 
-            <div className="flex flex-col gap-2">
+            {/* Troop Mobilization */}
+            {onSetTroopTarget && (
+              <div className="flex flex-col gap-1">
+                <h3 className="text-sm font-medium text-gray-300">
+                  Mobilization
+                </h3>
+                <input
+                  type="range"
+                  min="0"
+                  max="80"
+                  value={Math.round((troopTarget || 0.2) * 100)}
+                  onChange={(e) =>
+                    onSetTroopTarget?.(Number(e.target.value) / 100)
+                  }
+                />
+                <div className="text-xs text-gray-300">
+                  {Math.round((troopTarget || 0.2) * 100)}% — Troops: {Math.round(troopCount || 0)}/{Math.round(userState?.population || 0)}
+                </div>
+              </div>
+            )}
+
+            {/* Arrow Commitment */}
+            <div className="flex flex-col gap-1">
               <h3 className="text-sm font-medium text-gray-300">
-                Troop Commitment %
+                Arrow Commitment
               </h3>
               <input
                 type="range"
@@ -214,20 +284,16 @@ const ActionBar = ({
             <div className="flex flex-col gap-1">
               <h3 className="text-sm font-medium text-gray-300">Build</h3>
               <div className="flex gap-2">
-                <BuildButton
-                  type="town"
-                  icon="/town.png"
-                  costs={BUILD_COSTS.town}
-                  resources={playerResources}
-                  onClick={() => onBuildStructure?.("town")}
-                />
-                <BuildButton
-                  type="tower"
-                  icon="/fort.png"
-                  costs={BUILD_COSTS.tower}
-                  resources={playerResources}
-                  onClick={() => onBuildStructure?.("tower")}
-                />
+                {primaryBuilds.map((type) => (
+                  <BuildButton
+                    key={type}
+                    type={type}
+                    icon={BUILD_ICONS[type] || `/${type.replace(" ", "_")}.png`}
+                    costs={buildCostMap[type]}
+                    resources={playerResources}
+                    onClick={() => onBuildStructure?.(type)}
+                  />
+                ))}
               </div>
             </div>
           </div>

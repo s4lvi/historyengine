@@ -21,7 +21,10 @@ const ArrowCard = ({ arrow, onReinforce, onRetreat, onClear }) => {
   const status = arrow.status || "advancing";
   const statusColor = STATUS_COLORS[status] || "text-gray-400";
   const statusBg = STATUS_BG[status] || "bg-gray-900/50";
-  const troops = Math.round(arrow.remainingPower || 0);
+  const isDensityMode = arrow.troopCommitment != null && arrow.troopCommitment > 0;
+  const troops = isDensityMode
+    ? Math.round(arrow.effectiveDensityAtFront || 0)
+    : Math.round(arrow.remainingPower || 0);
   const phase = arrow.phase || 1;
   const totalPhases = arrow.path?.length || 2;
   const opposingForces = arrow.opposingForces || [];
@@ -45,7 +48,12 @@ const ArrowCard = ({ arrow, onReinforce, onRetreat, onClear }) => {
       </div>
 
       <div className="flex items-center gap-3 text-xs text-gray-300 mb-1">
-        <span>Troops: {troops}</span>
+        <span>{isDensityMode ? `Front: ${troops}` : `Troops: ${troops}`}</span>
+        {isDensityMode && (
+          <span className="text-blue-300">
+            {Math.round((arrow.troopCommitment || 0) * 100)}% committed
+          </span>
+        )}
         <span>
           Phase {Math.min(phase, totalPhases - 1)}/{totalPhases - 1}
         </span>
@@ -118,7 +126,7 @@ const ArrowPanel = ({
   if (!hasArrows) return null;
 
   return (
-    <div className="fixed right-2 top-16 z-20 w-56 flex flex-col gap-2">
+    <div className="fixed right-2 top-20 left-auto z-30 w-56 flex flex-col gap-2">
       <div className="text-xs font-bold text-gray-400 uppercase tracking-wide px-1">
         Active Arrows
       </div>
@@ -145,7 +153,11 @@ const ArrowPanel = ({
             </button>
           </div>
           <div className="text-xs text-gray-300">
-            Troops: {Math.round(activeDefendArrow.remainingPower || 0)}
+            Troops: {Math.round(
+              activeDefendArrow.troopCommitment != null
+                ? (activeDefendArrow.effectiveDensityAtFront || 0)
+                : (activeDefendArrow.remainingPower || 0)
+            )}
           </div>
         </div>
       )}

@@ -38,8 +38,11 @@ export function hasActiveConnections(roomId) {
   return !!(set && set.size > 0);
 }
 
-export function initWebSocket(server) {
+let getLiveRoomFn = null;
+
+export function initWebSocket(server, getLiveRoom) {
   if (wss) return wss;
+  getLiveRoomFn = getLiveRoom || null;
   wss = new WebSocketServer({ server, path: "/ws" });
 
   wss.on("connection", (ws, req) => {
@@ -70,7 +73,11 @@ export function initWebSocket(server) {
           return;
         }
 
-        const gameRoom = await GameRoom.findById(roomId).lean();
+        // Try in-memory live room first, fall back to DB
+        let gameRoom = getLiveRoomFn ? await getLiveRoomFn(roomId) : null;
+        if (!gameRoom) {
+          gameRoom = await GameRoom.findById(roomId).lean();
+        }
         if (!gameRoom) {
           console.warn(`[WS] Subscribe failed: room not found ${roomId}`);
           safeSend(ws, { type: "error", message: "Game room not found" });
@@ -138,7 +145,7 @@ export function initWebSocket(server) {
   return wss;
 }
 
-export function broadcastRoomUpdate(roomId, gameRoom) {
+export function broadcastRoomUpdate(roomId, gameRoom, matrix = null) {
   const set = rooms.get(roomId);
   if (!set || set.size === 0) {
     if (process.env.DEBUG_WS === "true") {
@@ -151,7 +158,7 @@ export function broadcastRoomUpdate(roomId, gameRoom) {
     if (!ws.userId) return;
     safeSend(ws, {
       type: "state",
-      ...buildGameStateResponse(gameRoom, ws.userId, ws.full),
+      ...buildGameStateResponse(gameRoom, ws.userId, ws.full, matrix),
     });
     sentCount++;
   });

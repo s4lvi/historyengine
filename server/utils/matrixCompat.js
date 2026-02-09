@@ -72,14 +72,17 @@ export function getFullTerritory(matrix, owner) {
 export function applyMatrixToNations(matrix, nations, totalClaimable) {
   const deltas = deriveNationDeltas(matrix);
 
+  // Single O(size) pass to extract all nation cells simultaneously
+  const allCells = matrix.getAllNationCells();
+
   for (const nation of nations) {
     if (nation.status === "defeated") continue;
 
     const nIdx = matrix.ownerToIndex.get(nation.owner);
     if (nIdx === undefined) continue;
 
-    // Update full territory from matrix (invalidate caches since arrays are replaced)
-    const cells = matrix.getCellsForNation(nIdx);
+    // Look up cells from the pre-computed map instead of per-nation scan
+    const cells = allCells.get(nIdx) || { x: [], y: [] };
     nation.territory = cells;
     nation._territorySet = undefined;
     nation._borderSet = undefined;
@@ -87,7 +90,7 @@ export function applyMatrixToNations(matrix, nations, totalClaimable) {
     // Update territory percentage
     const count = cells.x.length;
     if (totalClaimable > 0) {
-      nation.territoryPercentage = ((count / totalClaimable) * 100).toFixed(2);
+      nation.territoryPercentage = Math.round((count / totalClaimable) * 10000) / 100;
     }
 
     // Set client delta from matrix diff

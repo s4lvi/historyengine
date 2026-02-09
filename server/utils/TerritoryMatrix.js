@@ -136,6 +136,13 @@ export class TerritoryMatrix {
     // --- Diffusion resistance layer (set once from noise + terrain) ---
     this.diffusionResistance = new Float32Array(this.size);
 
+    // --- Troop density layer (per-nation per-cell) ---
+    this.troopDensity = new Float32Array(this.size * maxNations);
+    this.troopDensityReadBuffer = new Float32Array(this.size * maxNations);
+
+    // --- Pre-allocated buffers for diffusion (avoid per-tick allocation) ---
+    this.loyaltyReadBuffer = new Float32Array(this.size * maxNations);
+
     // --- Snapshot layer (for delta derivation) ---
     this.prevOwnership = new Int8Array(this.size).fill(UNOWNED);
   }
@@ -159,13 +166,27 @@ export class TerritoryMatrix {
     if (!owner) return UNOWNED;
     let idx = this.ownerToIndex.get(owner);
     if (idx !== undefined) return idx;
-    if (this.nextNationSlot >= this.maxNations) {
+
+    // Try to reuse a freed slot before bumping nextNationSlot
+    let reuseIdx = -1;
+    for (let i = 0; i < this.nextNationSlot; i++) {
+      if (this.indexToOwner[i] === null) {
+        reuseIdx = i;
+        break;
+      }
+    }
+
+    if (reuseIdx >= 0) {
+      idx = reuseIdx;
+    } else if (this.nextNationSlot >= this.maxNations) {
       console.warn(
         `[MATRIX] Max nations (${this.maxNations}) reached, cannot allocate for ${owner}`,
       );
       return UNOWNED;
+    } else {
+      idx = this.nextNationSlot++;
     }
-    idx = this.nextNationSlot++;
+
     this.ownerToIndex.set(owner, idx);
     this.indexToOwner[idx] = owner;
     return idx;
@@ -201,6 +222,11 @@ export class TerritoryMatrix {
         this.resourceClaimOwner[i] = UNOWNED;
         this.resourceClaimProgress[i] = 0;
       }
+    }
+    // Clear troop density for this nation
+    const troopOffset = nIdx * this.size;
+    for (let i = 0; i < this.size; i++) {
+      this.troopDensity[troopOffset + i] = 0;
     }
     // Mark slot as available (but don't reuse to keep indices stable within a session)
     this.indexToOwner[nIdx] = null;
@@ -277,7 +303,7 @@ export class TerritoryMatrix {
         ? DEFAULT_BIOME_RESISTANCE[this.biomeIndex[i]] || 0
         : 0;
       const biomeWeight = biomeResistanceEnabled
-        ? 1 - noiseWeight - elevationResistanceWeight
+        ? Math.max(0, 1 - noiseWeight - elevationResistanceWeight)
         : 0;
 
       let resistance =
@@ -384,6 +410,24 @@ export class TerritoryMatrix {
       }
     }
     return { x: xs, y: ys };
+  }
+
+  /** Get all cells for all nations in a single O(size) pass.
+   *  Returns Map<nIdx, {x: number[], y: number[]}> */
+  getAllNationCells() {
+    const result = new Map();
+    for (let i = 0; i < this.size; i++) {
+      const owner = this.ownership[i];
+      if (owner === UNOWNED) continue;
+      let cells = result.get(owner);
+      if (!cells) {
+        cells = { x: [], y: [] };
+        result.set(owner, cells);
+      }
+      cells.x.push(i % this.width);
+      cells.y.push(Math.floor(i / this.width));
+    }
+    return result;
   }
 
   /** Get the total number of claimable (non-ocean) cells */

@@ -188,8 +188,32 @@ app.use((err, req, res, next) => {
 // -------------------------------------------------------------------
 const PORT = process.env.PORT || 5001;
 const server = http.createServer(app);
-initWebSocket(server);
+initWebSocket(server, (roomId) => gameLoop.getLiveGameRoom(roomId));
 setInterval(cleanupEmptyRooms, EMPTY_ROOM_CLEANUP_INTERVAL_MS);
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// Graceful shutdown
+async function gracefulShutdown(signal) {
+  console.log(`\n[SHUTDOWN] Received ${signal}, saving all rooms...`);
+  try {
+    await gameLoop.stopAllRooms();
+  } catch (err) {
+    console.error("[SHUTDOWN] Error stopping rooms:", err.message);
+  }
+  server.close(() => {
+    console.log("[SHUTDOWN] HTTP server closed");
+    mongoose.disconnect().then(() => {
+      console.log("[SHUTDOWN] MongoDB disconnected");
+      process.exit(0);
+    });
+  });
+  // Force exit after 10 seconds if graceful shutdown hangs
+  setTimeout(() => {
+    console.error("[SHUTDOWN] Forced exit after timeout");
+    process.exit(1);
+  }, 10000);
+}
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

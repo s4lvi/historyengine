@@ -1,18 +1,6 @@
 import config from "../config/config.js";
 import { getTerrainSimilarity } from "./terrainSimilarity.js";
 
-export function buildOwnershipMap(nations) {
-  const ownership = new Map();
-  if (!Array.isArray(nations)) return ownership;
-  nations.forEach((nation) => {
-    if (!nation?.territory?.x || !nation?.territory?.y) return;
-    for (let i = 0; i < nation.territory.x.length; i++) {
-      ownership.set(`${nation.territory.x[i]},${nation.territory.y[i]}`, nation);
-    }
-  });
-  return ownership;
-}
-
 export function getNodeMultiplier(level) {
   const mults = config?.territorial?.resourceNodeLevelMultipliers || {};
   const key = String(level ?? 0);

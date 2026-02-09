@@ -20,13 +20,14 @@ export function serializeMatrix(matrix) {
     ownerToIndex: Object.fromEntries(matrix.ownerToIndex),
     indexToOwner: [...matrix.indexToOwner],
 
-    // Dynamic layers as Buffers
-    ownership: Buffer.from(matrix.ownership.buffer, matrix.ownership.byteOffset, matrix.ownership.byteLength),
-    loyalty: Buffer.from(matrix.loyalty.buffer, matrix.loyalty.byteOffset, matrix.loyalty.byteLength),
-    populationDensity: Buffer.from(matrix.populationDensity.buffer, matrix.populationDensity.byteOffset, matrix.populationDensity.byteLength),
-    defenseStrength: Buffer.from(matrix.defenseStrength.buffer, matrix.defenseStrength.byteOffset, matrix.defenseStrength.byteLength),
-    resourceClaimProgress: Buffer.from(matrix.resourceClaimProgress.buffer, matrix.resourceClaimProgress.byteOffset, matrix.resourceClaimProgress.byteLength),
-    resourceClaimOwner: Buffer.from(matrix.resourceClaimOwner.buffer, matrix.resourceClaimOwner.byteOffset, matrix.resourceClaimOwner.byteLength),
+    // Dynamic layers as Buffers (always copy to avoid shared-buffer issues)
+    ownership: Buffer.from(new Uint8Array(matrix.ownership.buffer, matrix.ownership.byteOffset, matrix.ownership.byteLength)),
+    loyalty: Buffer.from(new Uint8Array(matrix.loyalty.buffer, matrix.loyalty.byteOffset, matrix.loyalty.byteLength)),
+    populationDensity: Buffer.from(new Uint8Array(matrix.populationDensity.buffer, matrix.populationDensity.byteOffset, matrix.populationDensity.byteLength)),
+    defenseStrength: Buffer.from(new Uint8Array(matrix.defenseStrength.buffer, matrix.defenseStrength.byteOffset, matrix.defenseStrength.byteLength)),
+    resourceClaimProgress: Buffer.from(new Uint8Array(matrix.resourceClaimProgress.buffer, matrix.resourceClaimProgress.byteOffset, matrix.resourceClaimProgress.byteLength)),
+    resourceClaimOwner: Buffer.from(new Uint8Array(matrix.resourceClaimOwner.buffer, matrix.resourceClaimOwner.byteOffset, matrix.resourceClaimOwner.byteLength)),
+    troopDensity: Buffer.from(new Uint8Array(matrix.troopDensity.buffer, matrix.troopDensity.byteOffset, matrix.troopDensity.byteLength)),
   };
 }
 
@@ -74,10 +75,13 @@ export function deserializeMatrix(data, mapData, matrixConfig) {
 
   const restoreFloat32 = (buf, target) => {
     if (!buf) return;
-    const src = buf instanceof Buffer || buf instanceof Uint8Array
-      ? new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
-      : null;
-    if (src && src.length === target.length) {
+    // Copy into an aligned Uint8Array first to avoid unaligned Float32Array view
+    const bytes = new Uint8Array(buf.byteLength || buf.length);
+    bytes.set(buf instanceof Buffer || buf instanceof Uint8Array
+      ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+      : new Uint8Array(buf));
+    const src = new Float32Array(bytes.buffer, 0, bytes.byteLength / 4);
+    if (src.length === target.length) {
       target.set(src);
     }
   };
@@ -88,6 +92,7 @@ export function deserializeMatrix(data, mapData, matrixConfig) {
   restoreFloat32(data.defenseStrength, matrix.defenseStrength);
   restoreFloat32(data.resourceClaimProgress, matrix.resourceClaimProgress);
   restoreInt8(data.resourceClaimOwner, matrix.resourceClaimOwner);
+  restoreFloat32(data.troopDensity, matrix.troopDensity);
 
   return matrix;
 }

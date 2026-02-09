@@ -13,11 +13,13 @@ import { detectEncirclement, passiveConcavityFill } from "../utils/matrixKernels
 import { applyMatrixToNations } from "../utils/matrixCompat.js";
 import { tickLoyaltyDiffusion } from "../utils/matrixLoyalty.js";
 import { tickPopulationDensity, computeDefenseStrength } from "../utils/matrixPopulation.js";
+import { tickMobilization, tickTroopDensityDiffusion } from "../utils/matrixTroopDensity.js";
 import { deriveOwnershipFromLoyalty } from "../utils/matrixKernels.js";
 import { serializeMatrix } from "../utils/matrixSerializer.js";
 
 const loyaltyEnabled = config?.loyalty?.enabled !== false;
 const popDensityEnabled = config?.populationDensity?.enabled !== false;
+const troopDensityEnabled = config?.troopDensity?.enabled === true;
 
 /**
  * Handle structure capture/destroy when territory changes hands
@@ -170,9 +172,10 @@ function updateEncircledTerritoryMatrix(gameState, matrix) {
     const encirclerOwner = matrix.getOwnerByIndex(encirclerIdx);
 
     if (ownerIdx === UNOWNED) {
-      // Unowned territory — instant capture
+      // Unowned territory — instant capture with loyalty
       for (const ci of cells) {
         matrix.ownership[ci] = encirclerIdx;
+        matrix.loyalty[encirclerIdx * matrix.size + ci] = 1.0;
       }
     } else if (hasCapital) {
       // Has capital — mark for attack bonus only
@@ -183,9 +186,12 @@ function updateEncircledTerritoryMatrix(gameState, matrix) {
         nation.encircledBy = encirclerOwner;
       }
     } else {
-      // No capital — instant capture
+      // No capital — instant capture; transfer loyalty to prevent flicker
       for (const ci of cells) {
         matrix.ownership[ci] = encirclerIdx;
+        // Heavily reduce old owner's loyalty and set encircler's loyalty
+        matrix.loyalty[ownerIdx * matrix.size + ci] *= 0.15;
+        matrix.loyalty[encirclerIdx * matrix.size + ci] = 1.0;
       }
       console.log(`[ENCIRCLE] Captured ${cells.length} enemy cells without capital`);
     }
@@ -321,7 +327,6 @@ class GameLoop {
     // String-key caches used by gameLogic.js updateNation() for compatibility
     this.cachedOwnershipMap = new Map();
     this.cachedNationCount = new Map();
-    this.cachedFrontierSets = new Map();
     this.lastSaveTick = new Map();
     this.savingRooms = new Set();
     this.pendingRooms = new Set();
@@ -663,149 +668,6 @@ class GameLoop {
     }
   }
 
-  buildFrontierSetForNation(nation, mapData, ownershipMap) {
-    const frontier = new Set();
-    if (!nation?.territory?.x || !nation?.territory?.y) return frontier;
-    const width = mapData[0]?.length || 0;
-    const height = mapData.length || 0;
-    const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-
-    for (let i = 0; i < nation.territory.x.length; i++) {
-      const x = nation.territory.x[i];
-      const y = nation.territory.y[i];
-      for (const [dx, dy] of neighbors) {
-        const nx = x + dx;
-        const ny = y + dy;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-        const key = `${nx},${ny}`;
-        const owner = ownershipMap.get(key);
-        if (owner?.owner === nation.owner) continue;
-        const cell = mapData[ny]?.[nx];
-        if (!cell || cell.biome === "OCEAN") continue;
-        frontier.add(key);
-      }
-    }
-    return frontier;
-  }
-
-  getFrontierSets(roomKey, nations, mapData, ownershipMap) {
-    let frontierSets = this.cachedFrontierSets.get(roomKey);
-    if (!frontierSets) {
-      frontierSets = new Map();
-      this.cachedFrontierSets.set(roomKey, frontierSets);
-    }
-    for (const nation of nations) {
-      if (nation.status === "defeated") continue;
-      if (!frontierSets.has(nation.owner)) {
-        const frontier = this.buildFrontierSetForNation(nation, mapData, ownershipMap);
-        frontierSets.set(nation.owner, frontier);
-      }
-    }
-    return frontierSets;
-  }
-
-  updateFrontierSetsFromDeltas(frontierSets, nations, mapData, ownershipMap) {
-    const width = mapData[0]?.length || 0;
-    const height = mapData.length || 0;
-    const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-
-    for (const nation of nations) {
-      const delta = nation.territoryDelta;
-      if (!delta) continue;
-
-      let frontier = frontierSets.get(nation.owner);
-      if (!frontier) {
-        frontier = new Set();
-        frontierSets.set(nation.owner, frontier);
-      }
-
-      if (delta.add?.x && delta.add?.y) {
-        for (let i = 0; i < delta.add.x.length; i++) {
-          const x = delta.add.x[i];
-          const y = delta.add.y[i];
-          const key = `${x},${y}`;
-          frontier.delete(key);
-
-          for (const [dx, dy] of neighbors) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-            const nKey = `${nx},${ny}`;
-            const owner = ownershipMap.get(nKey);
-            if (owner?.owner !== nation.owner) {
-              const cell = mapData[ny]?.[nx];
-              if (cell && cell.biome !== "OCEAN") {
-                frontier.add(nKey);
-              }
-            }
-          }
-
-          for (const otherNation of nations) {
-            if (otherNation.owner === nation.owner) continue;
-            const otherFrontier = frontierSets.get(otherNation.owner);
-            if (!otherFrontier) continue;
-            let isAdjacentToOther = false;
-            for (const [dx, dy] of neighbors) {
-              const nx = x + dx;
-              const ny = y + dy;
-              const nKey = `${nx},${ny}`;
-              if (ownershipMap.get(nKey)?.owner === otherNation.owner) {
-                isAdjacentToOther = true;
-                break;
-              }
-            }
-            if (isAdjacentToOther) {
-              otherFrontier.add(key);
-            }
-          }
-        }
-      }
-
-      if (delta.sub?.x && delta.sub?.y) {
-        for (let i = 0; i < delta.sub.x.length; i++) {
-          const x = delta.sub.x[i];
-          const y = delta.sub.y[i];
-          const key = `${x},${y}`;
-          let isAdjacentToOwned = false;
-          for (const [dx, dy] of neighbors) {
-            const nx = x + dx;
-            const ny = y + dy;
-            const nKey = `${nx},${ny}`;
-            if (ownershipMap.get(nKey)?.owner === nation.owner) {
-              isAdjacentToOwned = true;
-              break;
-            }
-          }
-          const cell = mapData[y]?.[x];
-          if (isAdjacentToOwned && cell && cell.biome !== "OCEAN") {
-            frontier.add(key);
-          }
-
-          for (const [dx, dy] of neighbors) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-            const nKey = `${nx},${ny}`;
-            if (frontier.has(nKey)) {
-              let stillFrontier = false;
-              for (const [ddx, ddy] of neighbors) {
-                const nnx = nx + ddx;
-                const nny = ny + ddy;
-                const nnKey = `${nnx},${nny}`;
-                if (ownershipMap.get(nnKey)?.owner === nation.owner) {
-                  stillFrontier = true;
-                  break;
-                }
-              }
-              if (!stillFrontier) {
-                frontier.delete(nKey);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
 
   // ─── Process room ───────────────────────────────────────────────
 
@@ -873,14 +735,19 @@ class GameLoop {
           matrix,
           gameRoom.gameState.nations,
           config.structures,
-          config.populationDensity?.densityDefenseScale || 0.5
+          config.populationDensity?.densityDefenseScale || 0.5,
+          troopDensityEnabled ? (config.troopDensity?.troopDefenseScale || 0.8) : 0
         );
+      }
+
+      // 4.5 Troop density: mobilization + diffusion
+      if (troopDensityEnabled) {
+        tickMobilization(matrix, config.troopDensity, gameRoom.gameState.nations);
+        tickTroopDensityDiffusion(matrix, config.troopDensity, gameRoom.gameState.nations);
       }
 
       // 5. Build ownershipMap for gameLogic.js compatibility
       const ownershipMap = this.getOwnershipMap(roomKey, gameRoom.gameState.nations);
-      const frontierSets = this.getFrontierSets(roomKey, gameRoom.gameState.nations, mapData, ownershipMap);
-
       const nationOrder = [...gameRoom.gameState.nations];
       const botCount = nationOrder.filter(n => n.isBot && n.status !== 'defeated').length;
       const activeArrows = nationOrder.filter(n => n.arrowOrders?.attacks?.length > 0 || n.arrowOrders?.attack || n.arrowOrders?.defend).length;
@@ -891,12 +758,12 @@ class GameLoop {
         console.log(`[TICK ${currentTick}] Nations: ${nationOrder.length}, Bots: ${botCount}, BotArrows: ${botArrows}, PlayerArrows: ${activeArrows - botArrows}`);
       }
 
-      // ═══ HYPOTHESIS DIAGNOSTICS (every 10 ticks) ═══
-      if (currentTick % 10 === 0) {
+      // ═══ HYPOTHESIS DIAGNOSTICS (every 10 ticks, gated) ═══
+      if (process.env.DEBUG_ARROWS === "true" && currentTick % 10 === 0) {
         for (const n of nationOrder) {
           const ao = n.arrowOrders;
           const attacksLen = ao?.attacks?.length || 0;
-          const hasLegacySingular = !!ao?.attack; // H2: legacy field check
+          const hasLegacySingular = !!ao?.attack;
           const hasDefend = !!ao?.defend;
           if (attacksLen > 0 || hasLegacySingular || hasDefend) {
             console.log(`[H-DIAG ${currentTick}] ${n.isBot ? 'BOT' : 'PLAYER'} "${n.name || n.owner}": attacks[]=${attacksLen}, attack(singular)=${hasLegacySingular}, defend=${hasDefend}${hasLegacySingular ? ' *** LEGACY FIELD PRESENT ***' : ''}`);
@@ -926,15 +793,13 @@ class GameLoop {
           ownershipMap,
           bonusesByOwner,
           currentTick,
-          frontierSets.get(nation.owner),
+          null,
           matrix
         )
       );
 
       // 7. Sync string-key caches from gameLogic.js changes (territory deltas)
       this.updateOwnershipMapFromDeltas(ownershipMap, updatedNations);
-      this.updateFrontierSetsFromDeltas(frontierSets, updatedNations, mapData, ownershipMap);
-
       const hasChanges = updatedNations.some(n =>
         (n.territoryDelta?.add?.x?.length || 0) > 0 ||
         (n.territoryDelta?.sub?.x?.length || 0) > 0
@@ -952,12 +817,8 @@ class GameLoop {
         }
       }
 
-      // Reset territory deltas
-      for (const nation of updatedNations) {
-        if (nation.territoryDelta) {
-          nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
-        }
-      }
+      // Territory deltas are consumed by updateOwnershipMapFromDeltas/updateFrontierSetsFromDeltas
+      // above, then reset by applyMatrixToNations at step 12. No explicit reset needed here.
 
       // 7.5 Passive concavity fill — fill gaps between tendrils (cascading passes)
       const concavityMinNeighbors = config?.loyalty?.concavityFillMinNeighbors ?? 5;
@@ -1031,7 +892,6 @@ class GameLoop {
             if (err.name === "VersionError") {
               this.cachedGameRoom.delete(roomKey);
               this.cachedOwnershipMap.delete(roomKey);
-              this.cachedFrontierSets.delete(roomKey);
               this.cachedMatrix.delete(roomKey);
               console.log(`[DB] Version conflict for room ${roomKey}, cache invalidated`);
             } else {
@@ -1047,8 +907,7 @@ class GameLoop {
       const last = this.lastBroadcast.get(roomKey) || 0;
       if (now - last >= this.broadcastIntervalMs) {
         this.lastBroadcast.set(roomKey, now);
-        // H1 diagnostic: log arrow state being broadcast to clients (every 10th broadcast)
-        if (currentTick % 10 === 0) {
+        if (process.env.DEBUG_ARROWS === "true" && currentTick % 10 === 0) {
           for (const n of gameRoom.gameState.nations) {
             if (n.isBot) continue;
             const ao = n.arrowOrders;
@@ -1060,7 +919,7 @@ class GameLoop {
             }
           }
         }
-        broadcastRoomUpdate(roomKey, gameRoom);
+        broadcastRoomUpdate(roomKey, gameRoom, troopDensityEnabled ? matrix : null);
       }
 
       const elapsed = process.hrtime(startTime);
@@ -1136,11 +995,6 @@ class GameLoop {
         console.error(`[TICK] Unhandled error in room ${roomKey}:`, tickError);
       }
 
-      if (result === -1) {
-        console.log(`[LOOP] This loop is a duplicate for ${roomKey}, terminating`);
-        return;
-      }
-
       if (this.loopIds.get(roomKey) !== loopId || !this.timers.has(roomKey)) return;
 
       const elapsedTime = Date.now() - startTime;
@@ -1168,7 +1022,6 @@ class GameLoop {
       if (freshRoom) {
         this.cachedGameRoom.set(roomKey, freshRoom);
         this.cachedOwnershipMap.delete(roomKey);
-        this.cachedFrontierSets.delete(roomKey);
         // Invalidate matrix cache so it gets rebuilt with new nation data
         this.cachedMatrix.delete(roomKey);
         console.log(`[LOOP] Cache refreshed for room ${roomKey}`);
@@ -1195,12 +1048,39 @@ class GameLoop {
       this.cachedMapStats.delete(roomKey);
       this.cachedOwnershipMap.delete(roomKey);
       this.cachedNationCount.delete(roomKey);
-      this.cachedFrontierSets.delete(roomKey);
       this.cachedMatrix.delete(roomKey);
       this.lastSaveTick.delete(roomKey);
       this.lastBroadcast.delete(roomKey);
       console.log(`[LOOP] Stopped room ${roomKey}`);
     }
+  }
+
+  /** Graceful shutdown: save all active rooms to DB, then stop loops */
+  async stopAllRooms() {
+    const roomKeys = [...this.timers.keys()];
+    console.log(`[LOOP] stopAllRooms: saving ${roomKeys.length} active room(s)...`);
+    const GameRoomModel = mongoose.model("GameRoom");
+
+    for (const roomKey of roomKeys) {
+      try {
+        const gameRoom = this.cachedGameRoom.get(roomKey);
+        if (gameRoom) {
+          // Serialize matrix state before saving
+          const matrix = this.cachedMatrix.get(roomKey);
+          if (matrix) {
+            gameRoom.matrixState = serializeMatrix(matrix);
+            gameRoom.markModified("matrixState");
+          }
+          gameRoom.markModified("gameState.nations");
+          await gameRoom.save();
+          console.log(`[LOOP] Saved room ${roomKey} during shutdown`);
+        }
+      } catch (err) {
+        console.error(`[LOOP] Error saving room ${roomKey} during shutdown:`, err.message);
+      }
+      this.stopRoom(roomKey);
+    }
+    console.log(`[LOOP] All rooms stopped`);
   }
 }
 

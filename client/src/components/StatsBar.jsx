@@ -17,8 +17,8 @@ const StatsBar = ({ gameState, userId }) => {
       .length || 0;
 
   return (
-    <div className="absolute top-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-2 z-40">
-      <div className="flex items-center gap-6">
+    <div className="absolute top-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-2 z-40 overflow-x-auto">
+      <div className="flex items-center gap-6 flex-nowrap min-w-max whitespace-nowrap">
         {/* Core Stats */}
         <div className="flex gap-6 items-center">
           <div>
@@ -27,6 +27,14 @@ const StatsBar = ({ gameState, userId }) => {
               {(userNation.population || 0).toLocaleString()}
             </div>
           </div>
+          {userNation.troopCount != null && (
+            <div>
+              <span className="text-sm opacity-80">Troops</span>
+              <div className="font-medium">
+                {Math.round(userNation.troopCount).toLocaleString()}
+              </div>
+            </div>
+          )}
           <div>
             <span className="text-sm opacity-80">Territory</span>
             <div className="font-medium">{territoryLength} tiles</div>

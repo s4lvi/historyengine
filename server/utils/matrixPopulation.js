@@ -96,7 +96,7 @@ export function tickPopulationDensity(matrix, cfg, nations) {
  * @param {object} structureConfig - config.structures
  * @param {number} densityDefenseScale - config.populationDensity.densityDefenseScale
  */
-export function computeDefenseStrength(matrix, nations, structureConfig, densityDefenseScale = 0.5) {
+export function computeDefenseStrength(matrix, nations, structureConfig, densityDefenseScale = 0.5, troopDefenseScale = 0) {
   const { width, height, size, ownership, populationDensity, defenseStrength, oceanMask } = matrix;
 
   const townConfig = structureConfig?.town || { defenseRadius: 20 };
@@ -106,7 +106,17 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
   for (let i = 0; i < size; i++) {
     if (oceanMask[i] === 1) continue;
     // Base defense = 1.0 + population density contribution
-    defenseStrength[i] = 1.0 + populationDensity[i] * densityDefenseScale;
+    let defense = 1.0 + populationDensity[i] * densityDefenseScale;
+
+    // Add troop density contribution (per owning nation)
+    if (troopDefenseScale > 0) {
+      const ownerIdx = ownership[i];
+      if (ownerIdx >= 0 && ownerIdx < matrix.maxNations && matrix.indexToOwner[ownerIdx] !== null) {
+        defense += matrix.troopDensity[ownerIdx * size + i] * troopDefenseScale;
+      }
+    }
+
+    defenseStrength[i] = defense;
   }
 
   // Apply structure bonuses
@@ -146,7 +156,7 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
           const ci = cy * width + cx;
           if (ownership[ci] !== nIdx) continue;
 
-          const falloff = 1 - Math.sqrt(d2) / radius;
+          const falloff = 1 - d2 / r2; // quadratic falloff, avoids sqrt per cell
           defenseStrength[ci] += bonusMult * falloff;
         }
       }

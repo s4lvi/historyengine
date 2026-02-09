@@ -4,6 +4,7 @@ import { getTerrainCostModifiers, getNodeMultiplier } from "./territorialUtils.j
 import { UNOWNED } from "./TerritoryMatrix.js";
 import { computeConnectedComponent, removeDisconnectedTerritory } from "./matrixKernels.js";
 import { applyArrowLoyaltyPressure } from "./matrixLoyalty.js";
+import { resolveDensityCombat } from "./matrixTroopDensity.js";
 
 export function checkWinCondition(gameState, mapData, totalClaimableOverride) {
   const totalClaimable =
@@ -32,11 +33,10 @@ export function checkWinCondition(gameState, mapData, totalClaimableOverride) {
     const territoryCount =
       nation.territory && nation.territory.x ? nation.territory.x.length : 0;
     // Calculate percentage (round to 2 decimals)
-    nation.territoryPercentage = (
-      (territoryCount / totalClaimable) *
-      100
-    ).toFixed(2);
-    if (parseFloat(nation.territoryPercentage) >= winThreshold) {
+    nation.territoryPercentage = Math.round(
+      (territoryCount / totalClaimable) * 10000
+    ) / 100;
+    if (nation.territoryPercentage >= winThreshold) {
       winner = nation.owner;
     }
   });
@@ -82,7 +82,7 @@ export function updateNation(
   ownershipMap = null,
   bonusesByOwner = null,
   currentTick = 0,
-  cachedFrontierSet = null, // OPTIMIZATION 3: Pre-computed frontier set
+  cachedFrontierSet = null, // unused, kept for call-site compat
   matrix = null // Matrix system: when provided, uses typed-array operations
 ) {
   return updateNationTerritorial(
@@ -92,7 +92,6 @@ export function updateNation(
     ownershipMap,
     bonusesByOwner,
     currentTick,
-    cachedFrontierSet,
     matrix
   );
 }
@@ -104,7 +103,6 @@ function updateNationTerritorial(
   ownershipMap,
   bonusesByOwner,
   currentTick,
-  cachedFrontierSet = null, // OPTIMIZATION 3
   matrix = null // Matrix system
 ) {
   if (!Array.isArray(mapData) || !Array.isArray(mapData[0])) {
@@ -119,6 +117,8 @@ function updateNationTerritorial(
   updatedNation.resources = updatedNation.resources || {};
   updatedNation.territoryDelta =
     updatedNation.territoryDelta || { add: { x: [], y: [] }, sub: { x: [], y: [] } };
+  // Stash current tick so arrow expiry can use tick-based age
+  updatedNation._currentTick = currentTick;
 
   // Matrix-aware territory add/remove helpers
   const _addCell = (x, y) => {
@@ -279,19 +279,31 @@ function updateNationTerritorial(
     const maxPopulation = basePop + cityBonus + 1000; // +1000 base minimum
     updatedNation.maxPopulation = maxPopulation;
 
+    // Initialize troop count if missing
+    if (updatedNation.troopCount == null) updatedNation.troopCount = 0;
+    if (updatedNation.troopTarget == null) updatedNation.troopTarget = 0.2;
+
     // Growth formula: (10 + pop^0.73/4) * (1 - pop/maxPop)
-    // Optimal growth at ~42% of max population
+    // When troop density is enabled, use freePop (non-troops) as the growth base
+    // This makes high troop % slow down growth
     const currentPop = updatedNation.population || 0;
+    const troopDensityEnabled = config?.troopDensity?.enabled;
+    const freePop = troopDensityEnabled
+      ? Math.max(0, currentPop - (updatedNation.troopCount || 0))
+      : currentPop;
     const popRatio = Math.min(1, currentPop / maxPopulation);
-    const baseGrowthRate = 10 + Math.pow(Math.max(1, currentPop), 0.73) / 4;
+    const baseGrowthRate = 10 + Math.pow(Math.max(1, freePop), 0.73) / 4;
     const growth = baseGrowthRate * (1 - popRatio) * bonuses.production;
 
     updatedNation.population = Math.min(maxPopulation, currentPop + growth);
 
-    // Passive gold income from nodes
+    // Passive gold income from nodes (scales by free worker ratio when troop density enabled)
     if (bonuses.goldIncome > 0) {
+      const goldScale = troopDensityEnabled && currentPop > 0
+        ? freePop / currentPop
+        : 1;
       updatedNation.resources.gold =
-        (updatedNation.resources.gold || 0) + bonuses.goldIncome;
+        (updatedNation.resources.gold || 0) + bonuses.goldIncome * goldScale;
     }
 
     if (updatedNation.isBot) {
@@ -315,7 +327,6 @@ function updateNationTerritorial(
           mapData,
           ownershipMap,
           bonusesByOwner,
-          cachedFrontierSet,
           matrix
         );
       } catch (arrowErr) {
@@ -392,34 +403,9 @@ function updateNationTerritorial(
     }
   }
 
-  if (updatedNation.territoryDelta) {
-    const hasDelta =
-      (updatedNation.territoryDelta.add.x.length ||
-        updatedNation.territoryDelta.add.y.length ||
-        updatedNation.territoryDelta.sub.x.length ||
-        updatedNation.territoryDelta.sub.y.length) > 0;
-    if (hasDelta) {
-      updatedNation.territoryDeltaForClient = {
-        add: {
-          x: [...updatedNation.territoryDelta.add.x],
-          y: [...updatedNation.territoryDelta.add.y],
-        },
-        sub: {
-          x: [...updatedNation.territoryDelta.sub.x],
-          y: [...updatedNation.territoryDelta.sub.y],
-        },
-      };
-    } else {
-      // Always reset to empty when no changes - prevents stale deltas from being re-sent
-      updatedNation.territoryDeltaForClient = {
-        add: { x: [], y: [] },
-        sub: { x: [], y: [] },
-      };
-    }
-    // NOTE: Do NOT reset territoryDelta here - it's needed by processRoom
-    // for updating ownership map and frontier set caches.
-    // The caller (processRoom) will reset it after using the deltas.
-  }
+  // NOTE: territoryDeltaForClient is computed by applyMatrixToNations at tick end
+  // from the matrix ownership snapshot diff. No need to derive it here.
+  // territoryDelta is kept for processRoom's ownership map cache.
 
   return updatedNation;
 }
@@ -490,28 +476,6 @@ function selectBotTargetCell(nation, mapData, ownershipMap, anchor, resourceNode
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function selectBotTargetCellDirectional(
-  nation,
-  mapData,
-  ownershipMap,
-  anchor,
-  direction
-) {
-  const candidates = getDirectionalFrontierCandidates(
-    nation,
-    mapData,
-    ownershipMap,
-    direction,
-    anchor,
-    null,
-    null
-  );
-  if (!candidates.length) return null;
-  const pickTop = config?.territorial?.botCandidatePickTop ?? 12;
-  const pool = candidates.slice(0, Math.max(1, pickTop));
-  return pool[Math.floor(Math.random() * pool.length)];
-}
-
 /**
  * Bot AI using the arrow system instead of pressure orders
  * Creates simple 2-point arrow paths (anchor -> target)
@@ -539,6 +503,30 @@ function maybeEnqueueBotArrow(
 
   // Migrate legacy single attack to attacks[]
   migrateArrowOrders(nation);
+
+  // Adapt bot troop mobilization target based on game state
+  if (config?.troopDensity?.enabled) {
+    const attacks = nation.arrowOrders?.attacks || [];
+    // Check if any enemy arrows are targeting cells near this nation's territory
+    const underThreat = (gameState?.nations || []).some((n) => {
+      if (n.owner === nation.owner || n.status === "defeated") return false;
+      const enemyAttacks = n.arrowOrders?.attacks || [];
+      return enemyAttacks.some((a) => {
+        if (!a.path || a.path.length < 2) return false;
+        const target = a.path[a.path.length - 1];
+        const dist = getMinDistanceToTerritory(nation, target.x, target.y, 15);
+        return dist <= 10;
+      });
+    });
+
+    if (underThreat) {
+      nation.troopTarget = 0.4; // Under threat: high mobilization
+    } else if (attacks.length > 0) {
+      nation.troopTarget = 0.3; // Active arrows: moderate mobilization
+    } else {
+      nation.troopTarget = 0.15; // Peacetime: low mobilization
+    }
+  }
 
   const maxAttackArrows = config?.territorial?.maxAttackArrows ?? 3;
   const attacks = nation.arrowOrders?.attacks || [];
@@ -612,6 +600,8 @@ function maybeEnqueueBotArrow(
     0.3;
   const clampedPercent = Math.min(Math.max(rawPercent, minPercent), maxPercent);
 
+  const troopDensityEnabled = config?.troopDensity?.enabled;
+
   const available = nation.population || 0;
   const power = available * clampedPercent;
   if (power <= 0) {
@@ -621,7 +611,10 @@ function maybeEnqueueBotArrow(
 
   const actualPower = available < 10 ? available : power;
 
-  nation.population = Math.max(0, available - actualPower);
+  // Only deduct population in legacy mode
+  if (!troopDensityEnabled) {
+    nation.population = Math.max(0, available - actualPower);
+  }
   nation.arrowOrders = nation.arrowOrders || {};
   if (!nation.arrowOrders.attacks) nation.arrowOrders.attacks = [];
 
@@ -663,10 +656,12 @@ function maybeEnqueueBotArrow(
     type: "attack",
     path: arrowPath,
     currentIndex: 1,
-    remainingPower: actualPower,
-    initialPower: actualPower,
+    remainingPower: troopDensityEnabled ? 0 : actualPower,
+    initialPower: troopDensityEnabled ? 0 : actualPower,
+    troopCommitment: clampedPercent,
     percent: clampedPercent,
     createdAt: new Date(),
+    createdAtTick: tickCount,
     frontWidth: 0,
     advanceProgress: 0,
     phase: 1,
@@ -675,6 +670,7 @@ function maybeEnqueueBotArrow(
     opposingForces: [],
     headX: arrowPath[0].x,
     headY: arrowPath[0].y,
+    effectiveDensityAtFront: 0,
   });
 
   console.log(`[BOT-ARROW] ${nation.name || nation.owner} arrow: power=${actualPower.toFixed(0)} frontier=(${candidate.x},${candidate.y}) projected=(${targetX},${targetY}) range=${range}`);
@@ -940,16 +936,28 @@ function processAttackArrowFrontline(
   }
 
   // Check expiry (guard against NaN in initialPower/duration — NaN comparisons always return false)
-  let initialPower = Number(arrow.initialPower ?? remaining ?? 0);
-  if (!Number.isFinite(initialPower)) initialPower = 0;
-  const scaledDuration = minArrowDurationMs + initialPower * arrowDurationPerPowerMs;
-  const rawMaxDuration = Math.max(minArrowDurationMs, Math.min(maxArrowDurationMs, scaledDuration));
-  const maxDurationMs = Number.isFinite(rawMaxDuration) ? rawMaxDuration : maxArrowDurationMs;
-  const rawAge = arrow.createdAt ? Date.now() - new Date(arrow.createdAt).getTime() : Infinity;
-  const arrowAge = Number.isFinite(rawAge) ? rawAge : Infinity;
-  if (arrowAge > maxDurationMs) {
-    nation.population = (nation.population || 0) + Math.max(0, remaining);
-    return 'remove';
+  // Density-mode arrows don't use power-based time expiry — they last until
+  // stalled, waypoints completed, or manually cancelled.
+  const isDensityArrow = config?.troopDensity?.enabled && arrow.troopCommitment > 0;
+  if (!isDensityArrow) {
+    let initialPower = Number(arrow.initialPower ?? remaining ?? 0);
+    if (!Number.isFinite(initialPower)) initialPower = 0;
+    const scaledDuration = minArrowDurationMs + initialPower * arrowDurationPerPowerMs;
+    const rawMaxDuration = Math.max(minArrowDurationMs, Math.min(maxArrowDurationMs, scaledDuration));
+    const maxDurationMs = Number.isFinite(rawMaxDuration) ? rawMaxDuration : maxArrowDurationMs;
+    // Prefer tick-based age when available (avoids Date.now() clock skew)
+    const tickRateMs = config?.territorial?.tickRateMs || 100;
+    let arrowAge;
+    if (arrow.createdAtTick != null && nation._currentTick != null) {
+      arrowAge = (nation._currentTick - arrow.createdAtTick) * tickRateMs;
+    } else {
+      const rawAge = arrow.createdAt ? Date.now() - new Date(arrow.createdAt).getTime() : Infinity;
+      arrowAge = Number.isFinite(rawAge) ? rawAge : Infinity;
+    }
+    if (arrowAge > maxDurationMs) {
+      nation.population = (nation.population || 0) + Math.max(0, remaining);
+      return 'remove';
+    }
   }
 
   // Fail-safe: check matrix directly for arrow completion (bypasses stale caches)
@@ -985,6 +993,237 @@ function processAttackArrowFrontline(
   } else if (shouldLog) {
     console.log(`${arrowLabel} fail-safe SKIPPED: useMatrix=${useMatrix} nIdx=${nIdx}, power=${remaining}`);
   }
+
+  // ─── Troop-density-based combat path ───
+  const troopDensityEnabled = config?.troopDensity?.enabled;
+  if (troopDensityEnabled && useMatrix && nIdx !== undefined) {
+    // Handle retreat — density redistributes naturally via diffusion
+    if (arrow.status === "retreating") {
+      // Arrow attractor weakens over time; just remove after a few ticks
+      arrow._retreatTicks = (arrow._retreatTicks || 0) + 1;
+      if (arrow._retreatTicks > 10) return 'remove';
+      return;
+    }
+
+    // Handle consolidation (same as original)
+    if (arrow.phaseConsolidationRemaining > 0) {
+      arrow.phaseConsolidationRemaining--;
+      arrow.status = "consolidating";
+    } else if (arrow.status === "consolidating") {
+      arrow.status = "advancing";
+    }
+
+    // Auto-skip waypoints that are already owned
+    const territorySet = getTerritorySetCached(nation);
+    let currentIndex = arrow.currentIndex || 1;
+    while (currentIndex < arrow.path.length) {
+      const wp = arrow.path[currentIndex];
+      const inTerritory = territorySet.has(`${Math.round(wp.x)},${Math.round(wp.y)}`);
+      const matrixOwned = matrix.isOwnedBy(Math.round(wp.x), Math.round(wp.y), nIdx);
+      const isLastWaypoint = currentIndex === arrow.path.length - 1;
+      if (isLastWaypoint) {
+        if (inTerritory || matrixOwned) currentIndex++;
+        else break;
+      } else {
+        const dist = getMinDistanceToTerritory(nation, wp.x, wp.y, 3);
+        if (inTerritory || matrixOwned || dist <= 2) currentIndex++;
+        else break;
+      }
+    }
+    arrow.currentIndex = Math.min(currentIndex, arrow.path.length - 1);
+
+    if (currentIndex >= arrow.path.length) {
+      return 'remove';
+    }
+
+    // Update head position: find the BORDER cell with highest progress along the path.
+    // Must be a border cell (has at least one non-owned neighbor) to ensure the head
+    // is at the actual territory edge, not deep in the interior.
+    {
+      const tx = nation.territory?.x || [];
+      const ty = nation.territory?.y || [];
+      let bestProgress = -1; // always rescan from scratch to avoid stale positions
+      let headX = arrow.headX ?? arrow.path[0].x;
+      let headY = arrow.headY ?? arrow.path[0].y;
+      const step = tx.length > 500 ? Math.ceil(tx.length / 500) : 1;
+      const computedFrontWidth = Math.min(
+        frontMaxWidth,
+        frontBaseWidth + Math.sqrt(nation.troopCount || 100) * frontWidthPerSqrtPower
+      );
+      const halfWidthBase2 = computedFrontWidth / 2;
+      const mw = matrix.width;
+      const mh = matrix.height;
+      const mOwn = matrix.ownership;
+      for (let i = 0; i < tx.length; i += step) {
+        const cx = tx[i];
+        const cy = ty[i];
+
+        // Only consider border cells (at least one non-owned 4-neighbor)
+        let isBorder = false;
+        if (cx <= 0 || cy <= 0 || cx >= mw - 1 || cy >= mh - 1) {
+          isBorder = true;
+        } else {
+          const ci = cy * mw + cx;
+          if (mOwn[ci + 1] !== nIdx || mOwn[ci - 1] !== nIdx ||
+              mOwn[ci + mw] !== nIdx || mOwn[ci - mw] !== nIdx) {
+            isBorder = true;
+          }
+        }
+        if (!isBorder) continue;
+
+        const { dist: dtp, progress } = distanceToPath(cx, cy, arrow.path);
+        if (dtp <= halfWidthBase2 * 1.5 && progress > bestProgress) {
+          bestProgress = progress;
+          headX = cx;
+          headY = cy;
+        }
+      }
+      arrow.headX = headX;
+      arrow.headY = headY;
+      arrow.advanceProgress = Math.max(0, bestProgress);
+    }
+
+    // Resolve density combat at border cells near arrow head
+    if (arrow.status === "advancing" || arrow.status === "stalled") {
+      // Set corridor half-width for focused push (uses front width from config)
+      const computedCorridorWidth = Math.min(
+        frontMaxWidth,
+        frontBaseWidth + Math.sqrt(nation.troopCount || 100) * frontWidthPerSqrtPower
+      );
+      arrow._corridorHalfWidth = computedCorridorWidth / 2;
+
+      const _addCellForCombat = (cx, cy) => {
+        if (matrix.isOwnedBy(cx, cy, nIdx)) return; // already owned
+        matrix.setOwner(cx, cy, nIdx);
+        const loyaltyEnabled2 = config?.loyalty?.enabled !== false;
+        if (loyaltyEnabled2) matrix.setLoyalty(cx, cy, nIdx, 1.0);
+        addTerritoryCell(nation, cx, cy);
+        ownershipMap?.set(`${cx},${cy}`, nation);
+      };
+      const _removeCellFromNationForCombat = (targetNation, cx, cy) => {
+        if (useMatrix) {
+          const targetIdx = matrix.ownerToIndex.get(targetNation.owner);
+          if (targetIdx !== undefined && matrix.isOwnedBy(cx, cy, targetIdx)) {
+            matrix.setOwner(cx, cy, UNOWNED);
+          }
+        }
+        removeTerritoryCell(targetNation, cx, cy);
+        ownershipMap?.delete(`${cx},${cy}`);
+      };
+
+      const flipped = resolveDensityCombat(
+        arrow, nation, gameState, mapData, ownershipMap, matrix,
+        config.troopDensity, _addCellForCombat, _removeCellFromNationForCombat
+      );
+
+      // Compute effective density at front for display (total troops near front)
+      let frontDensity = 0;
+      const hx = Math.round(arrow.headX ?? 0);
+      const hy = Math.round(arrow.headY ?? 0);
+      const scanR = 5;
+      for (let dy = -scanR; dy <= scanR; dy++) {
+        for (let dx = -scanR; dx <= scanR; dx++) {
+          const fx = hx + dx;
+          const fy = hy + dy;
+          if (!matrix.inBounds(fx, fy)) continue;
+          const fi = matrix.idx(fx, fy);
+          if (matrix.ownership[fi] === nIdx) {
+            frontDensity += matrix.troopDensity[nIdx * matrix.size + fi];
+          }
+        }
+      }
+      arrow.effectiveDensityAtFront = Math.round(frontDensity);
+
+      arrow.stalledTicks = flipped > 0 ? 0 : (arrow.stalledTicks || 0) + 1;
+      if (arrow.stalledTicks > 0 && arrow.status === "advancing") arrow.status = "stalled";
+      if (flipped > 0 && arrow.status === "stalled") arrow.status = "advancing";
+    }
+
+    // Check waypoint reached (advance past owned waypoints)
+    {
+      const updatedTerritorySet = getTerritorySetCached(nation);
+      let ci = arrow.currentIndex;
+      while (ci < arrow.path.length) {
+        const wp = arrow.path[ci];
+        const wpKey = `${Math.round(wp.x)},${Math.round(wp.y)}`;
+        const isLastWaypoint = ci === arrow.path.length - 1;
+        const inTerritory2 = updatedTerritorySet.has(wpKey);
+        const matrixOwned2 = matrix.isOwnedBy(Math.round(wp.x), Math.round(wp.y), nIdx);
+        if (isLastWaypoint) {
+          if (inTerritory2 || matrixOwned2) ci++;
+          else break;
+        } else {
+          const distToWp = getMinDistanceToTerritory(nation, wp.x, wp.y, 3);
+          if (inTerritory2 || matrixOwned2 || distToWp <= 2) ci++;
+          else break;
+        }
+      }
+      if (ci > arrow.currentIndex) {
+        arrow.currentIndex = Math.min(ci, arrow.path.length - 1);
+        if (ci < arrow.path.length) {
+          arrow.phaseConsolidationRemaining = phaseConsolidationTicks;
+          arrow.status = "consolidating";
+        }
+      }
+    }
+
+    // If all waypoints reached, remove
+    if (arrow.currentIndex >= arrow.path.length - 1) {
+      const fwp = arrow.path[arrow.path.length - 1];
+      const inSet = getTerritorySetCached(nation).has(`${Math.round(fwp.x)},${Math.round(fwp.y)}`);
+      const matOwned = matrix.isOwnedBy(Math.round(fwp.x), Math.round(fwp.y), nIdx);
+      if (inSet || matOwned) return 'remove';
+    }
+
+    // Track opposition — only near the arrow head, not the entire territory
+    {
+      const opMap = new Map();
+      const ahx = Math.round(arrow.headX ?? 0);
+      const ahy = Math.round(arrow.headY ?? 0);
+      const opScanR = config?.troopDensity?.arrowAttractorRadius || 12;
+      const opScanR2 = opScanR * opScanR;
+      const omMinX = Math.max(0, ahx - opScanR);
+      const omMaxX = Math.min((matrix?.width || 200) - 1, ahx + opScanR);
+      const omMinY = Math.max(0, ahy - opScanR);
+      const omMaxY = Math.min((matrix?.height || 200) - 1, ahy + opScanR);
+      for (let cy = omMinY; cy <= omMaxY; cy++) {
+        for (let cx = omMinX; cx <= omMaxX; cx++) {
+          const odx = cx - ahx;
+          const ody = cy - ahy;
+          if (odx * odx + ody * ody > opScanR2) continue;
+          const owner = ownershipMap?.get(`${cx},${cy}`);
+          if (owner && owner.owner !== nation.owner) {
+            const entry = opMap.get(owner.owner) || { nationOwner: owner.owner, nationName: owner.name || owner.owner, estimatedStrength: 0, contactWidth: 0 };
+            entry.contactWidth++;
+            entry.estimatedStrength = (owner.population || 0);
+            opMap.set(owner.owner, entry);
+          }
+        }
+      }
+      arrow.opposingForces = Array.from(opMap.values());
+    }
+
+    // Remove arrows that have no troops at the front (depleted or density
+    // never reached the head). Track consecutive "empty front" ticks.
+    if ((arrow.effectiveDensityAtFront || 0) < 1) {
+      arrow.emptyFrontTicks = (arrow.emptyFrontTicks || 0) + 1;
+      if (arrow.emptyFrontTicks >= 10) {
+        return 'remove';
+      }
+    } else {
+      arrow.emptyFrontTicks = 0;
+    }
+
+    // Stall-based removal for density arrows
+    const densityStallLimit = Math.max(20, arrowMaxStallTicks * 4);
+    if (arrow.stalledTicks >= densityStallLimit) {
+      return 'remove';
+    }
+
+    return; // Done with troopDensity path
+  }
+
+  // ─── Legacy power-budget combat path ───
 
   // Handle retreat
   if (arrow.status === "retreating") {
@@ -1468,7 +1707,6 @@ function processArrowOrders(
   mapData,
   ownershipMap,
   bonusesByOwner,
-  cachedFrontierSet = null,
   matrix = null
 ) {
   if (!nation.arrowOrders) return;
@@ -1507,12 +1745,16 @@ function processArrowOrders(
       toRemove.push(i);
     }
   }
-  console.log(`[ARROW-DEBUG] ${nation.name || nation.owner}: ${attacks.length} arrows, removing ${toRemove.length}, indices=${JSON.stringify(toRemove)}`);
+  if (process.env.DEBUG_ARROWS === "true") {
+    console.log(`[ARROW-DEBUG] ${nation.name || nation.owner}: ${attacks.length} arrows, removing ${toRemove.length}, indices=${JSON.stringify(toRemove)}`);
+  }
   // Splice in reverse order
   for (let i = toRemove.length - 1; i >= 0; i--) {
     attacks.splice(toRemove[i], 1);
   }
-  console.log(`[ARROW-DEBUG] ${nation.name || nation.owner}: after splice, ${attacks.length} arrows remain. nation.arrowOrders.attacks.length=${nation.arrowOrders.attacks.length}`);
+  if (process.env.DEBUG_ARROWS === "true") {
+    console.log(`[ARROW-DEBUG] ${nation.name || nation.owner}: after splice, ${attacks.length} arrows remain. nation.arrowOrders.attacks.length=${nation.arrowOrders.attacks.length}`);
+  }
 
   // Process defend arrow — unchanged
   if (nation.arrowOrders?.defend) {
@@ -1527,10 +1769,17 @@ function processArrowOrders(
     const scaledDuration = minArrowDurationMs + initialPowerD * arrowDurationPerPowerMs;
     const rawMaxDuration = Math.max(minArrowDurationMs, Math.min(maxArrowDurationMs, scaledDuration));
     const maxDurationMs = Number.isFinite(rawMaxDuration) ? rawMaxDuration : maxArrowDurationMs;
-    const rawDefendAge = arrow.createdAt ? Date.now() - new Date(arrow.createdAt).getTime() : Infinity;
-    const arrowAge = Number.isFinite(rawDefendAge) ? rawDefendAge : Infinity;
+    // Prefer tick-based age when available
+    const tickRateMsD = config?.territorial?.tickRateMs || 100;
+    let defendAge;
+    if (arrow.createdAtTick != null && nation._currentTick != null) {
+      defendAge = (nation._currentTick - arrow.createdAtTick) * tickRateMsD;
+    } else {
+      const rawDefendAge = arrow.createdAt ? Date.now() - new Date(arrow.createdAt).getTime() : Infinity;
+      defendAge = Number.isFinite(rawDefendAge) ? rawDefendAge : Infinity;
+    }
 
-    if (arrowAge > maxDurationMs) {
+    if (defendAge > maxDurationMs) {
       nation.population = (nation.population || 0) + remaining;
       nation.arrowOrders.defend = null;
       delete nation.arrowOrders.defend;
@@ -1666,346 +1915,6 @@ function getStructureDefenseBoost(x, y, defenderNation, structureConfig) {
   return { troopLossMultiplier: bestTroopLossMult, speedMultiplier: bestSpeedMult };
 }
 
-function getDirectionalFrontierCandidates(
-  nation,
-  mapData,
-  ownershipMap,
-  direction,
-  anchor,
-  bonusesByOwner,
-  order,
-  cachedFrontierSet = null // OPTIMIZATION 3
-) {
-  const candidates = [];
-  const seen = new Set();
-  const baseDir = normalizeVector(direction?.x, direction?.y);
-  const target = order?.target || null;
-  const focusTicksRemaining = order?.focusTicksRemaining || 0;
-  const targetReached = order?.targetReached || false;
-  let dir = baseDir;
-  if (target && anchor && !targetReached) {
-    const targetDir = normalizeVector(target.x - anchor.x, target.y - anchor.y);
-    if (targetDir) dir = targetDir;
-  }
-  if (!dir) return candidates;
-  const baseMinAlignment = config?.territorial?.directionBiasMin ?? 0.1;
-  const focusMinAlignment = config?.territorial?.targetFocusMinAlignment ?? 0.1;
-  const minAlignment =
-    focusTicksRemaining > 0 ? focusMinAlignment : baseMinAlignment;
-  const alignmentWeight = config?.territorial?.alignmentWeight ?? 1;
-  const alignmentPower = config?.territorial?.alignmentPower ?? 1.3;
-  const perpPenalty = config?.territorial?.directionPerpPenalty ?? 0;
-  const similarityWeight = config?.territorial?.similarityWeight ?? 0.6;
-  const similarityPower = config?.territorial?.similarityPower ?? 1;
-  const riverCrossingScorePenalty =
-    config?.territorial?.riverCrossingScorePenalty ?? 0.3;
-  const mountainCrossingScorePenalty =
-    config?.territorial?.mountainCrossingScorePenalty ?? 0.45;
-  const targetDistancePenalty =
-    config?.territorial?.targetDistancePenalty ?? 0.03;
-  const targetSpreadRadius = config?.territorial?.targetSpreadRadius ?? 12;
-  const targetSpreadWeight = config?.territorial?.targetSpreadWeight ?? 1.4;
-  const distancePenaltyPerTile =
-    config?.territorial?.distancePenaltyPerTile ?? 0.02;
-  const candidateLimit = config?.territorial?.frontierCandidateLimit ?? 0;
-  const scanLimit = config?.territorial?.frontierScanLimit ?? 0;
-  const pocketBonus = config?.territorial?.pocketBonus ?? 2;
-  const compactnessWeight = config?.territorial?.compactnessWeight ?? 0.8;
-  const randomnessWeight = config?.territorial?.randomnessWeight ?? 0.5;
-
-  const territoryX = nation?.territory?.x || [];
-  const territoryY = nation?.territory?.y || [];
-  const width = mapData[0].length;
-  const height = mapData.length;
-
-  // OPTIMIZATION 3: If we have a cached frontier set, use it for faster iteration
-  const useCachedFrontier = cachedFrontierSet && cachedFrontierSet.size > 0;
-
-  // OPTIMIZATION 3: Fast frontier scan using cached frontier set
-  const scanFrontierFromCache = (minAlignment, maxSamples) => {
-    if (!cachedFrontierSet) return;
-    let scanned = 0;
-    const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-
-    for (const key of cachedFrontierSet) {
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      const [xStr, yStr] = key.split(",");
-      const nx = Number(xStr);
-      const ny = Number(yStr);
-
-      const owner = ownershipMap.get(key);
-      if (owner?.owner === nation.owner) continue;
-
-      const cell = mapData[ny]?.[nx];
-      if (!cell || cell.biome === "OCEAN") continue;
-
-      // Find a source cell (adjacent owned tile)
-      let sourceX = nx, sourceY = ny;
-      let sourceCell = null;
-      for (const [dx, dy] of neighbors) {
-        const sx = nx + dx;
-        const sy = ny + dy;
-        if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
-        if (ownershipMap.get(`${sx},${sy}`)?.owner === nation.owner) {
-          sourceX = sx;
-          sourceY = sy;
-          sourceCell = mapData[sy]?.[sx];
-          break;
-        }
-      }
-      if (!sourceCell) continue;
-
-      const alignment = computeAlignment(anchor, { x: nx, y: ny }, dir);
-
-      // Count adjacent owned tiles for compactness bonus (favors blob-like expansion)
-      let adjacentOwned = 0;
-      for (const [adx, ady] of neighbors) {
-        const ax = nx + adx;
-        const ay = ny + ady;
-        if (ax < 0 || ay < 0 || ax >= width || ay >= height) continue;
-        if (ownershipMap.get(`${ax},${ay}`)?.owner === nation.owner) {
-          adjacentOwned += 1;
-        }
-      }
-      const isPocket = owner && owner.owner !== nation.owner && adjacentOwned >= 3;
-      if (alignment < minAlignment && !isPocket) continue;
-
-      const similarity = getTerrainCostModifiers(sourceCell?.biome, cell?.biome).similarity;
-      let terrainScorePenalty = 0;
-      if (sourceCell?.biome === "RIVER" || cell?.biome === "RIVER") {
-        terrainScorePenalty += riverCrossingScorePenalty;
-      }
-      if (sourceCell?.biome === "MOUNTAIN" || cell?.biome === "MOUNTAIN") {
-        terrainScorePenalty += mountainCrossingScorePenalty;
-      }
-      if (terrainScorePenalty > 0 && owner && owner.owner !== nation.owner) {
-        const attackerPower = bonusesByOwner?.[nation.owner]?.attackPower || 1;
-        const defenderPower = bonusesByOwner?.[owner.owner]?.defensePower || 1;
-        const advantage = attackerPower / Math.max(0.5, defenderPower);
-        const advantageScale = Math.max(0.4, 1 / Math.max(1, advantage));
-        terrainScorePenalty *= advantageScale;
-      }
-
-      const distanceFromAnchor = anchor ? Math.hypot(nx - anchor.x, ny - anchor.y) : 0;
-      const targetDistance = target && Number.isFinite(target.x) && Number.isFinite(target.y)
-        ? Math.hypot(nx - target.x, ny - target.y)
-        : null;
-      const alignmentScore = Math.pow(Math.max(0, alignment), alignmentPower);
-      const similarityScore = Math.pow(similarity, similarityPower);
-
-      let perpDistance = 0;
-      if (anchor) {
-        const vx = nx - anchor.x;
-        const vy = ny - anchor.y;
-        const dot = vx * dir.x + vy * dir.y;
-        const vLen2 = vx * vx + vy * vy;
-        const perp2 = Math.max(0, vLen2 - dot * dot);
-        perpDistance = Math.sqrt(perp2);
-      }
-
-      // Compactness bonus: tiles with more owned neighbors create blob-like shapes
-      // adjacentOwned ranges from 1-4, normalize to 0-1 scale (1 neighbor = 0, 4 = 1)
-      const compactnessScore = (adjacentOwned - 1) / 3;
-
-      // Random noise for organic, natural-looking borders
-      const randomScore = Math.random();
-
-      let score =
-        alignmentWeight * alignmentScore +
-        similarityWeight * similarityScore -
-        distancePenaltyPerTile * distanceFromAnchor -
-        perpPenalty * perpDistance +
-        (isPocket ? pocketBonus : 0) -
-        terrainScorePenalty +
-        compactnessWeight * compactnessScore +
-        randomnessWeight * randomScore;
-
-      if (targetDistance != null) {
-        score -= targetDistancePenalty * targetDistance;
-        if (focusTicksRemaining > 0) {
-          const proximity = Math.max(0, 1 - targetDistance / Math.max(1, targetSpreadRadius));
-          score += targetSpreadWeight * proximity;
-        }
-      }
-
-      candidates.push({
-        x: nx,
-        y: ny,
-        sourceX,
-        sourceY,
-        sourceBiome: sourceCell?.biome,
-        targetBiome: cell?.biome,
-        alignment,
-        similarity,
-        distanceFromAnchor,
-        targetDistance,
-        score,
-      });
-
-      scanned += 1;
-      if (maxSamples > 0 && scanned >= maxSamples) return;
-    }
-  };
-
-  const scanFrontier = (minAlignment, step, maxSamples) => {
-    let scanned = 0;
-    for (let i = 0; i < territoryX.length; i += step) {
-      const x = territoryX[i];
-      const y = territoryY[i];
-      const neighbors = [
-        [1, 0],
-        [-1, 0],
-        [0, 1],
-        [0, -1],
-      ];
-      for (const [dx, dy] of neighbors) {
-        const nx = x + dx;
-        const ny = y + dy;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-        const key = `${nx},${ny}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const owner = ownershipMap.get(key);
-        if (owner?.owner === nation.owner) continue;
-        const cell = mapData[ny][nx];
-        if (!cell || cell.biome === "OCEAN") continue;
-        const sourceCell = mapData[y]?.[x];
-        const alignment = computeAlignment(anchor, { x: nx, y: ny }, dir);
-        // Count adjacent owned tiles for compactness bonus (favors blob-like expansion)
-        let adjacentOwned = 0;
-        const neighborCoords = [
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1],
-        ];
-        for (const [adx, ady] of neighborCoords) {
-          const ax = nx + adx;
-          const ay = ny + ady;
-          if (ax < 0 || ay < 0 || ax >= width || ay >= height) continue;
-          if (ownershipMap.get(`${ax},${ay}`)?.owner === nation.owner) {
-            adjacentOwned += 1;
-          }
-        }
-        const isPocket =
-          owner && owner.owner !== nation.owner && adjacentOwned >= 3;
-        if (alignment < minAlignment && !isPocket) continue;
-        const similarity = getTerrainCostModifiers(
-          sourceCell?.biome,
-          cell?.biome
-        ).similarity;
-        let terrainScorePenalty = 0;
-        if (sourceCell?.biome === "RIVER" || cell?.biome === "RIVER") {
-          terrainScorePenalty += riverCrossingScorePenalty;
-        }
-        if (sourceCell?.biome === "MOUNTAIN" || cell?.biome === "MOUNTAIN") {
-          terrainScorePenalty += mountainCrossingScorePenalty;
-        }
-        if (terrainScorePenalty > 0 && owner && owner.owner !== nation.owner) {
-          const attackerPower =
-            bonusesByOwner?.[nation.owner]?.attackPower || 1;
-          const defenderPower =
-            bonusesByOwner?.[owner.owner]?.defensePower || 1;
-          const advantage = attackerPower / Math.max(0.5, defenderPower);
-          const advantageScale = Math.max(0.4, 1 / Math.max(1, advantage));
-          terrainScorePenalty *= advantageScale;
-        }
-        const distanceFromAnchor = anchor
-          ? Math.hypot(nx - anchor.x, ny - anchor.y)
-          : 0;
-        const targetDistance =
-          target && Number.isFinite(target.x) && Number.isFinite(target.y)
-            ? Math.hypot(nx - target.x, ny - target.y)
-            : null;
-        const alignmentScore = Math.pow(Math.max(0, alignment), alignmentPower);
-        const similarityScore = Math.pow(similarity, similarityPower);
-        let perpDistance = 0;
-        if (anchor) {
-          const vx = nx - anchor.x;
-          const vy = ny - anchor.y;
-          const dot = vx * dir.x + vy * dir.y;
-          const vLen2 = vx * vx + vy * vy;
-          const perp2 = Math.max(0, vLen2 - dot * dot);
-          perpDistance = Math.sqrt(perp2);
-        }
-        // Compactness bonus: tiles with more owned neighbors create blob-like shapes
-        // adjacentOwned ranges from 1-4, normalize to 0-1 scale (1 neighbor = 0, 4 = 1)
-        const compactnessScore = (adjacentOwned - 1) / 3;
-        // Random noise for organic, natural-looking borders
-        const randomScore = Math.random();
-        let score =
-          alignmentWeight * alignmentScore +
-          similarityWeight * similarityScore -
-          distancePenaltyPerTile * distanceFromAnchor -
-          perpPenalty * perpDistance +
-          (isPocket ? pocketBonus : 0) -
-          terrainScorePenalty +
-          compactnessWeight * compactnessScore +
-          randomnessWeight * randomScore;
-        if (targetDistance != null) {
-          score -= targetDistancePenalty * targetDistance;
-          if (focusTicksRemaining > 0) {
-            const proximity = Math.max(
-              0,
-              1 - targetDistance / Math.max(1, targetSpreadRadius)
-            );
-            score += targetSpreadWeight * proximity;
-          }
-        }
-        candidates.push({
-          x: nx,
-          y: ny,
-          sourceX: x,
-          sourceY: y,
-          sourceBiome: sourceCell?.biome,
-          targetBiome: cell?.biome,
-          alignment,
-          similarity,
-          distanceFromAnchor,
-          targetDistance,
-          score,
-        });
-        scanned += 1;
-        if (maxSamples > 0 && scanned >= maxSamples) {
-          return;
-        }
-      }
-    }
-  };
-
-  // OPTIMIZATION 3: Use cached frontier set if available (much faster)
-  if (useCachedFrontier) {
-    scanFrontierFromCache(minAlignment, scanLimit > 0 ? scanLimit : 0);
-
-    if (candidates.length === 0) {
-      const relaxedAlignment = Math.min(0.35, minAlignment);
-      scanFrontierFromCache(relaxedAlignment, scanLimit);
-    }
-  } else {
-    // Fallback to original scanning method
-    const primaryStep =
-      scanLimit > 0 && territoryX.length > scanLimit
-        ? Math.ceil(territoryX.length / scanLimit)
-        : 1;
-    scanFrontier(minAlignment, primaryStep, scanLimit > 0 ? scanLimit : 0);
-
-    if (candidates.length === 0 && primaryStep > 1) {
-      const relaxedAlignment = Math.min(0.35, minAlignment);
-      const fallbackStep =
-        scanLimit > 0 ? Math.ceil(territoryX.length / (scanLimit * 2)) : 1;
-      scanFrontier(relaxedAlignment, Math.max(1, fallbackStep), scanLimit);
-    }
-  }
-
-  candidates.sort((a, b) => b.score - a.score);
-  if (candidateLimit > 0 && candidates.length > candidateLimit) {
-    return candidates.slice(0, candidateLimit);
-  }
-  return candidates;
-}
-
 function normalizeVector(x, y) {
   const dx = Number(x);
   const dy = Number(y);
@@ -2015,13 +1924,6 @@ function normalizeVector(x, y) {
   return { x: dx / len, y: dy / len };
 }
 
-function computeAlignment(anchor, target, dir) {
-  if (!anchor) return 0;
-  const vx = target.x - anchor.x;
-  const vy = target.y - anchor.y;
-  const len = Math.hypot(vx, vy) || 1;
-  return (vx / len) * dir.x + (vy / len) * dir.y;
-}
 
 function getNationAnchor(nation) {
   const capital =
@@ -2186,11 +2088,16 @@ function removeTerritoryCell(nation, x, y) {
   if (!territorySet.has(key)) {
     return;
   }
-  // O(n) to find index for splice
+  // O(n) to find index, then swap-and-pop for O(1) removal
   for (let i = 0; i < nation.territory.x.length; i++) {
     if (nation.territory.x[i] === x && nation.territory.y[i] === y) {
-      nation.territory.x.splice(i, 1);
-      nation.territory.y.splice(i, 1);
+      const last = nation.territory.x.length - 1;
+      if (i !== last) {
+        nation.territory.x[i] = nation.territory.x[last];
+        nation.territory.y[i] = nation.territory.y[last];
+      }
+      nation.territory.x.pop();
+      nation.territory.y.pop();
       territorySet.delete(key);
       nation.territoryDelta?.sub.x.push(x);
       nation.territoryDelta?.sub.y.push(y);

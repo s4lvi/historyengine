@@ -186,12 +186,16 @@ export function computeNationFrontierCandidates(matrix, nationIdx, params = {}) 
         distToTarget,
       });
 
-      if (candidates.length >= maxCandidates) break;
+      // Oversample by 3x to avoid spatial bias, then truncate after sorting
+      if (candidates.length >= maxCandidates * 3) break;
     }
-    if (candidates.length >= maxCandidates) break;
+    if (candidates.length >= maxCandidates * 3) break;
   }
 
   candidates.sort((a, b) => b.score - a.score);
+  if (candidates.length > maxCandidates) {
+    candidates.length = maxCandidates;
+  }
   return candidates;
 }
 
@@ -440,10 +444,15 @@ export function passiveConcavityFill(matrix, nations, minNeighbors = 5, maxPasse
       if (bestCount < minNeighbors) continue;
       if (tied) continue;
 
-      // Claim cell
+      // Claim cell — set full loyalty for winner and zero out all others
       ownership[i] = bestNation;
       if (bestNation >= 0 && bestNation < matrix.maxNations) {
         matrix.loyalty[bestNation * size + i] = 1.0;
+        for (let n = 0; n < matrix.nextNationSlot; n++) {
+          if (n !== bestNation) {
+            matrix.loyalty[n * size + i] = 0;
+          }
+        }
       }
       filled++;
     }
@@ -461,12 +470,15 @@ export function passiveConcavityFill(matrix, nations, minNeighbors = 5, maxPasse
  */
 export function removeDisconnectedTerritory(matrix, nationIdx, capitalX, capitalY) {
   const connected = computeConnectedComponent(matrix, nationIdx, capitalX, capitalY);
-  const { size, ownership } = matrix;
+  const { size, ownership, loyalty } = matrix;
   let removed = 0;
 
   for (let i = 0; i < size; i++) {
     if (ownership[i] === nationIdx && !connected[i]) {
       ownership[i] = UNOWNED;
+      // Heavily reduce this nation's loyalty at the disconnected cell so
+      // deriveOwnershipFromLoyalty doesn't immediately re-claim it
+      loyalty[nationIdx * size + i] *= 0.15;
       removed++;
     }
   }

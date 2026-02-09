@@ -28,26 +28,46 @@ export function tickLoyaltyDiffusion(matrix, cfg, nations) {
   const { width, height, size, maxNations, ownership, loyalty, oceanMask } = matrix;
   const activeNations = matrix.nextNationSlot;
 
-  // Double buffer: copy current loyalty to read from
-  const readBuffer = new Float32Array(loyalty.length);
+  // Reuse pre-allocated loyalty read buffer instead of allocating per tick
+  const readBuffer = matrix.loyaltyReadBuffer;
   readBuffer.set(loyalty);
 
-  // Pre-compute city/capital positions per nation index
-  const cityInfoByNIdx = new Map();
+  // Pre-rasterize per-nation city bonus grids (O(nations * city_area) total)
+  const cityBonusGrids = new Map(); // nIdx -> Float32Array(size)
   for (const nation of nations) {
     if (nation.status === "defeated") continue;
     const nIdx = matrix.ownerToIndex.get(nation.owner);
     if (nIdx === undefined) continue;
-    const cities = [];
-    for (const city of nation.cities || []) {
+    const cities = nation.cities || [];
+    if (cities.length === 0) continue;
+
+    let grid = null; // lazy-allocate only if nation has valid cities
+    for (const city of cities) {
       if (!matrix.inBounds(city.x, city.y)) continue;
-      cities.push({
-        x: city.x,
-        y: city.y,
-        isCapital: city.type === "capital",
-      });
+      const isCapital = city.type === "capital";
+      const radius = isCapital ? capitalRadius : cityRadius;
+      const bonus = isCapital ? capitalBonus : cityBonus;
+      const r2 = radius * radius;
+      const minX = Math.max(0, city.x - radius);
+      const maxX = Math.min(width - 1, city.x + radius);
+      const minY = Math.max(0, city.y - radius);
+      const maxY = Math.min(height - 1, city.y + radius);
+
+      if (!grid) grid = new Float32Array(size);
+
+      for (let cy = minY; cy <= maxY; cy++) {
+        for (let cx = minX; cx <= maxX; cx++) {
+          const dx = cx - city.x;
+          const dy = cy - city.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > r2) continue;
+          const falloff = 1 - Math.sqrt(d2) / radius;
+          const ci = cy * width + cx;
+          grid[ci] += bonus * falloff;
+        }
+      }
     }
-    cityInfoByNIdx.set(nIdx, cities);
+    if (grid) cityBonusGrids.set(nIdx, grid);
   }
 
   for (let i = 0; i < size; i++) {
@@ -93,18 +113,10 @@ export function tickLoyaltyDiffusion(matrix, cfg, nations) {
         newVal += diff * diffusionRate * (1 - resistance);
       }
 
-      // 4. City/capital bonuses with distance falloff
-      const cities = cityInfoByNIdx.get(n);
-      if (cities) {
-        for (const city of cities) {
-          const dist = Math.hypot(x - city.x, y - city.y);
-          const radius = city.isCapital ? capitalRadius : cityRadius;
-          const bonus = city.isCapital ? capitalBonus : cityBonus;
-          if (dist <= radius) {
-            const falloff = 1 - dist / radius;
-            newVal += bonus * falloff;
-          }
-        }
+      // 4. City/capital bonuses — O(1) lookup from pre-rasterized grid
+      const grid = cityBonusGrids.get(n);
+      if (grid) {
+        newVal += grid[i];
       }
 
       // Clamp 0-1
@@ -127,4 +139,11 @@ export function tickLoyaltyDiffusion(matrix, cfg, nations) {
 export function applyArrowLoyaltyPressure(matrix, nationIdx, x, y, gain) {
   if (!matrix.inBounds(x, y)) return;
   matrix.addLoyalty(x, y, nationIdx, gain);
+
+  // Also reduce the current owner's loyalty to make contested flips possible
+  const cellIdx = matrix.idx(x, y);
+  const currentOwner = matrix.ownership[cellIdx];
+  if (currentOwner !== UNOWNED && currentOwner !== nationIdx) {
+    matrix.addLoyalty(x, y, currentOwner, -gain * 0.5);
+  }
 }
