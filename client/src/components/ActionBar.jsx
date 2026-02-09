@@ -105,6 +105,63 @@ const ModeButton = ({ icon, label, active, onClick }) => {
   );
 };
 
+const ARROW_SEGMENT_COLORS = [
+  "bg-red-500",
+  "bg-amber-500",
+  "bg-purple-500",
+];
+
+const TroopBudgetBar = ({ population, troopCount, activeAttackArrows }) => {
+  if (!population || population <= 0) return null;
+  const workers = Math.max(0, population - troopCount);
+  const totalCommitment = (activeAttackArrows || []).reduce(
+    (sum, a) => sum + (a?.troopCommitment || 0), 0
+  );
+  const arrowSegments = (activeAttackArrows || []).map((arrow, i) => {
+    const share = totalCommitment > 0
+      ? ((arrow?.troopCommitment || 0) / totalCommitment) * troopCount
+      : 0;
+    return { value: share, color: ARROW_SEGMENT_COLORS[i % ARROW_SEGMENT_COLORS.length], label: `Arrow ${i + 1}: ${Math.round(share)}` };
+  });
+  const arrowTotal = arrowSegments.reduce((s, a) => s + a.value, 0);
+  const reserve = Math.max(0, troopCount - arrowTotal);
+
+  return (
+    <div className="w-full">
+      <div className="flex h-3 rounded overflow-hidden bg-gray-700">
+        {workers > 0 && (
+          <div
+            className="bg-gray-400 transition-all"
+            style={{ flex: workers }}
+            title={`Workers: ${Math.round(workers)}`}
+          />
+        )}
+        {arrowSegments.map((seg, i) =>
+          seg.value > 0 ? (
+            <div
+              key={i}
+              className={`${seg.color} transition-all`}
+              style={{ flex: seg.value }}
+              title={seg.label}
+            />
+          ) : null
+        )}
+        {reserve > 0 && (
+          <div
+            className="bg-blue-500 transition-all"
+            style={{ flex: reserve }}
+            title={`Reserve: ${Math.round(reserve)}`}
+          />
+        )}
+      </div>
+      <div className="flex justify-between text-xs text-gray-400 mt-0.5">
+        <span>Workers: {Math.round(workers)}</span>
+        <span>Troops: {Math.round(troopCount)}/{Math.round(population)}</span>
+      </div>
+    </div>
+  );
+};
+
 const ActionBar = ({
   onFoundNation,
   userState,
@@ -258,6 +315,11 @@ const ActionBar = ({
                 <div className="text-xs text-gray-300">
                   {Math.round((troopTarget || 0.2) * 100)}% — Troops: {Math.round(troopCount || 0)}/{Math.round(userState?.population || 0)}
                 </div>
+                <TroopBudgetBar
+                  population={userState?.population || 0}
+                  troopCount={troopCount || 0}
+                  activeAttackArrows={activeAttackArrows}
+                />
               </div>
             )}
 
