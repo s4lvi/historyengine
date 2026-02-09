@@ -92,13 +92,22 @@ export function deserializeMatrix(data, mapData, matrixConfig) {
   }
 
   // Restore dynamic layers from Buffers
+  // Mongoose Buffers share a large ArrayBuffer pool slab, so buf.buffer is NOT
+  // exclusive to this field.  We must use Uint8Array.prototype.slice() to create
+  // an independent copy whose .buffer starts at offset 0 — only then is it safe
+  // to reinterpret as Int8Array / Float32Array.
+  const safeBytes = (buf) => {
+    if (!buf) return null;
+    // Buffer / Uint8Array — extract the relevant slice into a fresh ArrayBuffer
+    if (buf instanceof Uint8Array || Buffer.isBuffer(buf)) {
+      return new Uint8Array(buf).slice();            // always copies, offset-safe
+    }
+    return new Uint8Array(buf).slice();
+  };
+
   const restoreInt8 = (buf, target) => {
-    if (!buf) return;
-    // Use aligned copy to avoid buffer view issues
-    const bytes = new Uint8Array(buf.byteLength || buf.length);
-    bytes.set(buf instanceof Buffer || buf instanceof Uint8Array
-      ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
-      : new Uint8Array(buf));
+    const bytes = safeBytes(buf);
+    if (!bytes || bytes.byteLength === 0) return;
     const src = new Int8Array(bytes.buffer, 0, bytes.byteLength);
     if (src.length === target.length) {
       target.set(src);
@@ -106,13 +115,12 @@ export function deserializeMatrix(data, mapData, matrixConfig) {
   };
 
   const restoreFloat32 = (buf, target) => {
-    if (!buf) return;
-    // Copy into an aligned Uint8Array first to avoid unaligned Float32Array view
-    const bytes = new Uint8Array(buf.byteLength || buf.length);
-    bytes.set(buf instanceof Buffer || buf instanceof Uint8Array
-      ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
-      : new Uint8Array(buf));
-    const src = new Float32Array(bytes.buffer, 0, bytes.byteLength / 4);
+    const bytes = safeBytes(buf);
+    if (!bytes || bytes.byteLength === 0) return;
+    // Ensure byte length is a multiple of 4 (Float32 alignment)
+    const usableBytes = bytes.byteLength - (bytes.byteLength % 4);
+    if (usableBytes === 0) return;
+    const src = new Float32Array(bytes.buffer, 0, usableBytes / 4);
     if (src.length === target.length) {
       // Exact match — full array was serialized
       target.set(src);

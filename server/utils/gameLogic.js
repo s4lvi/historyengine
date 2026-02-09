@@ -1355,10 +1355,18 @@ function processAttackArrowFrontline(
 
     // Remove arrows that have no troops at the front (depleted or density
     // never reached the head). Track consecutive "empty front" ticks.
+    // Grace period: new arrows need time for density to diffuse to the front,
+    // so don't start counting emptyFrontTicks until the arrow has been alive
+    // for at least 50 ticks (~5s). This prevents premature removal of arrows
+    // whose attractor hasn't had time to pull troops to the border.
+    const arrowAge = arrow._debugTickCount || 0;
+    const emptyFrontGraceTicks = 50;
     if ((arrow.effectiveDensityAtFront || 0) < 1) {
-      arrow.emptyFrontTicks = (arrow.emptyFrontTicks || 0) + 1;
-      if (arrow.emptyFrontTicks >= 10) {
-        return "remove";
+      if (arrowAge >= emptyFrontGraceTicks) {
+        arrow.emptyFrontTicks = (arrow.emptyFrontTicks || 0) + 1;
+        if (arrow.emptyFrontTicks >= 10) {
+          return "remove";
+        }
       }
     } else {
       arrow.emptyFrontTicks = 0;
