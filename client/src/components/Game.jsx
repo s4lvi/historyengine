@@ -81,6 +81,7 @@ const Game = () => {
   const [uiMode, setUiMode] = useState("idle");
   const [selectedCellInfo, setSelectedCellInfo] = useState(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [combatFlashes, setCombatFlashes] = useState([]);
   const actionModalRef = useRef(actionModal);
   const isDefeatedRef = useRef(isDefeated);
   const hasFoundedRef = useRef(hasFounded);
@@ -333,6 +334,30 @@ const Game = () => {
           }
           return nation;
         });
+      }
+
+      // Detect territory flips for combat flash effects
+      if (!isFullState) {
+        const now = performance.now();
+        const newFlashes = [];
+        data.gameState.nations.forEach((nation) => {
+          if (nation.owner !== userId) return;
+          const delta = nation.territoryDeltaForClient;
+          if (!delta) return;
+          if (delta.add?.x?.length) {
+            for (let i = 0; i < delta.add.x.length; i++) {
+              newFlashes.push({ x: delta.add.x[i], y: delta.add.y[i], type: "capture", createdAt: now });
+            }
+          }
+          if (delta.sub?.x?.length) {
+            for (let i = 0; i < delta.sub.x.length; i++) {
+              newFlashes.push({ x: delta.sub.x[i], y: delta.sub.y[i], type: "loss", createdAt: now });
+            }
+          }
+        });
+        if (newFlashes.length > 0) {
+          setCombatFlashes((prev) => [...prev, ...newFlashes].slice(-100));
+        }
       }
 
       return {
@@ -1358,6 +1383,8 @@ const Game = () => {
             isMobile={isMobile}
             onInspectCell={handleInspectCell}
             troopDensityMap={playerTroopDensityMap}
+            combatFlashes={combatFlashes}
+            setCombatFlashes={setCombatFlashes}
           />
         )}
       </div>

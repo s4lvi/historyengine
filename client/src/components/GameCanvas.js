@@ -377,57 +377,79 @@ const renderArrowV2 = (arrow, cellSize, key, scale) => {
           }
         }}
       />
-      {/* Troop count label at head — fixed screen size via inverse scale */}
+      {/* Arrow status badge at head — fixed screen size via inverse scale */}
       {(() => {
-        // Render at large internal font size, scale by 1/zoomScale so it stays
-        // at a fixed screen size regardless of zoom (same approach as NationLabel).
-        const baseFontSize = 18;
         const invScale = 1 / Math.max(0.35, scale || 1);
-        // Fade when zoomed in so it doesn't block the view
         const labelAlpha = scale > 2 ? Math.max(0.3, 1.0 - (scale - 2) * 0.15) : 0.85;
+        const badgeW = 120;
+        const badgeH = opposingForces.length > 0 ? 52 : 38;
+        const commitment = arrow.troopCommitment || 0;
         return (
-          <Text
-            text={Math.round(troopCount).toLocaleString()}
+          <Container
             x={headX}
-            y={headY - cellSize * 0.8}
-            anchor={0.5}
+            y={headY - cellSize * 1.2}
             zIndex={211}
             alpha={labelAlpha}
             scale={{ x: invScale, y: invScale }}
-            style={{
-              fontFamily: "system-ui, -apple-system, sans-serif",
-              fill: hexColor,
-              fontSize: baseFontSize,
-              fontWeight: "300",
-              stroke: "#000000",
-              strokeThickness: 3,
-            }}
-          />
-        );
-      })()}
-      {/* Opposition indicators */}
-      {opposingForces.length > 0 && (() => {
-        const baseFontSize = 14;
-        const invScale = 1 / Math.max(0.35, scale || 1);
-        const labelAlpha = scale > 2 ? Math.max(0.2, 0.8 - (scale - 2) * 0.15) : 0.7;
-        return (
-          <Text
-            text={opposingForces.map((o) => `vs ${o.nationName}`).join(" ")}
-            x={headX}
-            y={headY + cellSize * 0.3}
-            anchor={0.5}
-            zIndex={211}
-            alpha={labelAlpha}
-            scale={{ x: invScale, y: invScale }}
-            style={{
-              fontFamily: "system-ui, -apple-system, sans-serif",
-              fill: "#ff6666",
-              fontSize: baseFontSize,
-              fontWeight: "300",
-              stroke: "#000000",
-              strokeThickness: 3,
-            }}
-          />
+          >
+            {/* Dark background pill */}
+            <Graphics
+              draw={(g) => {
+                g.clear();
+                g.beginFill(0x000000, 0.7);
+                g.drawRoundedRect(-badgeW / 2, -badgeH / 2, badgeW, badgeH, 6);
+                g.endFill();
+                // Status color stripe at top
+                g.beginFill(color, 0.9);
+                g.drawRoundedRect(-badgeW / 2, -badgeH / 2, badgeW, 3, 1);
+                g.endFill();
+                // Commitment bar background
+                const barY = opposingForces.length > 0 ? 8 : 6;
+                g.beginFill(0x333333, 0.8);
+                g.drawRoundedRect(-badgeW / 2 + 8, barY, badgeW - 16, 4, 2);
+                g.endFill();
+                // Commitment bar fill
+                const fillW = (badgeW - 16) * Math.min(1, commitment);
+                if (fillW > 0) {
+                  g.beginFill(color, 0.9);
+                  g.drawRoundedRect(-badgeW / 2 + 8, barY, fillW, 4, 2);
+                  g.endFill();
+                }
+                // Status dot
+                g.beginFill(color, 1);
+                g.drawCircle(-badgeW / 2 + 14, -4, 4);
+                g.endFill();
+              }}
+            />
+            {/* Troop count text */}
+            <Text
+              text={`${Math.round(troopCount).toLocaleString()}  ${Math.round(commitment * 100)}%`}
+              x={-badgeW / 2 + 24}
+              y={-10}
+              anchor={{ x: 0, y: 0.5 }}
+              style={{
+                fontFamily: "system-ui, -apple-system, sans-serif",
+                fill: "#ffffff",
+                fontSize: 13,
+                fontWeight: "600",
+              }}
+            />
+            {/* Opposition text */}
+            {opposingForces.length > 0 && (
+              <Text
+                text={opposingForces.map((o) => `vs ${o.nationName}`).join(" ")}
+                x={0}
+                y={badgeH / 2 - 8}
+                anchor={{ x: 0.5, y: 0.5 }}
+                style={{
+                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  fill: "#ff6666",
+                  fontSize: 11,
+                  fontWeight: "400",
+                }}
+              />
+            )}
+          </Container>
         );
       })()}
     </React.Fragment>
@@ -498,6 +520,262 @@ const TroopDensityHeatmap = React.memo(({ densityMap, cellSize, visibleBounds })
 });
 
 // Completed arrow rendering removed — troops return to population silently
+
+// Helper: interpolate position along a polyline path
+const interpolateAlongPath = (path, t, endIdx, cellSize) => {
+  if (!path || path.length < 2) return null;
+  const last = Math.min(endIdx ?? path.length - 1, path.length - 1);
+  // Compute total length of path segments 0..last
+  let totalLen = 0;
+  const segLens = [];
+  for (let i = 1; i <= last; i++) {
+    const dx = (path[i].x - path[i - 1].x) * cellSize;
+    const dy = (path[i].y - path[i - 1].y) * cellSize;
+    const len = Math.hypot(dx, dy);
+    segLens.push(len);
+    totalLen += len;
+  }
+  if (totalLen === 0) return null;
+  let target = t * totalLen;
+  let acc = 0;
+  for (let i = 0; i < segLens.length; i++) {
+    if (acc + segLens[i] >= target) {
+      const frac = (target - acc) / segLens[i];
+      return {
+        x: (path[i].x + (path[i + 1].x - path[i].x) * frac) * cellSize + cellSize / 2,
+        y: (path[i].y + (path[i + 1].y - path[i].y) * frac) * cellSize + cellSize / 2,
+      };
+    }
+    acc += segLens[i];
+  }
+  return {
+    x: path[last].x * cellSize + cellSize / 2,
+    y: path[last].y * cellSize + cellSize / 2,
+  };
+};
+
+// Animated marching dots along arrow paths
+const ArrowTroopFlow = React.memo(({ arrow, cellSize, scale, visibleBounds }) => {
+  const graphicsRef = useRef(null);
+  const phaseRef = useRef(0);
+  const rafRef = useRef(null);
+
+  const path = arrow?.path;
+  const status = arrow?.status || "advancing";
+  const color = ARROW_STATUS_COLORS[status] || 0x44cc44;
+  const density = arrow?.effectiveDensityAtFront || 0;
+  const commitment = arrow?.troopCommitment || 0;
+  const endIdx = arrow?.currentIndex || (path ? path.length - 1 : 0);
+
+  useEffect(() => {
+    if (!path || path.length < 2) return;
+    let lastTime = performance.now();
+
+    const animate = (now) => {
+      const dt = (now - lastTime) / 1000;
+      lastTime = now;
+      // Speed: faster with higher commitment
+      const speed = 0.15 + commitment * 0.35;
+      phaseRef.current = (phaseRef.current + dt * speed) % 1;
+
+      const g = graphicsRef.current;
+      if (!g) {
+        rafRef.current = requestAnimationFrame(animate);
+        return;
+      }
+
+      g.clear();
+
+      // Dot parameters
+      const dotCount = Math.max(8, Math.min(50, Math.round(10 + density * 0.15)));
+      const spacing = 1 / dotCount;
+      const dotRadius = cellSize * 0.12;
+      const baseAlpha = 0.5 + Math.min(0.4, density / 500);
+
+      for (let i = 0; i < dotCount; i++) {
+        const t = (i * spacing + phaseRef.current * spacing) % 1;
+        const pos = interpolateAlongPath(path, t, endIdx, cellSize);
+        if (!pos) continue;
+
+        // Visibility culling
+        if (visibleBounds) {
+          const cx = pos.x / cellSize;
+          const cy = pos.y / cellSize;
+          if (cx < visibleBounds.minX - 1 || cx > visibleBounds.maxX + 1 ||
+              cy < visibleBounds.minY - 1 || cy > visibleBounds.maxY + 1) continue;
+        }
+
+        g.beginFill(color, baseAlpha);
+        g.drawCircle(pos.x, pos.y, dotRadius);
+        g.endFill();
+      }
+
+      rafRef.current = requestAnimationFrame(animate);
+    };
+
+    rafRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [path, cellSize, endIdx, commitment, density, color, visibleBounds]);
+
+  if (!path || path.length < 2) return null;
+
+  return (
+    <Graphics
+      ref={graphicsRef}
+      zIndex={195}
+    />
+  );
+});
+
+// Border pressure visualization — border cells glow green (strong) to red (thin) based on troop density
+const BorderPressureOverlay = React.memo(({ playerNation, densityMap, cellSize, visibleBounds }) => {
+  if (!playerNation || !densityMap || densityMap.length < 3) return null;
+
+  const territory = playerNation.territory;
+  if (!territory?.x?.length) return null;
+
+  return (
+    <Graphics
+      zIndex={107}
+      draw={(g) => {
+        g.clear();
+
+        // Build density lookup from flat [x,y,density,...] array
+        const densityLookup = new Map();
+        for (let i = 0; i < densityMap.length; i += 3) {
+          densityLookup.set(`${densityMap[i]},${densityMap[i + 1]}`, densityMap[i + 2]);
+        }
+
+        // Build territory set
+        const terrSet = new Set();
+        for (let i = 0; i < territory.x.length; i++) {
+          terrSet.add(`${territory.x[i]},${territory.y[i]}`);
+        }
+
+        // Find border cells and compute average density
+        const borderCells = [];
+        let totalDensity = 0;
+        let densityCount = 0;
+
+        for (let i = 0; i < territory.x.length; i++) {
+          const x = territory.x[i];
+          const y = territory.y[i];
+
+          // Visibility culling
+          if (visibleBounds) {
+            if (x < visibleBounds.minX || x > visibleBounds.maxX ||
+                y < visibleBounds.minY || y > visibleBounds.maxY) continue;
+          }
+
+          // Check if border cell (has non-owned neighbor)
+          const isBorder =
+            !terrSet.has(`${x},${y - 1}`) ||
+            !terrSet.has(`${x + 1},${y}`) ||
+            !terrSet.has(`${x},${y + 1}`) ||
+            !terrSet.has(`${x - 1},${y}`);
+          if (!isBorder) continue;
+
+          const d = densityLookup.get(`${x},${y}`) || 0;
+          borderCells.push({ x, y, density: d });
+          totalDensity += d;
+          densityCount++;
+        }
+
+        if (borderCells.length === 0) return;
+        const avgDensity = Math.max(1, totalDensity / densityCount);
+
+        for (const cell of borderCells) {
+          // t: 0 = red (thin), 0.5 = yellow (average), 1 = green (strong)
+          const t = Math.min(1, Math.max(0, cell.density / (avgDensity * 2)));
+
+          let r, gVal, b;
+          if (t < 0.5) {
+            const s = t * 2;
+            r = 255;
+            gVal = Math.round(s * 255);
+            b = 0;
+          } else {
+            const s = (t - 0.5) * 2;
+            r = Math.round((1 - s) * 255);
+            gVal = 255;
+            b = 0;
+          }
+          const color = (r << 16) | (gVal << 8) | b;
+          // Brighter at extremes (notably strong or thin)
+          const dist = Math.abs(t - 0.5) * 2;
+          const alpha = 0.25 + dist * 0.35;
+
+          g.beginFill(color, alpha);
+          g.drawRect(cell.x * cellSize, cell.y * cellSize, cellSize, cellSize);
+          g.endFill();
+        }
+      }}
+    />
+  );
+}, (prev, next) => {
+  if (prev.cellSize !== next.cellSize) return false;
+  if (prev.playerNation !== next.playerNation) return false;
+  const a = prev.densityMap;
+  const b = next.densityMap;
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  const step = Math.max(3, Math.floor(a.length / 30) * 3);
+  for (let i = 0; i < a.length; i += step) {
+    if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) return false;
+  }
+  return true;
+});
+
+// Combat flash effects at cells where territory changes hands
+const COMBAT_FLASH_DURATION = 800;
+const CombatFlashLayer = React.memo(({ combatFlashes, cellSize, animTime, visibleBounds }) => {
+  if (!combatFlashes || combatFlashes.length === 0) return null;
+
+  return (
+    <Graphics
+      zIndex={108}
+      draw={(g) => {
+        g.clear();
+        const now = animTime || performance.now();
+        for (const flash of combatFlashes) {
+          const age = now - flash.createdAt;
+          if (age < 0 || age > COMBAT_FLASH_DURATION) continue;
+
+          // Visibility culling
+          if (visibleBounds) {
+            if (flash.x < visibleBounds.minX || flash.x > visibleBounds.maxX ||
+                flash.y < visibleBounds.minY || flash.y > visibleBounds.maxY) continue;
+          }
+
+          const t = age / COMBAT_FLASH_DURATION;
+          // Quick fade-in (first 15%), then fade-out
+          let alpha;
+          if (t < 0.15) {
+            alpha = (t / 0.15) * 0.7;
+          } else {
+            alpha = 0.7 * (1 - (t - 0.15) / 0.85);
+          }
+
+          const color = flash.type === "capture" ? 0x44ff44 : 0xff4444;
+          const size = cellSize * 1.2;
+          const offset = (size - cellSize) / 2;
+
+          g.beginFill(color, Math.max(0, alpha));
+          g.drawRect(
+            flash.x * cellSize - offset,
+            flash.y * cellSize - offset,
+            size,
+            size
+          );
+          g.endFill();
+        }
+      }}
+    />
+  );
+});
 
 // Note: renderTowers for resource upgrades has been removed
 // Towers are now handled as structures within nations.cities
@@ -990,6 +1268,8 @@ const GameCanvas = ({
   isMobile,
   onInspectCell,
   troopDensityMap,
+  combatFlashes,
+  setCombatFlashes,
 }) => {
   const stageWidth = window.innerWidth;
   const stageHeight = window.innerHeight;
@@ -1009,6 +1289,10 @@ const GameCanvas = ({
   const hoverFrameRef = useRef(null);
   const pendingHoverRef = useRef(null);
   const nations = gameState?.gameState?.nations || [];
+  const playerNation = useMemo(() =>
+    nations.find((n) => n.owner === userId && n.status !== "defeated") || null,
+    [nations, userId]
+  );
   const resourceNodeClaims = gameState?.gameState?.resourceNodeClaims || {};
   const captureTicks =
     config?.territorial?.resourceCaptureTicks || 20;
@@ -1190,6 +1474,18 @@ const GameCanvas = ({
       prev.filter((effect) => effect.createdAt >= cutoff)
     );
   }, [captureEffectTime, captureEffects]);
+
+  // Prune expired combat flashes every second
+  useEffect(() => {
+    if (!combatFlashes || combatFlashes.length === 0) return;
+    const interval = setInterval(() => {
+      const now = performance.now();
+      setCombatFlashes?.((prev) =>
+        prev.filter((f) => now - f.createdAt < COMBAT_FLASH_DURATION)
+      );
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [combatFlashes?.length, setCombatFlashes]);
 
   useEffect(() => {
     return () => {
@@ -1899,6 +2195,32 @@ const GameCanvas = ({
       );
     }
 
+    // Border pressure visualization
+    if (troopDensityMap && scale > 0.35 && playerNation) {
+      children.push(
+        <BorderPressureOverlay
+          key="border-pressure"
+          playerNation={playerNation}
+          densityMap={troopDensityMap}
+          cellSize={cellSize}
+          visibleBounds={visibleBounds}
+        />
+      );
+    }
+
+    // Combat flash effects
+    if (combatFlashes && combatFlashes.length > 0 && scale > 0.5) {
+      children.push(
+        <CombatFlashLayer
+          key="combat-flashes"
+          combatFlashes={combatFlashes}
+          cellSize={cellSize}
+          animTime={captureEffectTime}
+          visibleBounds={visibleBounds}
+        />
+      );
+    }
+
     // NOTE: Attack and defend arrows are rendered OUTSIDE this useMemo
     // (directly in the JSX below) so they always reflect the latest state
     // and don't get stuck from stale memoization.
@@ -1932,6 +2254,9 @@ const GameCanvas = ({
     captureEffectNodes,
     renderNationOverlays,
     troopDensityMap,
+    playerNation,
+    combatFlashes,
+    captureEffectTime,
     visibleBounds,
     drawingArrowType,
     currentArrowPath,
@@ -1986,6 +2311,18 @@ const GameCanvas = ({
           arrow?.path
             ? renderArrowV2(arrow, cellSize, `active-attack-${arrow.id || i}`, scale)
             : null
+        )}
+        {/* Animated troop flow dots along arrow paths */}
+        {scale > 0.5 && activeAttackArrows?.map((arrow, i) =>
+          arrow?.path ? (
+            <ArrowTroopFlow
+              key={`troop-flow-${arrow.id || i}`}
+              arrow={arrow}
+              cellSize={cellSize}
+              scale={scale}
+              visibleBounds={visibleBounds}
+            />
+          ) : null
         )}
         {activeDefendArrow?.path
           ? renderArrowPath(
