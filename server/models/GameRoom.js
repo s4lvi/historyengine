@@ -7,7 +7,7 @@ const gameRoomSchema = new mongoose.Schema({
   joinCode: { type: String, required: true },
   status: {
     type: String,
-    enum: ["open", "ended", "initializing"],
+    enum: ["open", "ended", "initializing", "paused", "error"],
     default: "open",
   },
   creator: {
@@ -22,6 +22,7 @@ const gameRoomSchema = new mongoose.Schema({
     },
   ],
   gameState: { type: mongoose.Schema.Types.Mixed, default: {} },
+  matrixState: { type: mongoose.Schema.Types.Mixed, default: null },
   tickCount: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
 });

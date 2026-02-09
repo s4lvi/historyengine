@@ -27,3 +27,27 @@
     image-rendering: crisp-edges;
   }
 }
+
+.scrollbar-panel {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.6) rgba(15, 23, 42, 0.5);
+}
+
+.scrollbar-panel::-webkit-scrollbar {
+  width: 10px;
+}
+
+.scrollbar-panel::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.5);
+  border-radius: 999px;
+}
+
+.scrollbar-panel::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.6);
+  border-radius: 999px;
+  border: 2px solid rgba(15, 23, 42, 0.5);
+}
+
+.scrollbar-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(203, 213, 225, 0.8);
+}

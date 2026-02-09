@@ -3,13 +3,442 @@ import express from "express";
 import mongoose from "mongoose";
 import { Worker } from "worker_threads";
 import { gameLoop } from "../workers/gameLoop.js";
-import { setExpansionTarget } from "../utils/gameLogic.js";
 import config from "../config/config.js";
-import { LOYALTY } from "../utils/loyaltySystem.js";
+import { buildGameStateResponse } from "../utils/gameStateView.js";
+import { broadcastRoomUpdate, touchRoom } from "../wsHub.js";
+import { assignResourcesToMap } from "../utils/resourceManagement.js";
+import { generateCityName, generateTowerName, generateUniqueName } from "../utils/nameGenerator.js";
+import { computePathLength, computeMaxArrowRange } from "../utils/gameLogic.js";
 
 const router = express.Router();
 
 import GameRoom from "../models/GameRoom.js";
+
+const MIN_FOUND_DISTANCE = 5;
+const DEFAULT_ALLOW_REFOUND = config?.territorial?.allowRefound !== false;
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.toLowerCase() === "true";
+  return Boolean(value);
+}
+
+async function getAuthoritativeRoom(roomId) {
+  return gameLoop.getLiveGameRoom(roomId);
+}
+
+function hasValidPlayerCredentials(gameRoom, userId, password) {
+  return !!gameRoom?.players?.find(
+    (p) => p.userId === userId && p.password === password
+  );
+}
+
+async function persistRoomMutation(
+  gameRoom,
+  roomId,
+  modifiedPaths = [],
+  options = {}
+) {
+  const { forceSave = false } = options;
+  for (const path of modifiedPaths) {
+    gameRoom.markModified(path);
+  }
+
+  // Active rooms are saved periodically by the loop to avoid version conflicts.
+  if (!forceSave && gameLoop.isRoomRunning(roomId)) {
+    return;
+  }
+
+  await gameRoom.save();
+}
+
+function manhattanDistance(x1, y1, x2, y2) {
+  return Math.abs(x1 - x2) + Math.abs(y1 - y2);
+}
+
+function isCellOccupied(nations, x, y) {
+  return (nations || []).some((nation) => {
+    if (!nation.territory || !nation.territory.x || !nation.territory.y)
+      return false;
+    for (let i = 0; i < nation.territory.x.length; i++) {
+      if (nation.territory.x[i] === x && nation.territory.y[i] === y) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+function isTooCloseToExisting(nations, x, y) {
+  return (nations || []).some((nation) => {
+    if (nation.startingCell) {
+      if (
+        manhattanDistance(
+          x,
+          y,
+          nation.startingCell.x,
+          nation.startingCell.y
+        ) < MIN_FOUND_DISTANCE
+      ) {
+        return true;
+      }
+    }
+    if (nation.cities && nation.cities.length > 0) {
+      return nation.cities.some(
+        (city) => manhattanDistance(x, y, city.x, city.y) < MIN_FOUND_DISTANCE
+      );
+    }
+    return false;
+  });
+}
+
+function findBotStartCell(mapData, nations, maxAttempts = 5000) {
+  if (!Array.isArray(mapData) || !Array.isArray(mapData[0])) return null;
+  const height = mapData.length;
+  const width = mapData[0].length;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const x = Math.floor(Math.random() * width);
+    const y = Math.floor(Math.random() * height);
+    const cell = mapData[y]?.[x];
+    if (!cell || cell.biome === "OCEAN") continue;
+    if (isCellOccupied(nations, x, y)) continue;
+    if (isTooCloseToExisting(nations, x, y)) continue;
+    return { x, y };
+  }
+  return null;
+}
+
+function distanceToBorder(nation, x, y, maxDistance = 10) {
+  if (!nation?.territory?.x || !nation?.territory?.y) return Infinity;
+  const tx = nation.territory.x;
+  const ty = nation.territory.y;
+  const owned = new Set();
+  for (let i = 0; i < tx.length; i++) {
+    owned.add(`${tx[i]},${ty[i]}`);
+  }
+  let best = Infinity;
+  for (let i = 0; i < tx.length; i++) {
+    const cx = tx[i];
+    const cy = ty[i];
+    const neighbors = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ];
+    let isBorder = false;
+    for (const [dx, dy] of neighbors) {
+      const key = `${cx + dx},${cy + dy}`;
+      if (!owned.has(key)) {
+        isBorder = true;
+        break;
+      }
+    }
+    if (!isBorder) continue;
+    const dist = Math.abs(cx - x) + Math.abs(cy - y);
+    if (dist < best) best = dist;
+    if (best <= maxDistance) return best;
+  }
+  return best;
+}
+
+function isPointNearTerritory(nation, point, maxDistance = 3) {
+  if (!point || !nation?.territory?.x || !nation?.territory?.y) return false;
+  const tx = nation.territory.x;
+  const ty = nation.territory.y;
+  for (let i = 0; i < tx.length; i++) {
+    const dist = Math.abs(tx[i] - point.x) + Math.abs(ty[i] - point.y);
+    if (dist <= maxDistance) return true;
+  }
+  return false;
+}
+
+const BOT_NAME_PARTS = {
+  start: [
+    "Al",
+    "Bel",
+    "Cor",
+    "Dor",
+    "Eld",
+    "Fal",
+    "Gal",
+    "Hel",
+    "Ith",
+    "Jar",
+    "Kor",
+    "Lor",
+    "Mor",
+    "Nor",
+    "Or",
+    "Pal",
+    "Quel",
+    "Riv",
+    "Sol",
+    "Tor",
+    "Val",
+    "Wes",
+    "Xan",
+    "Yor",
+    "Zen",
+  ],
+  middle: [
+    "a",
+    "e",
+    "i",
+    "o",
+    "u",
+    "ae",
+    "io",
+    "or",
+    "an",
+    "en",
+    "in",
+    "on",
+    "un",
+    "ar",
+    "er",
+    "ir",
+    "ur",
+    "ath",
+    "eth",
+    "ith",
+    "oth",
+    "ul",
+  ],
+  end: [
+    "a",
+    "on",
+    "ia",
+    "is",
+    "ar",
+    "or",
+    "en",
+    "um",
+    "os",
+    "as",
+    "ath",
+    "eth",
+    "ir",
+    "or",
+    "un",
+    "ria",
+    "dor",
+    "mar",
+    "tor",
+    "lan",
+  ],
+  titles: [
+    "Duchy of {name}",
+    "Commonwealth of {name}",
+    "Kingdom of {name}",
+    "Principality of {name}",
+    "Free State of {name}",
+    "Republic of {name}",
+    "{name} Republic",
+    "{name} Confederacy",
+    "{name} Union",
+    "Grand {name}",
+    "{name} Dominion",
+    "{name} Federation",
+    "{name} League",
+    "{name} Pact",
+    "{name} Concord",
+    "{name} Realm",
+    "{name} Empire",
+    "{name} Protectorate",
+    "{name} Marches",
+    "{name} Republic",
+  ],
+};
+
+function sample(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function titleCase(value) {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function buildBotBaseName() {
+  const name =
+    sample(BOT_NAME_PARTS.start) +
+    sample(BOT_NAME_PARTS.middle) +
+    sample(BOT_NAME_PARTS.end);
+  return titleCase(name.toLowerCase());
+}
+
+function generateBotName(existingNames) {
+  const baseName = buildBotBaseName();
+  const template = sample(BOT_NAME_PARTS.titles);
+  return template.replace("{name}", baseName);
+}
+
+function generateUniqueBotName(existingNames, fallbackIndex) {
+  const used = existingNames || new Set();
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const candidate = generateBotName(used);
+    if (!used.has(candidate)) return candidate;
+  }
+  return `Bot_${fallbackIndex}`;
+}
+
+function buildBotNation(botId, x, y, mapData, existingNations) {
+  // Generate circular starting territory (radius 5 for ~10x10 area)
+  const startingRadius = 5;
+  const territoryX = [];
+  const territoryY = [];
+
+  for (let dy = -startingRadius; dy <= startingRadius; dy++) {
+    for (let dx = -startingRadius; dx <= startingRadius; dx++) {
+      if (dx * dx + dy * dy <= startingRadius * startingRadius) {
+        const tx = x + dx;
+        const ty = y + dy;
+        if (mapData && tx >= 0 && ty >= 0 && ty < mapData.length && tx < mapData[0].length) {
+          const cell = mapData[ty][tx];
+          if (cell && cell.biome !== "OCEAN") {
+            // Check not already claimed
+            const alreadyClaimed = (existingNations || []).some((nation) => {
+              if (!nation.territory?.x) return false;
+              for (let i = 0; i < nation.territory.x.length; i++) {
+                if (nation.territory.x[i] === tx && nation.territory.y[i] === ty) {
+                  return true;
+                }
+              }
+              return false;
+            });
+            if (!alreadyClaimed) {
+              territoryX.push(tx);
+              territoryY.push(ty);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback to just the center tile if no valid territory generated
+  if (territoryX.length === 0) {
+    territoryX.push(x);
+    territoryY.push(y);
+  }
+
+  const initialDelta = { add: { x: [...territoryX], y: [...territoryY] }, sub: { x: [], y: [] } };
+  return {
+    owner: botId,
+    status: "active",
+    isBot: true,
+    startingCell: { x, y },
+    territory: { x: territoryX, y: territoryY },
+    territoryDelta: initialDelta,
+    territoryDeltaForClient: initialDelta,
+    population: 100,
+    nationalWill: 50,
+    resources: {
+      food: 200,
+      wood: 150,
+      stone: 100,
+      iron: 0,
+      gold: 0,
+    },
+    cities: [
+      {
+        name: generateUniqueName(generateCityName, new Set()),
+        x,
+        y,
+        population: 50,
+        type: "capital",
+      },
+    ],
+    structures: [],
+    auto_city: false,
+  };
+}
+
+async function spawnBotsForRoom(roomId, mapData, desiredCount) {
+  const count = Math.max(0, Number(desiredCount || 0));
+  if (!count) return;
+  console.log(`[BOTS] spawnBotsForRoom room=${roomId} desired=${count}`);
+
+  const gameRoom = await getAuthoritativeRoom(roomId);
+  if (!gameRoom) {
+    console.warn(`[BOTS] room not found ${roomId}`);
+    return;
+  }
+  if ((gameRoom.gameState?.nations || []).length === 0) {
+    console.log(`[BOTS] deferring spawn; no players have founded yet`);
+    return;
+  }
+
+  const nations = gameRoom.gameState?.nations || [];
+  const existingBots = nations.filter((n) => n.isBot);
+  const toAdd = Math.max(0, count - existingBots.length);
+  if (!toAdd) {
+    console.log(
+      `[BOTS] no bots to add (existing=${existingBots.length}) room=${roomId}`
+    );
+    return;
+  }
+
+  const created = [];
+  const existingNames = new Set(
+    nations.map((nation) => nation.owner).filter(Boolean)
+  );
+  for (let i = 0; i < toAdd; i++) {
+    const botId = generateUniqueBotName(
+      existingNames,
+      existingBots.length + i + 1
+    );
+    const allExistingNations = nations.concat(created);
+    const start = findBotStartCell(mapData, allExistingNations);
+    if (!start) {
+      console.warn(`[BOTS] no valid start found for ${botId}`);
+      break;
+    }
+    existingNames.add(botId);
+    created.push(buildBotNation(botId, start.x, start.y, mapData, allExistingNations));
+    console.log(
+      `[BOTS] queued ${botId} at (${start.x},${start.y}) room=${roomId}`
+    );
+  }
+
+  if (created.length > 0) {
+    gameRoom.gameState.nations.push(...created);
+    await persistRoomMutation(gameRoom, roomId, ["gameState.nations"]);
+
+    // Sync matrix with newly added bot territories
+    gameLoop.syncMatrixFromNations(roomId.toString(), gameRoom.gameState.nations);
+
+    console.log(
+      `[BOTS] spawned ${created.length} bots room=${roomId} totalNations=${gameRoom.gameState.nations.length}`
+    );
+    broadcastRoomUpdate(roomId.toString(), gameRoom);
+  }
+}
+
+async function requireCreator(req, res) {
+  const { userId, userName, password } = req.body || {};
+  const actor = userId || userName;
+  if (!actor || !password) {
+    res.status(400).json({ error: "userId and password are required" });
+    return null;
+  }
+  const gameRoom = await GameRoom.findById(req.params.id);
+  if (!gameRoom) {
+    res.status(404).json({ error: "Game room not found" });
+    return null;
+  }
+  if (
+    !gameRoom.creator ||
+    gameRoom.creator.userId !== actor ||
+    gameRoom.creator.password !== password
+  ) {
+    res.status(403).json({ error: "Invalid room creator credentials" });
+    return null;
+  }
+  return { gameRoom };
+}
 
 router.post("/init", async (req, res, next) => {
   try {
@@ -24,7 +453,10 @@ router.post("/init", async (req, res, next) => {
       erosion_passes,
       num_blobs,
       seed,
+      botCount,
+      allowRefound,
     } = req.body;
+    console.log(`[BOTS] init botCount=${botCount}`);
 
     if (!width || !height) {
       const error = new Error("Width and height must be provided");
@@ -39,12 +471,15 @@ router.post("/init", async (req, res, next) => {
       throw error;
     }
 
+    const mapSeed = seed !== undefined ? Number(seed) : Math.random();
+
     // Create new Map document with status "generating"
     const Map = mongoose.model("Map");
     const newMap = new Map({
       name: mapName || "Untitled Map",
       width: w,
       height: h,
+      seed: mapSeed,
       status: "generating",
     });
     await newMap.save();
@@ -63,11 +498,20 @@ router.post("/init", async (req, res, next) => {
       players: [
         { userId: creatorName, password: creatorPassword, userState: {} },
       ],
-      gameState: { nations: [] },
+      gameState: {
+        nations: [],
+        resourceUpgrades: {},
+        resourceNodeClaims: {},
+        bots: { count: botCount || 0 },
+        settings: {
+          allowRefound: parseBoolean(allowRefound, DEFAULT_ALLOW_REFOUND),
+        },
+      },
       tickCount: 0,
     };
     const gameRoom = new GameRoom(gameRoomData);
     await gameRoom.save();
+    touchRoom(gameRoom._id.toString());
 
     // Respond immediately with the game room ID and join code
     res
@@ -93,8 +537,6 @@ router.post("/init", async (req, res, next) => {
     // Set defaults if not provided
     const erosionPasses = erosion_passes || 4;
     const numBlobs = num_blobs || 3;
-    const mapSeed = seed || Math.random();
-
     // Run map generation asynchronously
     (async () => {
       try {
@@ -102,13 +544,14 @@ router.post("/init", async (req, res, next) => {
           "Starting asynchronous map generation for game room:",
           gameRoom._id
         );
-        const mapData = await runMapGenerationWorker({
+        let mapData = await runMapGenerationWorker({
           width: w,
           height: h,
           erosion_passes: erosionPasses,
           num_blobs: numBlobs,
           seed: mapSeed,
         });
+        mapData = assignResourcesToMap(mapData, mapSeed);
         console.log("Map generation completed for game room:", gameRoom._id);
 
         // Save map chunks
@@ -140,7 +583,11 @@ router.post("/init", async (req, res, next) => {
 
         // Update game room status to "open"
         await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
+        // Refresh in-memory cache so the loop doesn't see stale status
+        await gameLoop.refreshRoomCache(gameRoom._id);
         console.log("Game room status updated to 'open':", gameRoom._id);
+
+        await spawnBotsForRoom(gameRoom._id, mapData, botCount);
 
         // Start the game loop for the room
         await gameLoop.startRoom(gameRoom._id);
@@ -165,7 +612,7 @@ router.post("/init", async (req, res, next) => {
 // ─── NEW: Status endpoint to poll game room and map readiness ───────────────
 router.get("/:id/status", async (req, res, next) => {
   try {
-    const gameRoom = await GameRoom.findById(req.params.id).lean();
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
@@ -193,8 +640,16 @@ router.get("/:id/status", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/", async (req, res, next) => {
   try {
-    const { mapId, roomName, joinCode, creatorName, creatorPassword } =
-      req.body;
+    const {
+      mapId,
+      roomName,
+      joinCode,
+      creatorName,
+      creatorPassword,
+      botCount,
+      allowRefound,
+    } = req.body;
+    console.log(`[BOTS] create botCount=${botCount}`);
     if (!mapId) return res.status(400).json({ error: "mapId is required" });
     if (!creatorName || !creatorPassword) {
       return res
@@ -243,10 +698,21 @@ router.post("/", async (req, res, next) => {
       ],
       gameState: {
         nations: [], // Nations will be added when players found their nation.
+        resourceUpgrades: {},
+        resourceNodeClaims: {},
+        bots: { count: botCount || 0 },
+        settings: {
+          allowRefound: parseBoolean(allowRefound, DEFAULT_ALLOW_REFOUND),
+        },
       },
       tickCount: 0,
     });
     await gameRoom.save();
+    touchRoom(gameRoom._id.toString());
+    const mapData = await gameLoop.getMapData(gameRoom._id.toString());
+    if (mapData) {
+      await spawnBotsForRoom(gameRoom._id, mapData, botCount);
+    }
     await gameLoop.startRoom(gameRoom._id);
     res.status(201).json(gameRoom);
   } catch (error) {
@@ -260,9 +726,17 @@ router.post("/", async (req, res, next) => {
 router.get("/", async (req, res, next) => {
   try {
     const gameRooms = await GameRoom.find({ status: "open" })
-      .select("roomName joinCode map createdAt tickCount")
+      .select("roomName joinCode map createdAt tickCount gameState.settings.allowRefound")
       .populate("map", "name width height");
-    res.json(gameRooms);
+    const payload = gameRooms.map((room) => {
+      const allowRefound =
+        room.gameState?.settings?.allowRefound ?? DEFAULT_ALLOW_REFOUND;
+      return {
+        ...room.toObject(),
+        allowRefound,
+      };
+    });
+    res.json(payload);
   } catch (error) {
     next(error);
   }
@@ -277,7 +751,17 @@ router.get("/:id/metadata", async (req, res, next) => {
     );
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    res.json({ map: gameRoom.map, config: config });
+    const roomAllowRefound =
+      gameRoom.gameState?.settings?.allowRefound;
+    const mergedConfig = {
+      ...config,
+      territorial: {
+        ...(config?.territorial || {}),
+        allowRefound:
+          roomAllowRefound !== undefined ? roomAllowRefound : DEFAULT_ALLOW_REFOUND,
+      },
+    };
+    res.json({ map: gameRoom.map, config: mergedConfig });
   } catch (error) {
     next(error);
   }
@@ -332,15 +816,27 @@ router.get("/:id/data", async (req, res, next) => {
       RIVER: 12,
     };
 
+    const resourceList = config?.territorial?.enabled
+      ? config?.territorial?.resourceTypes || [
+          "food",
+          "wood",
+          "stone",
+          "iron",
+          "gold",
+        ]
+      : config?.resources || [
+          "food",
+          "wood",
+          "stone",
+          "bronze",
+          "steel",
+          "horses",
+        ];
+
     // Define the resources enum
-    const RESOURCES = {
-      food: 0,
-      wood: 1,
-      stone: 2,
-      bronze: 3,
-      steel: 4,
-      horses: 5,
-    };
+    const RESOURCES = Object.fromEntries(
+      resourceList.map((resource, index) => [resource, index])
+    );
 
     // Create reverse mapping for resources
     const REVERSE_RESOURCES = Object.fromEntries(
@@ -358,13 +854,21 @@ router.get("/:id/data", async (req, res, next) => {
           console.error("Invalid cell:", cell);
           return [0, 0, 0, 0, 0, []];
         }
+        const rawResources = cell.resourceNode?.type
+          ? [cell.resourceNode.type]
+          : Array.isArray(cell.resources)
+          ? cell.resources
+          : [];
+        const resources = rawResources
+          .map((r) => (typeof r === "string" ? r : REVERSE_RESOURCES[r]))
+          .filter(Boolean);
         return [
           cell.elevation,
           cell.moisture,
           cell.temperature,
           BIOMES[cell.biome] || 0,
           cell.isRiver ? 1 : 0,
-          Array.isArray(cell.resources) ? cell.resources : [],
+          resources,
         ];
       });
     });
@@ -385,6 +889,20 @@ router.get("/:id/data", async (req, res, next) => {
         req.params.id
       }: rows ${start}-${Math.min(end, mapData.length)}`
     );
+
+    if (process.env.DEBUG_RESOURCES === "true" && start === 0) {
+      const counts = {};
+      for (const row of optimizedChunk) {
+        for (const cell of row) {
+          const resources = Array.isArray(cell[5]) ? cell[5] : [];
+          resources.forEach((r) => {
+            const name = typeof r === "string" ? r : REVERSE_RESOURCES[r] ?? r;
+            counts[name] = (counts[name] || 0) + 1;
+          });
+        }
+      }
+      console.log(`[RESOURCES] room=${req.params.id} counts`, counts);
+    }
 
     res.json({
       totalRows: mapData.length,
@@ -422,6 +940,7 @@ router.delete("/:id", async (req, res, next) => {
         .status(403)
         .json({ error: "Invalid room creator credentials" });
     }
+    await gameLoop.stopRoom(req.params.id.toString());
     const MapModel = mongoose.model("Map");
     const MapChunk = mongoose.model("MapChunk");
     await MapChunk.deleteMany({ map: gameRoom.map });
@@ -440,9 +959,9 @@ router.delete("/:id", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/end", async (req, res, next) => {
   try {
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
+    const auth = await requireCreator(req, res);
+    if (!auth) return;
+    const { gameRoom } = auth;
 
     // Stop the game loop first
     await gameLoop.stopRoom(gameRoom._id.toString());
@@ -467,6 +986,9 @@ router.post("/:id/end", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/pause", async (req, res, next) => {
   try {
+    const auth = await requireCreator(req, res);
+    if (!auth) return;
+    await gameLoop.stopRoom(req.params.id.toString());
     await GameRoom.findByIdAndUpdate(req.params.id, { status: "paused" });
     res.json({ message: "Game session paused successfully" });
   } catch (error) {
@@ -479,7 +1001,10 @@ router.post("/:id/pause", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/unpause", async (req, res, next) => {
   try {
+    const auth = await requireCreator(req, res);
+    if (!auth) return;
     await GameRoom.findByIdAndUpdate(req.params.id, { status: "open" });
+    await gameLoop.startRoom(req.params.id.toString());
     res.json({ message: "Game session unpaused successfully" });
   } catch (error) {
     next(error);
@@ -502,38 +1027,40 @@ router.post("/:id/quit", async (req, res, next) => {
     }
 
     // First, verify the game room exists
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
 
     // Verify player credentials
-    const player = gameRoom.players.find(
-      (p) => p.userId === userId && p.password === password
-    );
-    if (!player) {
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
+    touchRoom(gameRoom._id.toString());
 
-    // Remove the nation and player in a single update operation
-    const result = await GameRoom.findOneAndUpdate(
-      { _id: req.params.id },
-      {
-        // Pull the nation from the nations array where owner matches userId
-        $pull: {
-          "gameState.nations": { owner: userId },
-        },
-      },
-      { new: true } // Return the updated document
-    );
+    await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      gameRoom.players = (gameRoom.players || []).filter(
+        (player) => player.userId !== userId
+      );
+      if (Array.isArray(gameRoom.gameState?.nations)) {
+        gameRoom.gameState.nations = gameRoom.gameState.nations.filter(
+          (nation) => nation.owner !== userId
+        );
+      }
 
-    if (!result) {
-      return res.status(404).json({ error: "Failed to update game room" });
-    }
+      // Clear the quitting player's territory from the matrix
+      gameLoop.syncMatrixFromNations(req.params.id.toString(), gameRoom.gameState.nations);
+
+      await persistRoomMutation(gameRoom, req.params.id, [
+        "players",
+        "gameState.nations",
+      ]);
+      broadcastRoomUpdate(req.params.id.toString(), gameRoom);
+    });
 
     res.json({
       message: "Successfully quit the match",
-      remainingPlayers: result.players.length,
+      remainingPlayers: gameRoom.players.length,
     });
   } catch (error) {
     next(error);
@@ -550,7 +1077,7 @@ router.post("/:id/join", async (req, res, next) => {
         .status(400)
         .json({ error: "userName and password are required" });
     }
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
     if (gameRoom.status !== "open")
@@ -564,6 +1091,7 @@ router.post("/:id/join", async (req, res, next) => {
           .status(403)
           .json({ error: "Invalid password for existing user" });
       }
+      touchRoom(gameRoom._id.toString());
       res.json({
         message: "Rejoined game room successfully",
         userId: player.userId,
@@ -572,7 +1100,8 @@ router.post("/:id/join", async (req, res, next) => {
     } else {
       player = { userId: userName, password, userState: {} };
       gameRoom.players.push(player);
-      await gameRoom.save();
+      touchRoom(gameRoom._id.toString());
+      await persistRoomMutation(gameRoom, req.params.id, ["players"]);
       res.json({
         message: "Joined game room successfully",
         userId: player.userId,
@@ -596,7 +1125,7 @@ router.post("/:id/state", async (req, res, next) => {
         .json({ error: "userId and password are required" });
     }
 
-    const gameRoom = await GameRoom.findById(req.params.id).lean();
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
@@ -607,62 +1136,10 @@ router.post("/:id/state", async (req, res, next) => {
     if (!player) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
+    touchRoom(gameRoom._id.toString());
 
-    // Modified filterNation to handle loyalty and defeated status
-    const filterNation = (nation) => {
-      // If nation is defeated, only send minimal info
-      if (nation.status === "defeated") {
-        return {
-          owner: nation.owner,
-          status: "defeated",
-        };
-      }
-
-      if (full) {
-        // When full is true, return the complete nation data including territory and loyalty
-        return {
-          ...nation,
-          territoryLoyalty: nation.territoryLoyalty || {},
-          // Clear the delta since we're sending full data
-          territoryDeltaForClient: {
-            add: { x: [], y: [] },
-            sub: { x: [], y: [] },
-          },
-          cachedBorderSet: null,
-        };
-      } else {
-        // When not full, remove full territory and send only delta
-        const { territory, territoryLoyalty, ...rest } = nation;
-
-        // For the owner of the nation, include loyalty data for their territory
-        const shouldIncludeLoyalty = false; //nation.owner === userId;
-
-        return {
-          ...rest,
-          cachedBorderSet: null,
-          territoryDeltaForClient: nation.territoryDeltaForClient || {
-            add: { x: [], y: [] },
-            sub: { x: [], y: [] },
-          },
-          // Only include loyalty data if this is the nation owner
-          ...(shouldIncludeLoyalty
-            ? { territoryLoyalty: nation.territoryLoyalty || {} }
-            : {}),
-        };
-      }
-    };
-
-    const filteredGameState = {
-      ...gameRoom.gameState,
-      nations: (gameRoom.gameState.nations || []).map(filterNation),
-    };
-
-    res.json({
-      tickCount: gameRoom.tickCount,
-      roomName: gameRoom.roomName,
-      roomCreator: gameRoom.creator.userId,
-      gameState: filteredGameState,
-    });
+    const matrix = gameLoop.getCachedMatrix(req.params.id);
+    res.json(buildGameStateResponse(gameRoom, userId, !!full, matrix));
   } catch (error) {
     next(error);
   }
@@ -674,11 +1151,19 @@ router.post("/:id/state", async (req, res, next) => {
 // -------------------------------------------------------------------
 router.post("/:id/foundNation", async (req, res, next) => {
   try {
-    const { userId, password, x, y } = req.body;
+    const { userId, password, x: rawX, y: rawY } = req.body;
+
+    // Validate coordinates are integers
+    const x = Number(rawX);
+    const y = Number(rawY);
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) {
+      return res.status(400).json({ error: "Invalid founding coordinates" });
+    }
+
     console.log("[FOUND] Attempt:", { userId, x, y });
 
     // 1. Load current state
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
     }
@@ -690,44 +1175,142 @@ router.post("/:id/foundNation", async (req, res, next) => {
     if (!player) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
+    touchRoom(gameRoom._id.toString());
 
     // Initialize gameState if needed
     if (!gameRoom.gameState) {
       gameRoom.gameState = { nations: [] };
     }
 
-    // 3. Check for existing nation
+    const allowRefound =
+      gameRoom.gameState?.settings?.allowRefound ?? DEFAULT_ALLOW_REFOUND;
+    const hasDefeatedNation = (gameRoom.gameState.nations || []).some(
+      (nation) => nation.owner === userId && nation.status === "defeated"
+    );
+    if (!allowRefound && hasDefeatedNation) {
+      return res.status(403).json({
+        error: "Refounding is disabled in this game. You may spectate only.",
+        code: "REFOUND_DISABLED",
+      });
+    }
 
-    gameRoom.gameState.nations = gameRoom.gameState.nations.filter(
+    // 3. Check for existing nation
+    const existingNations = (gameRoom.gameState.nations || []).filter(
       (nation) => nation.owner !== userId || nation.status !== "defeated"
     );
 
-    if (gameRoom.gameState.nations.some((n) => n.owner === userId)) {
+    if (existingNations.some((n) => n.owner === userId)) {
       return res
         .status(400)
         .json({ error: "Nation already exists for this user" });
     }
 
-    // 4. Create new nation
+    const mapData = await gameLoop.getMapData(req.params.id);
+    if (!mapData || !mapData[y] || !mapData[y][x]) {
+      return res.status(400).json({ error: "Invalid founding location" });
+    }
+    if (mapData[y][x].biome === "OCEAN") {
+      return res
+        .status(400)
+        .json({ error: "Cannot found a nation on ocean tiles" });
+    }
+    const isOccupied = existingNations.some((nation) => {
+      if (!nation.territory || !nation.territory.x || !nation.territory.y)
+        return false;
+      for (let i = 0; i < nation.territory.x.length; i++) {
+        if (nation.territory.x[i] === x && nation.territory.y[i] === y) {
+          return true;
+        }
+      }
+      return false;
+    });
+    if (isOccupied) {
+      return res
+        .status(400)
+        .json({ error: "Founding location is already claimed" });
+    }
+    const tooClose = existingNations.some((nation) => {
+      if (nation.startingCell) {
+        if (
+          manhattanDistance(
+            x,
+            y,
+            nation.startingCell.x,
+            nation.startingCell.y
+          ) < MIN_FOUND_DISTANCE
+        ) {
+          return true;
+        }
+      }
+      if (nation.cities && nation.cities.length > 0) {
+        return nation.cities.some(
+          (city) => manhattanDistance(x, y, city.x, city.y) < MIN_FOUND_DISTANCE
+        );
+      }
+      return false;
+    });
+    if (tooClose) {
+      return res.status(400).json({
+        error: `Founding location too close to another nation (minimum distance ${MIN_FOUND_DISTANCE})`,
+      });
+    }
+
+    // 4. Create new nation with starting territory (10x10 circle, radius ~5)
+    const startingRadius = 5;
+    const territoryX = [];
+    const territoryY = [];
+
+    // Generate circular starting territory
+    for (let dy = -startingRadius; dy <= startingRadius; dy++) {
+      for (let dx = -startingRadius; dx <= startingRadius; dx++) {
+        // Use circular distance check
+        if (dx * dx + dy * dy <= startingRadius * startingRadius) {
+          const tx = x + dx;
+          const ty = y + dy;
+          // Check bounds and terrain
+          if (tx >= 0 && ty >= 0 && tx < mapData[0].length && ty < mapData.length) {
+            const cell = mapData[ty][tx];
+            if (cell && cell.biome !== "OCEAN") {
+              // Check not already claimed by another nation
+              const alreadyClaimed = existingNations.some((nation) => {
+                if (!nation.territory?.x) return false;
+                for (let i = 0; i < nation.territory.x.length; i++) {
+                  if (nation.territory.x[i] === tx && nation.territory.y[i] === ty) {
+                    return true;
+                  }
+                }
+                return false;
+              });
+              if (!alreadyClaimed) {
+                territoryX.push(tx);
+                territoryY.push(ty);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const initialDelta = { add: { x: [...territoryX], y: [...territoryY] }, sub: { x: [], y: [] } };
     const newNation = {
       owner: userId,
       status: "active",
       startingCell: { x, y },
-      territory: { x: [x], y: [y] },
-      territoryLoyalty: { [`${x},${y}`]: LOYALTY.INITIAL },
+      territory: { x: territoryX, y: territoryY },
+      territoryDelta: initialDelta,
+      territoryDeltaForClient: initialDelta,
       population: 100,
       nationalWill: 50,
       resources: {
-        food: 1000,
-        wood: 500,
-        stone: 300,
-        bronze: 0,
-        steel: 0,
-        horses: 0,
+        food: 200,
+        wood: 150,
+        stone: 100,
+        iron: 0,
+        gold: 0,
       },
       cities: [
         {
-          name: "Capital",
+          name: generateUniqueName(generateCityName, new Set()),
           x,
           y,
           population: 50,
@@ -736,14 +1319,45 @@ router.post("/:id/foundNation", async (req, res, next) => {
       ],
       structures: [],
       auto_city: false,
-      expansionTarget: null,
-      attackTarget: null,
     };
 
-    // 5. Save directly to DB
-    await GameRoom.findByIdAndUpdate(req.params.id, {
-      $push: { "gameState.nations": newNation },
+    let founded = false;
+    await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      // Re-check from latest in-memory state while lock is held.
+      const lockedRoom = await getAuthoritativeRoom(req.params.id);
+      if (!lockedRoom) {
+        throw new Error("Game room not found during locked mutation");
+      }
+
+      const lockedNations = (lockedRoom.gameState?.nations || []).filter(
+        (nation) => nation.owner !== userId || nation.status !== "defeated"
+      );
+      if (lockedNations.some((n) => n.owner === userId)) {
+        return;
+      }
+
+      lockedRoom.gameState.nations = lockedNations.concat(newNation);
+      founded = true;
+      await persistRoomMutation(lockedRoom, req.params.id, ["gameState.nations"]);
+
+      // Sync matrix with the new nation's territory
+      gameLoop.syncMatrixFromNations(req.params.id.toString(), lockedRoom.gameState.nations);
+
+      const mapDataAfterFound = await gameLoop.getMapData(req.params.id);
+      if (mapDataAfterFound) {
+        await spawnBotsForRoom(
+          req.params.id,
+          mapDataAfterFound,
+          lockedRoom.gameState?.bots?.count || 0
+        );
+      }
+      broadcastRoomUpdate(req.params.id.toString(), lockedRoom);
     });
+    if (!founded) {
+      return res
+        .status(400)
+        .json({ error: "Nation already exists for this user" });
+    }
 
     res
       .status(201)
@@ -755,10 +1369,11 @@ router.post("/:id/foundNation", async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms/:id/buildCity - Build a new city for a nation
+// POST /api/gamerooms/:id/buildCity - Build a new city/structure for a nation
+// Supports: town, tower, and resource structures (farm, mine, etc.)
 // -------------------------------------------------------------------
 router.post("/:id/buildCity", async (req, res, next) => {
-  console.log("[ROUTE] Build city request:", req.body);
+  console.log("[ROUTE] Build structure request:", req.body);
   try {
     const { userId, password, x, y, cityType, cityName } = req.body;
     if (!userId || !password || x == null || y == null || !cityType) {
@@ -766,16 +1381,20 @@ router.post("/:id/buildCity", async (req, res, next) => {
         .status(400)
         .json({ error: "userId, password, x, y, and cityType are required" });
     }
-    const gameRoom = await GameRoom.findById(req.params.id);
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    touchRoom(gameRoom._id.toString());
 
     // Find the player's nation.
     const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
     if (!nation)
       return res.status(404).json({ error: "Nation not found for this user" });
 
-    // Check that the new city's cell is within the nation's territory.
+    // Check that the new structure's cell is within the nation's territory.
     let inTerritory = false;
     if (nation.territory && nation.territory.x && nation.territory.y) {
       for (let i = 0; i < nation.territory.x.length; i++) {
@@ -791,26 +1410,50 @@ router.post("/:id/buildCity", async (req, res, next) => {
         .json({ error: "Selected cell is not within your territory" });
     }
 
-    // Ensure no city exists within 5 cells (Manhattan distance).
-    const tooClose = nation.cities?.some(
-      (city) => Math.abs(city.x - x) + Math.abs(city.y - y) < 5
+    // For towns, ensure no city exists within 5 cells (Manhattan distance).
+    if (cityType === "town") {
+      const tooClose = nation.cities?.some(
+        (city) =>
+          (city.type === "town" || city.type === "capital") &&
+          Math.abs(city.x - x) + Math.abs(city.y - y) < 5
+      );
+      if (tooClose) {
+        return res.status(400).json({
+          error: "Cannot build town within 5 cells of an existing town or capital",
+        });
+      }
+    }
+
+    // For towers, check they're not too close to other towers
+    if (cityType === "tower") {
+      const tooClose = nation.cities?.some(
+        (city) =>
+          city.type === "tower" &&
+          Math.abs(city.x - x) + Math.abs(city.y - y) < 3
+      );
+      if (tooClose) {
+        return res.status(400).json({
+          error: "Cannot build tower within 3 cells of another tower",
+        });
+      }
+    }
+
+    // Check if there's already a structure on this tile
+    const existingStructure = nation.cities?.some(
+      (city) => city.x === x && city.y === y
     );
-    if (
-      (tooClose && cityType === "town") ||
-      cityType === "capital" ||
-      cityType === "fort"
-    )
+    if (existingStructure) {
       return res.status(400).json({
-        error: "Cannot build city within 5 cells of an existing city",
+        error: "A structure already exists on this tile",
       });
+    }
 
     /* ---------------------------------------------
-       New Resource Structure Placement Checks
+       Resource Structure Placement Checks
        ---------------------------------------------
-       Only allow resource structures (i.e. types other than capital, town, fort)
+       Only allow resource structures (i.e. types other than capital, town, tower, fort)
        to be built on a tile that has the required resource.
     */
-    // Define which structure types are resource structures and their required resource(s)
     const resourceStructureMapping = {
       farm: "food",
       "lumber mill": "wood",
@@ -825,11 +1468,9 @@ router.post("/:id/buildCity", async (req, res, next) => {
         return res.status(400).json({ error: "Invalid map cell" });
       }
 
-      // Determine the required resource(s) for this structure.
       const required = resourceStructureMapping[cityType];
       let validResource = false;
       if (Array.isArray(required)) {
-        // For example, a mine is allowed on stone, bronze, or steel tiles.
         validResource = cell.resources.some((r) => required.includes(r));
       } else {
         validResource = cell.resources.includes(required);
@@ -840,25 +1481,13 @@ router.post("/:id/buildCity", async (req, res, next) => {
         });
       }
       producedResource = cell.resources[0];
-      // Ensure that there is not already a resource structure built on this tile.
-      const alreadyBuilt = nation.cities?.some(
-        (city) =>
-          city.x === x && city.y === y && resourceStructureMapping[city.type] // true if this city is a resource structure
-      );
-      if (alreadyBuilt) {
-        return res.status(400).json({
-          error: `A resource structure is already built on this tile.`,
-        });
-      }
     }
 
-    // -------------------------------------------------
-    // Continue with the normal build cost checks and deduction.
-    // Get city build cost from config.
+    // Get build cost from config.
     const CITY_BUILD_COSTS = config.buildCosts.structures;
     const cost = CITY_BUILD_COSTS[cityType];
     if (!cost)
-      return res.status(400).json({ error: "Invalid city type specified" });
+      return res.status(400).json({ error: "Invalid structure type specified" });
 
     // Check if the nation has enough resources.
     let canBuild = true;
@@ -871,41 +1500,54 @@ router.post("/:id/buildCity", async (req, res, next) => {
     if (!canBuild)
       return res
         .status(400)
-        .json({ error: "Insufficient resources to build this city" });
+        .json({ error: "Insufficient resources to build this structure" });
 
-    // Deduct the resource costs.
-    for (const resource in cost) {
-      nation.resources[resource] -= cost[resource];
-    }
-    console.log("city build with resource ", producedResource);
-    // Create the new city/structure.
-    const newCity = {
-      name:
-        cityName ||
-        `${cityType.charAt(0).toUpperCase() + cityType.slice(1)} ${
-          nation.cities.length + 1
-        }`,
-      x,
-      y,
-      population: 50, // Default starting population; adjust if needed.
-      type: cityType,
-      resource: producedResource,
-    };
-    nation.cities.push(newCity);
+    const newCity = await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      // Re-validate nation state inside lock
+      const lockedNation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
+      if (!lockedNation) throw Object.assign(new Error("Nation not found"), { status: 404 });
 
-    // Save updated game state.
-    await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $push: { "gameState.nations.$.cities": newCity },
-        $set: { "gameState.nations.$.resources": nation.resources },
+      // Check resources again inside lock
+      for (const resource in cost) {
+        if ((lockedNation.resources[resource] || 0) < cost[resource]) {
+          throw Object.assign(new Error("Insufficient resources to build this structure"), { status: 400 });
+        }
       }
-    );
 
-    res.status(201).json({ message: "City built successfully", city: newCity });
+      // Deduct the resource costs.
+      for (const resource in cost) {
+        lockedNation.resources[resource] = (lockedNation.resources[resource] || 0) - cost[resource];
+      }
+
+      // Generate name for the structure
+      const existingNames = new Set(lockedNation.cities?.map((c) => c.name) || []);
+      let generatedName;
+      if (cityType === "tower") {
+        generatedName = cityName || generateUniqueName(generateTowerName, existingNames);
+      } else if (cityType === "town") {
+        generatedName = cityName || generateUniqueName(generateCityName, existingNames);
+      } else {
+        generatedName = cityName || `${cityType.charAt(0).toUpperCase() + cityType.slice(1)} ${lockedNation.cities.length + 1}`;
+      }
+
+      console.log(`[BUILD] ${cityType} "${generatedName}" at (${x},${y}) for ${userId}`);
+
+      const city = {
+        name: generatedName,
+        x,
+        y,
+        population: cityType === "tower" ? 0 : 50,
+        type: cityType,
+        resource: producedResource,
+      };
+      lockedNation.cities.push(city);
+
+      await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+      broadcastRoomUpdate(req.params.id.toString(), gameRoom);
+      return city;
+    });
+
+    res.status(201).json({ message: "Structure built successfully", city: newCity });
   } catch (error) {
     next(error);
   }
@@ -913,185 +1555,244 @@ router.post("/:id/buildCity", async (req, res, next) => {
 // -------------------------------------------------------------------
 // POST /api/gamerooms/:id/setExpansionTarget - Set an expansion target for a nation
 // -------------------------------------------------------------------
-router.post("/:id/setExpansionTarget", async (req, res, next) => {
-  try {
-    const { userId, password, target } = req.body;
-    if (
-      !userId ||
-      !password ||
-      !target ||
-      target.x == null ||
-      target.y == null
-    ) {
-      return res.status(400).json({
-        error: "userId, password, and target (with x and y) are required",
-      });
-    }
-
-    const gameRoom = await GameRoom.findById(req.params.id);
-    if (!gameRoom)
-      return res.status(404).json({ error: "Game room not found" });
-
-    const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
-    if (!nation)
-      return res.status(404).json({ error: "Nation not found for this user" });
-
-    // Retrieve the map and its chunks to build the map data array
-    const MapModel = mongoose.model("Map");
-    const map = await MapModel.findById(gameRoom.map).lean();
-    if (!map)
-      return res
-        .status(404)
-        .json({ error: "Map not found for this game room" });
-
-    const MapChunk = mongoose.model("MapChunk");
-    const chunks = await MapChunk.find({ map: map._id }).lean();
-
-    // Build the mapData 2D array from the chunks.
-    // (Assumes that map.height and map.width are defined)
-    const mapData = Array.from({ length: map.height }, () =>
-      new Array(map.width).fill(null)
-    );
-    for (const chunk of chunks) {
-      const startRow = chunk.startRow;
-      chunk.rows.forEach((row, index) => {
-        // Place each row at the correct global row index.
-        mapData[startRow + index] = row;
-      });
-    }
-
-    // Now pass mapData as the third argument.
-    const result = setExpansionTarget(nation, target, mapData);
-    if (!result.success) {
-      return res.status(400).json({ error: result.message });
-    }
-
-    // Save updated game state.
-    await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $set: { "gameState.nations.$.expansionTarget": nation.expansionTarget },
-      }
-    );
-
-    res.json({
-      message: "Expansion target set successfully",
-      expansionTarget: nation.expansionTarget,
-    });
-  } catch (error) {
-    next(error);
-  }
+router.post("/:id/setExpansionTarget", async (req, res) => {
+  return res.status(410).json({
+    error: "Legacy expansion target system has been removed.",
+  });
 });
 
 // -------------------------------------------------------------------
 // POST /api/gamerooms/:id/raiseArmy - Raise an army by recruiting men.
 // -------------------------------------------------------------------
-router.post("/:id/raiseArmy", async (req, res, next) => {
+router.post("/:id/raiseArmy", async (req, res) => {
+  return res.status(410).json({
+    error: "Legacy army system has been removed.",
+  });
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/setAttackTarget - Set an attack target for a specific army.
+// -------------------------------------------------------------------
+router.post("/:id/setAttackTarget", async (req, res) => {
+  return res.status(410).json({
+    error: "Legacy army system has been removed.",
+  });
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/pressure - DEPRECATED
+// Pressure orders have been replaced by the arrow system
+// -------------------------------------------------------------------
+router.post("/:id/pressure", async (req, res) => {
+  return res.status(410).json({
+    error: "Pressure orders have been removed. Use the arrow system instead.",
+  });
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/upgradeNode - DEPRECATED
+// Resource node upgrades have been removed from the game
+// -------------------------------------------------------------------
+router.post("/:id/upgradeNode", async (req, res) => {
+  return res.status(410).json({
+    error: "Resource node upgrades have been removed.",
+  });
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/arrow - Send an attack or defend arrow command
+// Big Arrow system: troops follow a drawn path as a broad front
+// -------------------------------------------------------------------
+router.post("/:id/arrow", async (req, res, next) => {
   try {
-    const { userId, password, type } = req.body;
-    if (!userId || !password || !type) {
-      return res
-        .status(400)
-        .json({ error: "userId, password, and type are required" });
+    const { userId, password, type, path, percent } = req.body;
+    if (!userId || !password || !type || !path || !Array.isArray(path)) {
+      return res.status(400).json({
+        error: "userId, password, type (attack/defend), and path array are required",
+      });
     }
 
-    const gameRoom = await GameRoom.findById(req.params.id);
+    if (type !== "attack" && type !== "defend") {
+      return res.status(400).json({
+        error: "type must be either 'attack' or 'defend'",
+      });
+    }
+
+    if (path.length < 2) {
+      return res.status(400).json({
+        error: "Arrow path must have at least 2 points",
+      });
+    }
+
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    touchRoom(gameRoom._id.toString());
 
-    // Find the player's nation
     const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
     if (!nation)
       return res.status(404).json({ error: "Nation not found for this user" });
 
-    // Retrieve the army stats from config using the provided type.
-    const armyStats = config.armies.stats[type];
-    if (!armyStats) {
-      return res
-        .status(400)
-        .json({ error: `Army type '${type}' is not supported` });
-    }
-
-    // Check if the nation has enough population.
-    // Use armyStats.populationCost if provided, otherwise default to 1000.
-    const requiredPopulation = armyStats.populationCost || 1000;
-    if (nation.population < requiredPopulation) {
+    const sanitizedPath = path.map((point) => ({
+      x: Number(point?.x),
+      y: Number(point?.y),
+    }));
+    const hasInvalidPoint = sanitizedPath.some(
+      (point) => !Number.isFinite(point.x) || !Number.isFinite(point.y)
+    );
+    if (hasInvalidPoint) {
       return res.status(400).json({
-        error: `Not enough population to raise an army of type '${type}'. Required population: ${requiredPopulation}`,
+        error: "Arrow path contains invalid coordinates",
       });
     }
 
-    // Check if the nation has enough resources.
-    // armyStats.cost is expected to be an object like { gold: 2, iron: 1 }
-    const armyCost = config.buildCosts.armies[type];
-    for (const resource in armyCost) {
-      const requiredAmount = armyCost[resource];
-      if ((nation.resources[resource] || 0) < requiredAmount) {
+    // Validate all path points are within map bounds
+    const arrowMapData = await gameLoop.getMapData(req.params.id);
+    if (arrowMapData) {
+      const mapH = arrowMapData.length;
+      const mapW = arrowMapData[0]?.length || 0;
+      const hasOutOfBounds = sanitizedPath.some(
+        (p) => p.x < 0 || p.y < 0 || p.x >= mapW || p.y >= mapH
+      );
+      if (hasOutOfBounds) {
         return res.status(400).json({
-          error: `Insufficient ${resource} to raise army of type '${type}'`,
+          error: "Arrow path contains out-of-bounds coordinates",
         });
       }
     }
 
-    // Deduct the resource costs and subtract the required population from the nation.
-    for (const resource in armyCost) {
-      const requiredAmount = armyCost[resource];
-      nation.resources[resource] -= requiredAmount;
-    }
-    nation.population -= requiredPopulation;
-
-    // Determine the starting position for the army.
-    let startPos = null;
-    if (nation.cities && nation.cities.length > 0) {
-      const capital =
-        nation.cities.find((city) => city.type === "capital") ||
-        nation.cities[0];
-      startPos = { x: capital.x, y: capital.y };
-    } else if (nation.startingCell) {
-      startPos = { ...nation.startingCell };
-    } else {
-      return res
-        .status(400)
-        .json({ error: "No valid starting position for the army" });
+    if (!isPointNearTerritory(nation, sanitizedPath[0], 3)) {
+      return res.status(400).json({
+        error: "Arrow must start on or near your territory",
+      });
     }
 
-    // Create the new army object using the stats from the config.
-    const newArmy = {
-      id: new mongoose.Types.ObjectId().toString(), // unique identifier for the army
-      type,
-      speed: armyStats.speed,
-      power: armyStats.power,
-      position: startPos,
-      attackTarget: null, // will be set later via setAttackTarget
-    };
+    const result = await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      // Re-fetch nation inside lock
+      const lockedNation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
+      if (!lockedNation) throw Object.assign(new Error("Nation not found"), { status: 404 });
 
-    // Ensure the nation has an armies array, then add the new army.
-    if (!nation.armies) {
-      nation.armies = [];
-    }
-    nation.armies.push(newArmy);
-
-    // Mark gameState as modified and update the worker state.
-    await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-      },
-      {
-        $push: { "gameState.nations.$.armies": newArmy },
-        $set: {
-          "gameState.nations.$.resources": nation.resources,
-          "gameState.nations.$.population": nation.population,
-        },
+      // Initialize arrowOrders if not present
+      if (!lockedNation.arrowOrders) {
+        lockedNation.arrowOrders = {};
       }
-    );
 
-    res.status(201).json({
-      message: "Army raised successfully",
-      army: newArmy,
+      // For attack arrows: enforce multi-arrow limits and range
+      if (type === "attack") {
+        // Migrate legacy format
+        if (lockedNation.arrowOrders.attack && !lockedNation.arrowOrders.attacks) {
+          lockedNation.arrowOrders.attacks = [lockedNation.arrowOrders.attack];
+          delete lockedNation.arrowOrders.attack;
+        }
+        if (!lockedNation.arrowOrders.attacks) lockedNation.arrowOrders.attacks = [];
+
+        const maxAttackArrows = config?.territorial?.maxAttackArrows ?? 3;
+        if (lockedNation.arrowOrders.attacks.length >= maxAttackArrows) {
+          throw Object.assign(new Error(`Maximum ${maxAttackArrows} attack arrows allowed`), { status: 400 });
+        }
+
+        // Validate arrow range
+        const pathLen = computePathLength(sanitizedPath);
+        const maxRange = computeMaxArrowRange(lockedNation);
+        if (pathLen > maxRange) {
+          throw Object.assign(new Error(`Arrow path too long (${Math.round(pathLen)} tiles). Max range: ${Math.round(maxRange)} tiles`), { status: 400 });
+        }
+      }
+
+      // For defend arrows: still single
+      if (type === "defend" && lockedNation.arrowOrders.defend) {
+        lockedNation.population = (lockedNation.population || 0) + (lockedNation.arrowOrders.defend.remainingPower || 0);
+        delete lockedNation.arrowOrders.defend;
+      }
+
+      // Calculate power commitment
+      const minPercent = config?.territorial?.minAttackPercent || 0.05;
+      const maxPercent = config?.territorial?.maxAttackPercent || 1;
+      const rawPercent = Number(percent ?? config?.territorial?.defaultAttackPercent ?? 0.25);
+      if (!Number.isFinite(rawPercent)) {
+        throw Object.assign(new Error("Invalid attack percent"), { status: 400 });
+      }
+      const clampedPercent = Math.min(Math.max(rawPercent, minPercent), maxPercent);
+
+      const troopDensityEnabled = config?.troopDensity?.enabled;
+      const available = lockedNation.population || 0;
+      const power = available * clampedPercent;
+      if (power <= 0) {
+        throw Object.assign(new Error("Not enough population to commit"), { status: 400 });
+      }
+
+      // Only deduct population in legacy mode; density system uses attractors
+      if (!troopDensityEnabled) {
+        lockedNation.population = Math.max(0, available - power);
+      }
+
+      const arrowId = new mongoose.Types.ObjectId().toString();
+
+      // Get current tick for tick-based expiry
+      const currentTick = gameRoom.tickCount || 0;
+
+      if (type === "attack") {
+        lockedNation.arrowOrders.attacks.push({
+          id: arrowId,
+          type: "attack",
+          path: sanitizedPath,
+          currentIndex: 1,
+          remainingPower: troopDensityEnabled ? 0 : power,
+          initialPower: troopDensityEnabled ? 0 : power,
+          troopCommitment: clampedPercent,
+          percent: clampedPercent,
+          createdAt: new Date(),
+          createdAtTick: currentTick,
+          frontWidth: 0,
+          advanceProgress: 0,
+          phase: 1,
+          phaseConsolidationRemaining: 0,
+          status: "advancing",
+          opposingForces: [],
+          headX: sanitizedPath[0].x,
+          headY: sanitizedPath[0].y,
+          effectiveDensityAtFront: 0,
+        });
+      } else {
+        // Defend arrows still use population deduction even in troopDensity mode
+        if (troopDensityEnabled) {
+          // No population deduction for defend in density mode either
+        } else {
+          // Already deducted above
+        }
+        lockedNation.arrowOrders.defend = {
+          id: arrowId,
+          type: "defend",
+          path: sanitizedPath,
+          currentIndex: 0,
+          remainingPower: troopDensityEnabled ? 0 : power,
+          initialPower: troopDensityEnabled ? 0 : power,
+          percent: clampedPercent,
+          createdAt: new Date(),
+          createdAtTick: currentTick,
+        };
+      }
+
+      if (process.env.DEBUG_ARROWS === "true") {
+        console.log(
+          `[ARROW-CREATED] PLAYER ${userId} ${type}: id=${arrowId} power=${power.toFixed(0)} pathLen=${sanitizedPath.length} target=(${sanitizedPath[sanitizedPath.length-1]?.x},${sanitizedPath[sanitizedPath.length-1]?.y}) attacks[]=${lockedNation.arrowOrders.attacks?.length || 0}`
+        );
+      }
+
+      await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+      broadcastRoomUpdate(req.params.id.toString(), gameRoom);
+
+      return { arrowId, clampedPercent };
+    });
+
+    res.json({
+      message: `${type} arrow order sent`,
+      arrowId: result.arrowId,
+      percent: result.clampedPercent,
+      pathLength: path.length,
     });
   } catch (error) {
     next(error);
@@ -1099,72 +1800,222 @@ router.post("/:id/raiseArmy", async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------
-// POST /api/gamerooms/:id/setAttackTarget - Set an attack target for a specific army.
+// POST /api/gamerooms/:id/clearArrow - Clear an active arrow command
+// Supports arrowId for specific arrow removal, or type for backward compat
 // -------------------------------------------------------------------
-router.post("/:id/setAttackTarget", async (req, res, next) => {
+router.post("/:id/clearArrow", async (req, res, next) => {
   try {
-    const { userId, password, armyId, target } = req.body;
-    if (!userId || !password || !armyId || !target) {
+    const { userId, password, type, arrowId } = req.body;
+    if (!userId || !password) {
       return res.status(400).json({
-        error:
-          "userId, password, armyId, and target (with x and y) are required",
+        error: "userId and password are required",
       });
     }
-    const gameRoom = await GameRoom.findById(req.params.id);
+
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-
-    // Find the player's nation
-    const nation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
-    if (!nation)
-      return res.status(404).json({ error: "Nation not found for this user" });
-
-    // Ensure that the nation has armies and find the specific army by its id.
-    if (!nation.armies || nation.armies.length === 0) {
-      return res.status(400).json({ error: "No armies found for this nation" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
     }
-    // Compare army ids as strings.
-    const army = nation.armies.find(
-      (a) => a.id.toString() === armyId.toString()
-    );
-    if (!army) {
-      return res.status(404).json({ error: "Army not found" });
-    }
-    if (target.x == null || target.y == null) {
-      return res
-        .status(400)
-        .json({ error: "Invalid target coordinates provided" });
-    }
+    touchRoom(gameRoom._id.toString());
 
-    // Set the attack target on the army.
-    // Store both the current position and the final target.
-    army.attackTarget = {
-      current: { ...army.position },
-      final: { x: target.x, y: target.y },
-      // You can add extra fields here (e.g., movement speed, etc.) if needed.
-    };
+    await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      const lockedNation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
+      if (!lockedNation) throw Object.assign(new Error("Nation not found"), { status: 404 });
 
-    await GameRoom.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        "gameState.nations.owner": userId,
-        "gameState.nations.armies.id": armyId,
-      },
-      {
-        $set: {
-          "gameState.nations.$[nation].armies.$[army].attackTarget":
-            army.attackTarget,
-        },
-      },
-      {
-        arrayFilters: [{ "nation.owner": userId }, { "army.id": armyId }],
+      const troopDensityEnabled = config?.troopDensity?.enabled;
+
+      if (type === "defend") {
+        if (lockedNation.arrowOrders?.defend) {
+          // In density mode, no population to return; density redistributes via diffusion
+          if (!troopDensityEnabled) {
+            lockedNation.population = (lockedNation.population || 0) + (lockedNation.arrowOrders.defend.remainingPower || 0);
+          }
+          delete lockedNation.arrowOrders.defend;
+        }
+      } else if (arrowId && lockedNation.arrowOrders?.attacks) {
+        const idx = lockedNation.arrowOrders.attacks.findIndex(a => a.id === arrowId);
+        if (idx !== -1) {
+          if (!troopDensityEnabled) {
+            lockedNation.population = (lockedNation.population || 0) + (lockedNation.arrowOrders.attacks[idx].remainingPower || 0);
+          }
+          lockedNation.arrowOrders.attacks.splice(idx, 1);
+        }
+      } else if (type === "attack") {
+        if (lockedNation.arrowOrders?.attacks) {
+          if (!troopDensityEnabled) {
+            for (const a of lockedNation.arrowOrders.attacks) {
+              lockedNation.population = (lockedNation.population || 0) + (a.remainingPower || 0);
+            }
+          }
+          lockedNation.arrowOrders.attacks = [];
+        }
+        if (lockedNation.arrowOrders?.attack) {
+          if (!troopDensityEnabled) {
+            lockedNation.population = (lockedNation.population || 0) + (lockedNation.arrowOrders.attack.remainingPower || 0);
+          }
+          delete lockedNation.arrowOrders.attack;
+        }
       }
-    );
+
+      await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+      broadcastRoomUpdate(req.params.id.toString(), gameRoom);
+    });
+
+    res.json({ message: "Arrow cleared" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/reinforceArrow - Add troops to active arrow
+// -------------------------------------------------------------------
+router.post("/:id/reinforceArrow", async (req, res, next) => {
+  try {
+    const { userId, password, arrowId, percent } = req.body;
+    if (!userId || !password || !arrowId) {
+      return res.status(400).json({
+        error: "userId, password, and arrowId are required",
+      });
+    }
+
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
+    if (!gameRoom)
+      return res.status(404).json({ error: "Game room not found" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    touchRoom(gameRoom._id.toString());
+
+    const result = await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      const lockedNation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
+      if (!lockedNation) throw Object.assign(new Error("Nation not found"), { status: 404 });
+
+      const arrow = lockedNation.arrowOrders?.attacks?.find(a => a.id === arrowId);
+      if (!arrow) throw Object.assign(new Error("Arrow not found"), { status: 404 });
+
+      const troopDensityEnabled = config?.troopDensity?.enabled;
+
+      if (troopDensityEnabled) {
+        // In density mode, reinforce increases troopCommitment (attractor share)
+        const minPercent = config?.territorial?.reinforceMinPercent ?? 0.05;
+        const maxPercent = config?.territorial?.maxAttackPercent ?? 1;
+        const rawAddPercent = Number(percent ?? 0.1);
+        const addPercent = Math.min(Math.max(rawAddPercent, minPercent), maxPercent);
+        const newCommitment = Math.min(1, (arrow.troopCommitment || arrow.percent || 0.25) + addPercent);
+        arrow.troopCommitment = newCommitment;
+        arrow.percent = newCommitment;
+
+        await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+        broadcastRoomUpdate(req.params.id.toString(), gameRoom);
+
+        return { reinforcement: addPercent, newPower: newCommitment };
+      } else {
+        // Legacy: deduct population, add to remainingPower
+        const minPercent = config?.territorial?.reinforceMinPercent ?? 0.05;
+        const maxPercent = config?.territorial?.reinforceMaxPercent ?? 0.5;
+        const rawPercent = Number(percent ?? 0.1);
+        const clampedPercent = Math.min(Math.max(rawPercent, minPercent), maxPercent);
+
+        const available = lockedNation.population || 0;
+        const reinforcement = available * clampedPercent;
+        if (reinforcement <= 0) {
+          throw Object.assign(new Error("Not enough population to reinforce"), { status: 400 });
+        }
+
+        lockedNation.population = Math.max(0, available - reinforcement);
+        arrow.remainingPower = (arrow.remainingPower || 0) + reinforcement;
+
+        await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+        broadcastRoomUpdate(req.params.id.toString(), gameRoom);
+
+        return { reinforcement, newPower: arrow.remainingPower };
+      }
+    });
 
     res.json({
-      message: "Attack target set successfully",
-      army,
+      message: "Arrow reinforced",
+      reinforcement: Math.round(result.reinforcement),
+      newPower: Math.round(result.newPower),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/retreatArrow - Set arrow to retreating status
+// -------------------------------------------------------------------
+router.post("/:id/retreatArrow", async (req, res, next) => {
+  try {
+    const { userId, password, arrowId } = req.body;
+    if (!userId || !password || !arrowId) {
+      return res.status(400).json({
+        error: "userId, password, and arrowId are required",
+      });
+    }
+
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
+    if (!gameRoom)
+      return res.status(404).json({ error: "Game room not found" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    touchRoom(gameRoom._id.toString());
+
+    await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      const lockedNation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
+      if (!lockedNation) throw Object.assign(new Error("Nation not found"), { status: 404 });
+
+      const arrow = lockedNation.arrowOrders?.attacks?.find(a => a.id === arrowId);
+      if (!arrow) throw Object.assign(new Error("Arrow not found"), { status: 404 });
+
+      arrow.status = "retreating";
+
+      await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+      broadcastRoomUpdate(req.params.id.toString(), gameRoom);
+    });
+
+    res.json({ message: "Arrow retreating" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/troopTarget - Set troop mobilization target
+// -------------------------------------------------------------------
+router.post("/:id/troopTarget", async (req, res, next) => {
+  try {
+    const { userId, password, troopTarget } = req.body;
+    if (!userId || !password || troopTarget == null) {
+      return res.status(400).json({
+        error: "userId, password, and troopTarget are required",
+      });
+    }
+
+    const gameRoom = await getAuthoritativeRoom(req.params.id);
+    if (!gameRoom)
+      return res.status(404).json({ error: "Game room not found" });
+    if (!hasValidPlayerCredentials(gameRoom, userId, password)) {
+      return res.status(403).json({ error: "Invalid credentials" });
+    }
+    touchRoom(gameRoom._id.toString());
+
+    const clampedTarget = Math.max(0, Math.min(0.8, Number(troopTarget)));
+
+    await gameLoop.withRoomMutationLock(req.params.id, async () => {
+      const lockedNation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
+      if (!lockedNation) throw Object.assign(new Error("Nation not found"), { status: 404 });
+
+      lockedNation.troopTarget = clampedTarget;
+
+      await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
+    });
+
+    res.json({ troopTarget: clampedTarget });
   } catch (error) {
     next(error);
   }

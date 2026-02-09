@@ -2,19 +2,37 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
 
+const MAP_PRESETS = {
+  Small: { width: 250, height: 250, num_blobs: 7 },
+  Normal: { width: 500, height: 500, num_blobs: 9 },
+  Large: { width: 1000, height: 1000, num_blobs: 12 },
+};
+
 const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
   const [formData, setFormData] = useState({
     name: "",
     width: 500,
     height: 500,
     erosion_passes: 3,
-    num_blobs: 3,
+    num_blobs: MAP_PRESETS.Normal.num_blobs,
+    preset: "Normal",
   });
 
   if (!isOpen) return null;
 
   const handleChange = (e) => {
     const { name, value } = e.target;
+    if (name === "preset") {
+      const preset = MAP_PRESETS[value];
+      setFormData((prev) => ({
+        ...prev,
+        preset: value,
+        width: preset.width,
+        height: preset.height,
+        num_blobs: preset.num_blobs,
+      }));
+      return;
+    }
     const numValue =
       name === "width" || name === "height" ? parseInt(value, 10) : value;
     setFormData((prev) => ({ ...prev, [name]: numValue }));
@@ -67,6 +85,28 @@ const CreateMapForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     required
                   />
+                </div>
+                <div>
+                  <label
+                    htmlFor="preset"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Size Preset
+                  </label>
+                  <select
+                    id="preset"
+                    name="preset"
+                    value={formData.preset}
+                    onChange={handleChange}
+                    className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    {Object.keys(MAP_PRESETS).map((preset) => (
+                      <option key={preset} value={preset}>
+                        {preset} ({MAP_PRESETS[preset].width}x
+                        {MAP_PRESETS[preset].height})
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label

@@ -17,44 +17,6 @@ const ModalWrapper = ({ children, onClose }) => (
 );
 
 // ====================
-// BuildArmyForm Component
-// ====================
-const BuildArmyForm = ({ actionModal, onRaiseArmy, setActionModal }) => {
-  const [armySize, setArmySize] = React.useState("");
-  return (
-    <div>
-      <h2 className="text-xl font-bold mb-4">Raise Army</h2>
-      <input
-        type="number"
-        value={armySize}
-        onChange={(e) => setArmySize(e.target.value)}
-        placeholder="Enter army size"
-        className="border p-2 rounded mb-4 w-full"
-      />
-      <div className="flex justify-end space-x-2">
-        <button
-          onClick={() => setActionModal(null)}
-          className="px-4 py-2 bg-gray-300 rounded"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={() => {
-            if (armySize && Number(armySize) > 0) {
-              onRaiseArmy(Number(armySize));
-              setActionModal(null);
-            }
-          }}
-          className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
-        >
-          Raise Army
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// ====================
 // BuildCityForm Component (example)
 // ====================
 const BuildCityForm = ({
@@ -75,8 +37,8 @@ const BuildCityForm = ({
     );
   }
 
-  // Assume config.buildCosts.cities is an object with structure types and their cost objects.
-  const structureOptions = Object.entries(config.buildCosts.cities || {});
+  // Assume config.buildCosts.structures is an object with structure types and their cost objects.
+  const structureOptions = Object.entries(config.buildCosts.structures || {});
 
   const canAfford = (cost) =>
     Object.entries(cost).every(
@@ -149,9 +111,6 @@ const Modal = ({
   actionModal,
   setActionModal,
   onBuildCity,
-  onAttack,
-  onSetExpandTarget,
-  onRaiseArmy, // For raising an army
   config,
   userState,
 }) => {
@@ -219,89 +178,35 @@ const Modal = ({
               userState={userState}
             />
           )}
-          {actionModal.type === "attack" && (
-            <div>
-              <h2 className="text-xl font-bold mb-4">Attack</h2>
-              <p className="mb-4">Do you want to attack this territory?</p>
-              <div className="flex justify-end space-x-2">
-                <button
-                  onClick={() => setActionModal(null)}
-                  className="px-4 py-2 bg-gray-300 rounded"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    onAttack(actionModal.x, actionModal.y);
-                    setActionModal(null);
-                  }}
-                  className="px-4 py-2 bg-red-500 text-white rounded"
-                >
-                  Confirm
-                </button>
-              </div>
-            </div>
-          )}
-          {actionModal.type === "setExpandTarget" && (
-            <div>
-              <h2 className="text-xl font-bold mb-4">Set Expand Target</h2>
-              <p className="mb-4">
-                Do you want to set this cell as your expansion target?
-              </p>
-              <div className="flex justify-end space-x-2">
-                <button
-                  onClick={() => setActionModal(null)}
-                  className="px-4 py-2 bg-gray-300 rounded"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    onSetExpandTarget(actionModal.x, actionModal.y);
-                    setActionModal(null);
-                  }}
-                  className="px-4 py-2 bg-yellow-500 text-white rounded"
-                >
-                  Confirm
-                </button>
-              </div>
-            </div>
-          )}
-          {actionModal.type === "buildArmy" && (
-            <BuildArmyForm
-              actionModal={actionModal}
-              onRaiseArmy={onRaiseArmy}
-              setActionModal={setActionModal}
-            />
-          )}
-          {actionModal.type === "setAttackTargetArmy" && (
-            <div>
-              <h2 className="text-xl font-bold mb-4">Set Attack Target</h2>
-              <p className="mb-4">
-                Please click on the map to choose the target for army ID:{" "}
-                {actionModal.armyId}.
-              </p>
-              <div className="flex justify-end">
-                <button
-                  onClick={() => setActionModal(null)}
-                  className="px-4 py-2 bg-gray-300 rounded"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
           {actionModal?.type === "defeat" && (
             <div>
               <h2 className="text-xl font-bold mb-4">Nation Defeated</h2>
               <p className="mb-4">{actionModal.message}</p>
-              <div className="flex justify-end">
-                <button
-                  onClick={actionModal.onClose}
-                  className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
-                >
-                  Continue
-                </button>
+              <div className="flex justify-end gap-2">
+                {actionModal.onSpectate && (
+                  <button
+                    onClick={actionModal.onSpectate}
+                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded"
+                  >
+                    Spectate
+                  </button>
+                )}
+                {actionModal.onRefound && (
+                  <button
+                    onClick={actionModal.onRefound}
+                    className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
+                  >
+                    Found New Nation
+                  </button>
+                )}
+                {!actionModal.onSpectate && !actionModal.onRefound && (
+                  <button
+                    onClick={actionModal.onClose}
+                    className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
+                  >
+                    Continue
+                  </button>
+                )}
               </div>
             </div>
           )}

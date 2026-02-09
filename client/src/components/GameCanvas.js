@@ -6,12 +6,23 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
-import { Stage, Container, Graphics } from "@pixi/react";
+import {
+  Stage,
+  Graphics,
+  Text,
+  Sprite,
+  Container,
+} from "@pixi/react";
 import { string2hex } from "@pixi/utils";
 import BorderedSprite from "./BorderedSprite";
 import { settings } from "@pixi/settings";
 import { SCALE_MODES } from "@pixi/constants";
 import MapTiles from "./MapTiles";
+import { SCALE_MODES as PIXI_SCALE_MODES } from "pixi.js";
+import { TerritoryLayer } from "./TerritoryRenderer";
+
+// Feature flag for optimized territory rendering (set via environment or default false)
+const USE_OPTIMIZED_TERRITORY = process.env.REACT_APP_OPTIMIZED_TERRITORY === "true";
 
 settings.SCALE_MODE = SCALE_MODES.NEAREST;
 
@@ -19,19 +30,45 @@ settings.SCALE_MODE = SCALE_MODES.NEAREST;
 /*                     Helper Rendering Functions                           */
 /* -------------------------------------------------------------------------- */
 
+const resourceIconMap = {
+  iron: "steel",
+  gold: "bronze",
+};
+
+const buildIconMap = {
+  tower: "/fort.png",
+  fort: "/fort.png",
+  town: "/town.png",
+  farm: "/farm.png",
+  mine: "/mine.png",
+  stable: "/stable.png",
+  "lumber mill": "/lumber_mill.png",
+  workshop: "/workshop.png",
+};
+
+const CAPTURE_EFFECT_DURATION_MS = 1600;
+const CAPTURE_EFFECT_MAX = 36;
+
 const renderResources = (mapGrid, cellSize, scale) => {
   const resources = [];
+  const zoomBoost = Math.min(
+    3,
+    Math.max(1, Math.pow(1 / Math.max(scale || 1, 0.15), 1.25))
+  );
   mapGrid.forEach(({ cell, x, y }) => {
+    if (!cell || !Array.isArray(cell[5]) || cell[5].length === 0) return;
+    const iconSize = cellSize * 0.8 * zoomBoost;
+    const spacing = iconSize * 0.7;
+    const centerX = x * cellSize + cellSize / 2;
+    const centerY = y * cellSize + cellSize / 2;
+    const startOffset = -((cell[5].length - 1) * spacing) / 2;
     cell[5].forEach((resource, idx) => {
-      const iconSize = cellSize;
-      const spacing = iconSize / 2;
-      const centerX = x * cellSize + spacing + idx * spacing;
-      const centerY = y * cellSize + spacing;
+      const iconName = resourceIconMap[resource] || resource;
       resources.push(
         <BorderedSprite
           key={`resource-${x}-${y}-${resource}`}
-          texture={`/${resource}.png`}
-          x={centerX}
+          texture={`/${iconName}.png`}
+          x={centerX + startOffset + idx * spacing}
           y={centerY}
           width={iconSize}
           height={iconSize}
@@ -49,6 +86,421 @@ const renderResources = (mapGrid, cellSize, scale) => {
   });
   return resources;
 };
+
+const renderResourceCaptureOverlays = (
+  mapGrid,
+  cellSize,
+  ownershipMap,
+  resourceNodeClaims,
+  captureTicks
+) => {
+  const overlays = [];
+  mapGrid.forEach(({ cell, x, y }) => {
+    if (!cell || !Array.isArray(cell[5]) || cell[5].length === 0) return;
+    const key = `${x},${y}`;
+    const owner = ownershipMap.get(key);
+    if (!owner) return;
+    const claim = resourceNodeClaims?.[key];
+    if (!claim) return;
+    const isCaptured = claim.owner === owner;
+    const progressOwner = claim.progressOwner;
+    if (!isCaptured && progressOwner !== owner) return;
+    const progress = Math.min(
+      1,
+      (claim.progress || 0) / Math.max(1, captureTicks)
+    );
+    const size = cellSize * 0.9;
+    const cx = x * cellSize + cellSize / 2;
+    const cy = y * cellSize + cellSize / 2;
+
+    // Use resource-specific icon instead of generic fort
+    const resourceType = cell[5][0];
+    const iconName = resourceIconMap[resourceType] || resourceType;
+
+    if (isCaptured) {
+      overlays.push(
+        <BorderedSprite
+          key={`capture-building-${key}`}
+          texture={`/${iconName}.png`}
+          x={cx}
+          y={cy + size * 0.05}
+          width={size * 0.9}
+          height={size * 0.9}
+          borderColor={0x6e6e6e}
+          borderWidth={1}
+          alpha={0.9}
+          baseZ={112}
+        />
+      );
+      return;
+    }
+    overlays.push(
+      <Graphics
+        key={`capture-${key}`}
+        zIndex={115}
+        draw={(g) => {
+          g.clear();
+          const radius = size * 0.48;
+          const pieY = cy;
+          g.beginFill(0x0f172a, 0.35);
+          g.drawCircle(cx, pieY, radius);
+          g.endFill();
+          g.beginFill(0x34d399, 0.8);
+          g.moveTo(cx, pieY);
+          const start = -Math.PI / 2;
+          const end = start + progress * Math.PI * 2;
+          g.arc(cx, pieY, radius, start, end);
+          g.lineTo(cx, pieY);
+          g.endFill();
+        }}
+      />
+    );
+  });
+  return overlays;
+};
+
+// Simplify arrow path by keeping every Nth point plus start/end
+const simplifyArrowPath = (path, n = 3) => {
+  if (!path || path.length < 2) return path;
+  const result = [path[0]];
+  for (let i = n; i < path.length - 1; i += n) {
+    result.push(path[i]);
+  }
+  if (path.length > 1) {
+    result.push(path[path.length - 1]);
+  }
+  return result;
+};
+
+// Status color map for arrow rendering
+const ARROW_STATUS_COLORS = {
+  advancing: 0x44cc44,
+  consolidating: 0xcccc44,
+  stalled: 0xcc8844,
+  retreating: 0xcc4444,
+};
+const ARROW_STATUS_HEX = {
+  advancing: "#44cc44",
+  consolidating: "#cccc44",
+  stalled: "#cc8844",
+  retreating: "#cc4444",
+};
+
+// Simple thin-line arrow for drawing-in-progress and defend arrows
+const renderArrowPath = (
+  path,
+  cellSize,
+  type,
+  isActive,
+  key,
+  troopCount = null,
+  scale = 1
+) => {
+  if (!path || path.length < 2) return null;
+
+  const color = type === "attack" ? 0xff4444 : 0x4444ff;
+  const alpha = isActive ? 0.8 : 0.6;
+
+  const midIndex = Math.floor(path.length / 2);
+  const midPoint = path[midIndex];
+  const midX = midPoint.x * cellSize + cellSize / 2;
+  const midY = midPoint.y * cellSize + cellSize / 2;
+  const invScale = 1 / Math.max(0.35, scale || 1);
+
+  return (
+    <React.Fragment key={key}>
+      <Graphics
+        zIndex={200}
+        draw={(g) => {
+          g.clear();
+          g.lineStyle(4, color, alpha);
+          const startX = path[0].x * cellSize + cellSize / 2;
+          const startY = path[0].y * cellSize + cellSize / 2;
+          g.moveTo(startX, startY);
+          for (let i = 1; i < path.length; i++) {
+            g.lineTo(path[i].x * cellSize + cellSize / 2, path[i].y * cellSize + cellSize / 2);
+          }
+          if (path.length >= 2) {
+            const last = path[path.length - 1];
+            const prev = path[path.length - 2];
+            const endX = last.x * cellSize + cellSize / 2;
+            const endY = last.y * cellSize + cellSize / 2;
+            const angle = Math.atan2(endY - (prev.y * cellSize + cellSize / 2), endX - (prev.x * cellSize + cellSize / 2));
+            const arrowSize = cellSize * 0.8;
+            g.beginFill(color, alpha);
+            g.moveTo(endX, endY);
+            g.lineTo(endX - arrowSize * Math.cos(angle - Math.PI / 6), endY - arrowSize * Math.sin(angle - Math.PI / 6));
+            g.lineTo(endX - arrowSize * 0.5 * Math.cos(angle), endY - arrowSize * 0.5 * Math.sin(angle));
+            g.lineTo(endX - arrowSize * Math.cos(angle + Math.PI / 6), endY - arrowSize * Math.sin(angle + Math.PI / 6));
+            g.lineTo(endX, endY);
+            g.endFill();
+          }
+        }}
+      />
+      {troopCount !== null && (
+        <Container
+          x={midX}
+          y={midY - cellSize * 0.8}
+          zIndex={202}
+          scale={{ x: invScale, y: invScale }}
+        >
+          <Graphics
+            zIndex={201}
+            draw={(g) => {
+              g.clear();
+              const radius = Math.max(10, Math.min(18, cellSize * 0.55));
+              g.beginFill(0x000000, 0.75);
+              g.drawCircle(0, 0, radius);
+              g.endFill();
+              g.lineStyle(2, color, 1);
+              g.drawCircle(0, 0, radius);
+            }}
+          />
+          <Text
+            text={Math.round(troopCount).toString()}
+            x={0}
+            y={0}
+            anchor={0.5}
+            zIndex={202}
+            style={{
+              fontFamily: "Barlow Semi Condensed, system-ui",
+              fill: "#ffffff",
+              fontSize: Math.max(14, cellSize * 0.6),
+              fontWeight: "700",
+            }}
+          />
+        </Container>
+      )}
+    </React.Fragment>
+  );
+};
+
+// Broad wedge arrow for active attack arrows (documentary war style)
+const renderArrowV2 = (arrow, cellSize, key, scale) => {
+  if (!arrow?.path || arrow.path.length < 2) return null;
+
+  const path = arrow.path;
+  const status = arrow.status || "advancing";
+  const color = ARROW_STATUS_COLORS[status] || 0x44cc44;
+  const hexColor = ARROW_STATUS_HEX[status] || "#44cc44";
+  const frontWidth = Math.max(2, arrow.frontWidth || 3);
+  const halfW = (frontWidth / 2) * cellSize;
+  const isDensityArrow = arrow.troopCommitment != null && arrow.troopCommitment > 0;
+  const troopCount = isDensityArrow
+    ? (arrow.effectiveDensityAtFront || 0)
+    : (arrow.remainingPower || 0);
+  const headX = (arrow.headX ?? path[path.length - 1].x) * cellSize + cellSize / 2;
+  const headY = (arrow.headY ?? path[path.length - 1].y) * cellSize + cellSize / 2;
+  const opposingForces = arrow.opposingForces || [];
+
+  return (
+    <React.Fragment key={key}>
+      <Graphics
+        zIndex={200}
+        draw={(g) => {
+          g.clear();
+
+          const startX = path[0].x * cellSize + cellSize / 2;
+          const startY = path[0].y * cellSize + cellSize / 2;
+
+          // Build left and right outlines by offsetting path perpendicular
+          const leftPts = [];
+          const rightPts = [];
+          let lastDx = 0, lastDy = 0;
+          for (let i = 0; i < path.length; i++) {
+            const px = path[i].x * cellSize + cellSize / 2;
+            const py = path[i].y * cellSize + cellSize / 2;
+            const t = path.length > 1 ? i / (path.length - 1) : 0;
+            // Spearhead: wide at origin, narrowing to a point at the front
+            const w = halfW * Math.max(0.08, 1.0 - 0.88 * t);
+
+            let dx, dy;
+            if (i < path.length - 1) {
+              dx = path[i + 1].x - path[i].x;
+              dy = path[i + 1].y - path[i].y;
+            } else {
+              dx = path[i].x - path[i - 1].x;
+              dy = path[i].y - path[i - 1].y;
+            }
+            lastDx = dx; lastDy = dy;
+            const len = Math.hypot(dx, dy) || 1;
+            const perpX = -dy / len;
+            const perpY = dx / len;
+
+            leftPts.push({ x: px + perpX * w, y: py + perpY * w });
+            rightPts.push({ x: px - perpX * w, y: py - perpY * w });
+          }
+
+          // Draw filled wedge polygon
+          g.beginFill(color, 0.25);
+          g.lineStyle(2, color, 0.6);
+          g.moveTo(leftPts[0].x, leftPts[0].y);
+          for (let i = 1; i < leftPts.length; i++) g.lineTo(leftPts[i].x, leftPts[i].y);
+          for (let i = rightPts.length - 1; i >= 0; i--) g.lineTo(rightPts[i].x, rightPts[i].y);
+          g.lineTo(leftPts[0].x, leftPts[0].y);
+          g.endFill();
+
+          // Arrowhead at the tip — wings as wide as the arrow base
+          const tipX = path[path.length - 1].x * cellSize + cellSize / 2;
+          const tipY = path[path.length - 1].y * cellSize + cellSize / 2;
+          const tipLen = Math.hypot(lastDx, lastDy) || 1;
+          const fwdX = lastDx / tipLen;
+          const fwdY = lastDy / tipLen;
+          const perpTipX = -fwdY;
+          const perpTipY = fwdX;
+          const arrowLen = Math.max(cellSize * 1.5, halfW * 0.6);
+          const arrowWing = halfW; // match the full base width of the wedge
+          g.beginFill(color, 0.7);
+          g.lineStyle(0);
+          g.moveTo(tipX + fwdX * arrowLen, tipY + fwdY * arrowLen);
+          g.lineTo(tipX + perpTipX * arrowWing, tipY + perpTipY * arrowWing);
+          g.lineTo(tipX - perpTipX * arrowWing, tipY - perpTipY * arrowWing);
+          g.lineTo(tipX + fwdX * arrowLen, tipY + fwdY * arrowLen);
+          g.endFill();
+
+          // Center line
+          g.lineStyle(2, color, 0.5);
+          g.moveTo(startX, startY);
+          for (let i = 1; i < path.length; i++) {
+            g.lineTo(path[i].x * cellSize + cellSize / 2, path[i].y * cellSize + cellSize / 2);
+          }
+
+          // Phase markers
+          for (let i = 1; i < path.length; i++) {
+            const wx = path[i].x * cellSize + cellSize / 2;
+            const wy = path[i].y * cellSize + cellSize / 2;
+            const reached = i < (arrow.currentIndex || 1);
+            g.lineStyle(1, reached ? 0xffffff : 0x888888, 0.6);
+            g.beginFill(reached ? 0xffffff : 0x444444, 0.4);
+            g.drawCircle(wx, wy, cellSize * 0.2);
+            g.endFill();
+          }
+        }}
+      />
+      {/* Troop count label at head — fixed screen size via inverse scale */}
+      {(() => {
+        // Render at large internal font size, scale by 1/zoomScale so it stays
+        // at a fixed screen size regardless of zoom (same approach as NationLabel).
+        const baseFontSize = 18;
+        const invScale = 1 / Math.max(0.35, scale || 1);
+        // Fade when zoomed in so it doesn't block the view
+        const labelAlpha = scale > 2 ? Math.max(0.3, 1.0 - (scale - 2) * 0.15) : 0.85;
+        return (
+          <Text
+            text={Math.round(troopCount).toLocaleString()}
+            x={headX}
+            y={headY - cellSize * 0.8}
+            anchor={0.5}
+            zIndex={211}
+            alpha={labelAlpha}
+            scale={{ x: invScale, y: invScale }}
+            style={{
+              fontFamily: "system-ui, -apple-system, sans-serif",
+              fill: hexColor,
+              fontSize: baseFontSize,
+              fontWeight: "300",
+              stroke: "#000000",
+              strokeThickness: 3,
+            }}
+          />
+        );
+      })()}
+      {/* Opposition indicators */}
+      {opposingForces.length > 0 && (() => {
+        const baseFontSize = 14;
+        const invScale = 1 / Math.max(0.35, scale || 1);
+        const labelAlpha = scale > 2 ? Math.max(0.2, 0.8 - (scale - 2) * 0.15) : 0.7;
+        return (
+          <Text
+            text={opposingForces.map((o) => `vs ${o.nationName}`).join(" ")}
+            x={headX}
+            y={headY + cellSize * 0.3}
+            anchor={0.5}
+            zIndex={211}
+            alpha={labelAlpha}
+            scale={{ x: invScale, y: invScale }}
+            style={{
+              fontFamily: "system-ui, -apple-system, sans-serif",
+              fill: "#ff6666",
+              fontSize: baseFontSize,
+              fontWeight: "300",
+              stroke: "#000000",
+              strokeThickness: 3,
+            }}
+          />
+        );
+      })()}
+    </React.Fragment>
+  );
+};
+
+// Troop density heatmap overlay — renders density as colored cells on owned territory.
+// Memoized to avoid re-draws when data hasn't meaningfully changed.
+const TroopDensityHeatmap = React.memo(({ densityMap, cellSize, visibleBounds }) => {
+  if (!densityMap || densityMap.length < 3) return null;
+
+  return (
+    <Graphics
+      zIndex={105}
+      draw={(g) => {
+        g.clear();
+        const minX = visibleBounds?.minX ?? -Infinity;
+        const maxX = visibleBounds?.maxX ?? Infinity;
+        const minY = visibleBounds?.minY ?? -Infinity;
+        const maxY = visibleBounds?.maxY ?? Infinity;
+
+        for (let i = 0; i < densityMap.length; i += 3) {
+          const x = densityMap[i];
+          const y = densityMap[i + 1];
+          const density = densityMap[i + 2]; // 0-255 quantized (coarse: steps of 8)
+
+          if (x < minX || x > maxX || y < minY || y > maxY) continue;
+          if (density <= 0) continue;
+
+          const t = Math.min(1, density / 255);
+          // Color gradient: green (low) -> yellow (mid) -> red (high)
+          let r, gVal, b;
+          if (t < 0.5) {
+            const s = t * 2;
+            r = Math.round(s * 255);
+            gVal = 255;
+            b = 0;
+          } else {
+            const s = (t - 0.5) * 2;
+            r = 255;
+            gVal = Math.round((1 - s) * 255);
+            b = 0;
+          }
+          const color = (r << 16) | (gVal << 8) | b;
+          const alpha = 0.15 + t * 0.35;
+
+          g.beginFill(color, alpha);
+          g.drawRect(x * cellSize, y * cellSize, cellSize, cellSize);
+          g.endFill();
+        }
+      }}
+    />
+  );
+}, (prev, next) => {
+  // Custom comparison: skip re-render if densityMap data is identical
+  if (prev.cellSize !== next.cellSize) return false;
+  const a = prev.densityMap;
+  const b = next.densityMap;
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  // Sample comparison — check every 3rd triple for changes
+  const step = Math.max(3, Math.floor(a.length / 30) * 3);
+  for (let i = 0; i < a.length; i += step) {
+    if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) return false;
+  }
+  return true;
+});
+
+// Completed arrow rendering removed — troops return to population silently
+
+// Note: renderTowers for resource upgrades has been removed
+// Towers are now handled as structures within nations.cities
 
 /* -------------------------------------------------------------------------- */
 /*                           Custom Hooks                                    */
@@ -68,13 +520,13 @@ function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
 
   const computedMinScale = useMemo(() => {
     if (!mapMetadata) return 1;
-    const minScaleWidth = mapMetadata.width / 64;
-    const minScaleHeight =
-      (stageHeight * mapMetadata.width) / (stageWidth * 64);
-    return Math.max(minScaleWidth, minScaleHeight);
+    const naturalMapHeight = (stageWidth * mapMetadata.height) / mapMetadata.width;
+    const fitScale =
+      naturalMapHeight > stageHeight ? stageHeight / naturalMapHeight : 1;
+    return Math.min(1, fitScale);
   }, [mapMetadata, stageWidth, stageHeight]);
 
-  const initialScale = computedMinScale > 2 ? computedMinScale : 2;
+  const initialScale = computedMinScale;
 
   const initialOffset = useMemo(() => {
     if (!mapMetadata) return { x: 0, y: 0 };
@@ -90,6 +542,16 @@ function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
 
   const [scale, setScale] = useState(initialScale);
   const [offset, setOffset] = useState(initialOffset);
+  const scaleRef = useRef(scale);
+  const offsetRef = useRef(offset);
+
+  useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
+
+  useEffect(() => {
+    offsetRef.current = offset;
+  }, [offset]);
 
   const clampOffsetFinal = useCallback(
     (offset, currentScale) => {
@@ -117,6 +579,23 @@ function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
     [stageWidth, stageHeight, mapMetadata]
   );
 
+  const zoomAtPoint = useCallback(
+    (screenX, screenY, targetScale) => {
+      const prevScale = scaleRef.current;
+      const prevOffset = offsetRef.current;
+      const nextScale = Math.min(Math.max(targetScale, computedMinScale), 14);
+      const worldX = (screenX - prevOffset.x) / prevScale;
+      const worldY = (screenY - prevOffset.y) / prevScale;
+      const newOffset = {
+        x: screenX - worldX * nextScale,
+        y: screenY - worldY * nextScale,
+      };
+      setScale(nextScale);
+      setOffset(clampOffsetFinal(newOffset, nextScale));
+    },
+    [computedMinScale, clampOffsetFinal]
+  );
+
   const handleWheel = useCallback(
     (e) => {
       let mousePos;
@@ -139,22 +618,30 @@ function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
         0
       );
       const zoomFactor = delta > 0 ? 1.1 : 0.9;
-      setScale((prevScale) => {
-        const newScale = Math.min(
-          Math.max(prevScale * zoomFactor, computedMinScale),
-          14
-        );
-        const worldX = (mousePos.x - offset.x) / prevScale;
-        const worldY = (mousePos.y - offset.y) / prevScale;
-        const newOffset = {
-          x: mousePos.x - worldX * newScale,
-          y: mousePos.y - worldY * newScale,
-        };
-        setOffset(clampOffsetFinal(newOffset, newScale));
-        return newScale;
-      });
+      zoomAtPoint(mousePos.x, mousePos.y, scaleRef.current * zoomFactor);
     },
-    [offset, computedMinScale, clampOffsetFinal]
+    [zoomAtPoint]
+  );
+
+  const setOffsetClamped = useCallback(
+    (next) => {
+      const resolved =
+        typeof next === "function" ? next(offsetRef.current) : next;
+      setOffset(clampOffsetFinal(resolved, scaleRef.current));
+    },
+    [clampOffsetFinal]
+  );
+
+  const panBy = useCallback(
+    (dx, dy) => {
+      setOffset((prev) =>
+        clampOffsetFinal(
+          { x: prev.x + dx, y: prev.y + dy },
+          scaleRef.current
+        )
+      );
+    },
+    [clampOffsetFinal]
   );
 
   const getCellCoordinates = useCallback(
@@ -175,33 +662,13 @@ function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
     offset,
     setOffset,
     setScale,
+    setOffsetClamped,
+    panBy,
     handleWheel,
+    zoomAtPoint,
     getCellCoordinates,
     computedMinScale,
   };
-}
-
-/**
- * useSelection
- *
- * Encapsulates selection box state management.
- */
-function useSelection() {
-  const [selectionBox, setSelectionBox] = useState(null);
-
-  const startSelection = useCallback((startPos) => {
-    setSelectionBox({ start: startPos, end: startPos });
-  }, []);
-
-  const updateSelection = useCallback((newPos) => {
-    setSelectionBox((prev) => (prev ? { ...prev, end: newPos } : prev));
-  }, []);
-
-  const clearSelection = useCallback(() => {
-    setSelectionBox(null);
-  }, []);
-
-  return { selectionBox, startSelection, updateSelection, clearSelection };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -250,37 +717,159 @@ const getMergedTerritory = (nation) => {
 /**
  * NationOverlay
  *
- * This component renders a nation’s territory, cities, and armies.
+ * This component renders a nation’s territory and cities.
  * It memoizes the territory lookup set and border cells so that border
  * detection only happens when the territory actually changes.
  */
+const NationLabel = ({ text, x, y, fontSize, alpha, scale }) => {
+  const labelRef = useRef(null);
+  useEffect(() => {
+    if (labelRef.current?.texture?.baseTexture) {
+      labelRef.current.texture.baseTexture.scaleMode = PIXI_SCALE_MODES.LINEAR;
+    }
+  }, [text]);
+
+  const inverseScale = 1 / Math.max(0.35, scale || 1);
+
+  return (
+    <Text
+      ref={labelRef}
+      text={text}
+      x={x}
+      y={y}
+      anchor={0.5}
+      zIndex={130}
+      scale={inverseScale}
+      resolution={window.devicePixelRatio || 1}
+      style={{
+        fontFamily: "Barlow Semi Condensed, system-ui",
+        fill: "#ffffff",
+        fontSize,
+        fontWeight: "600",
+        stroke: "#000000",
+        strokeThickness: Math.max(2, Math.round(fontSize * 0.18)),
+      }}
+      alpha={alpha}
+    />
+  );
+};
+
 const NationOverlay = ({
   nation,
   nationIndex,
   cellSize,
   scale,
-  selectedArmies,
   userId,
-  setSelectedArmy,
+  nationColors,
+  ownershipMap,
+  visibleBounds,
 }) => {
   const palette = [
-    "#FF5733",
-    "#33FF57",
-    "#3357FF",
-    "#FF33A8",
-    "#A833FF",
-    "#33FFF0",
-    "#FFC133",
-    "#FF3333",
-    "#33FF33",
-    "#3333FF",
+    "#FF3B30",
+    "#34C759",
+    "#0A84FF",
+    "#FF9F0A",
+    "#BF5AF2",
+    "#FF375F",
+    "#64D2FF",
+    "#FFD60A",
+    "#32D74B",
+    "#5E5CE6",
   ];
   const nationColor =
-    nation.owner === userId ? "#FFFF00" : palette[nationIndex % palette.length];
+    nationColors?.[nation.owner] ||
+    palette[nationIndex % palette.length];
   const baseColor = string2hex(nationColor);
 
   // Compute the merged territory for this nation.
   const territory = useMemo(() => getMergedTerritory(nation), [nation]);
+  const territorySet = useMemo(() => {
+    const set = new Set();
+    for (let i = 0; i < territory.x.length; i++) {
+      set.add(`${territory.x[i]},${territory.y[i]}`);
+    }
+    return set;
+  }, [territory]);
+
+  const territoryCentroid = useMemo(() => {
+    if (!territory.x.length) return null;
+    let sumX = 0;
+    let sumY = 0;
+    for (let i = 0; i < territory.x.length; i++) {
+      sumX += territory.x[i];
+      sumY += territory.y[i];
+    }
+    return {
+      x: sumX / territory.x.length,
+      y: sumY / territory.y.length,
+    };
+  }, [territory]);
+  const showBorders = scale > 0.35;
+  const showCities = scale > 0.4;
+  const showLabels = scale > 0.5;
+
+  const labelFontSize = useMemo(() => {
+    const population = Math.max(0, Number(nation.population) || 0);
+    const popScale = Math.log10(population + 10);
+    const base = 14;
+    const size = base + popScale * 7;
+    return Math.min(44, Math.max(16, size));
+  }, [nation.population]);
+
+  const rowRuns = useMemo(() => {
+    const rows = new Map();
+    const minX = visibleBounds?.minX ?? -Infinity;
+    const maxX = visibleBounds?.maxX ?? Infinity;
+    const minY = visibleBounds?.minY ?? -Infinity;
+    const maxY = visibleBounds?.maxY ?? Infinity;
+    const useCulling = scale < 0.7 && visibleBounds;
+    for (let i = 0; i < territory.x.length; i++) {
+      const x = territory.x[i];
+      const y = territory.y[i];
+      if (useCulling) {
+        if (x < minX || x > maxX || y < minY || y > maxY) continue;
+      }
+      if (!rows.has(y)) rows.set(y, []);
+      rows.get(y).push(x);
+    }
+    const runs = [];
+    rows.forEach((xs, y) => {
+      xs.sort((a, b) => a - b);
+      let start = xs[0];
+      let prev = xs[0];
+      for (let i = 1; i < xs.length; i++) {
+        const cur = xs[i];
+        if (cur === prev + 1) {
+          prev = cur;
+          continue;
+        }
+        runs.push({ y, start, end: prev });
+        start = cur;
+        prev = cur;
+      }
+      if (start !== undefined) {
+        runs.push({ y, start, end: prev });
+      }
+    });
+    return runs;
+  }, [territory, visibleBounds, scale]);
+
+  // Compute which tiles are border tiles (have at least one non-owned neighbor)
+  const borderTileSet = useMemo(() => {
+    const bSet = new Set();
+    if (scale < 0.35) return bSet;
+    for (let i = 0; i < territory.x.length; i++) {
+      const x = territory.x[i];
+      const y = territory.y[i];
+      const hasNonOwned =
+        !territorySet.has(`${x},${y - 1}`) ||
+        !territorySet.has(`${x + 1},${y}`) ||
+        !territorySet.has(`${x},${y + 1}`) ||
+        !territorySet.has(`${x - 1},${y}`);
+      if (hasNonOwned) bSet.add(`${x},${y}`);
+    }
+    return bSet;
+  }, [territory, territorySet, scale]);
 
   return (
     <>
@@ -289,67 +878,85 @@ const NationOverlay = ({
         zIndex={100}
         draw={(g) => {
           g.clear();
-          // Draw non-border cells with lower opacity.
-          g.beginFill(baseColor, 0.5);
-          for (let i = 0; i < territory.x.length; i++) {
-            const x = territory.x[i];
-            const y = territory.y[i];
-            const key = `${x},${y}`;
-            g.drawRect(x * cellSize, y * cellSize, cellSize, cellSize);
+          // Interior tiles at 0.6 alpha, edge tiles at full opacity
+          for (let i = 0; i < rowRuns.length; i++) {
+            const run = rowRuns[i];
+            if (!showBorders) {
+              // Not zoomed in enough for borders — draw whole run at 0.6
+              const width = (run.end - run.start + 1) * cellSize;
+              g.beginFill(baseColor, 0.6);
+              g.drawRect(run.start * cellSize, run.y * cellSize, width, cellSize);
+              g.endFill();
+            } else {
+              // Split run into edge vs interior segments
+              let segStart = run.start;
+              let segIsEdge = borderTileSet.has(`${run.start},${run.y}`);
+              for (let x = run.start + 1; x <= run.end; x++) {
+                const isEdge = borderTileSet.has(`${x},${run.y}`);
+                if (isEdge !== segIsEdge) {
+                  const width = (x - segStart) * cellSize;
+                  g.beginFill(baseColor, segIsEdge ? 1.0 : 0.5);
+                  g.drawRect(segStart * cellSize, run.y * cellSize, width, cellSize);
+                  g.endFill();
+                  segStart = x;
+                  segIsEdge = isEdge;
+                }
+              }
+              // Final segment
+              const width = (run.end - segStart + 1) * cellSize;
+              g.beginFill(baseColor, segIsEdge ? 1.0 : 0.5);
+              g.drawRect(segStart * cellSize, run.y * cellSize, width, cellSize);
+              g.endFill();
+            }
           }
-          g.endFill();
         }}
       />
-      {(nation.cities || []).map((city, idx) => {
-        const iconSize = cellSize;
-        const centerX = city.x * cellSize + cellSize / 2;
-        const centerY = city.y * cellSize + cellSize / 2;
-        return (
-          <BorderedSprite
-            key={`city-${nation.owner}-${idx}`}
-            texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
-            x={centerX}
-            y={centerY}
-            width={iconSize}
-            height={iconSize}
-            borderColor={baseColor}
-            borderWidth={2 * Math.sqrt(scale)}
-            interactive={true}
-            pointerdown={(e) => {
-              e.stopPropagation();
-              console.log("City clicked:", city);
-            }}
-            baseZ={150 + centerY}
-          />
-        );
-      })}
-      {(nation.armies || []).map((army, idx) => {
-        const iconSize = cellSize;
-        const centerX = Math.floor(army.position.x) * cellSize + cellSize / 2;
-        const centerY = Math.floor(army.position.y) * cellSize + cellSize / 2;
-        const isSelected = selectedArmies.some((sel) => sel.id === army.id);
-        return (
-          <BorderedSprite
-            key={`army-${nation.owner}-${idx}`}
-            texture={`/${army.type.toLowerCase().replace(" ", "_")}.png`}
-            x={centerX}
-            y={centerY}
-            width={iconSize}
-            height={iconSize}
-            borderColor={isSelected ? "0x00ff00" : baseColor}
-            borderWidth={2 * Math.sqrt(scale)}
-            interactive={true}
-            isSelected={isSelected}
-            pointerdown={(e) => {
-              e.stopPropagation();
-              console.log("Army clicked:", army);
-              setSelectedArmy(army);
-            }}
-            baseZ={500 + centerY}
-            text={`${army.currentPower}`}
-          />
-        );
-      })}
+      {showLabels && territoryCentroid && (
+        <NationLabel
+          text={nation.owner}
+          x={territoryCentroid.x * cellSize}
+          y={territoryCentroid.y * cellSize}
+          fontSize={labelFontSize}
+          alpha={scale > 3.5 ? 0.2 : 0.9}
+          scale={scale}
+        />
+      )}
+      {showCities &&
+        (nation.cities || []).map((city, idx) => {
+          const iconSize = cellSize;
+          const centerX = city.x * cellSize + cellSize / 2;
+          const centerY = city.y * cellSize + cellSize / 2;
+          const showName = scale > 1.5 && city.name;
+          return (
+            <React.Fragment key={`city-${nation.owner}-${idx}`}>
+              <BorderedSprite
+                texture={`/${city.type.toLowerCase().replace(" ", "_")}.png`}
+                x={centerX}
+                y={centerY}
+                width={iconSize}
+                height={iconSize}
+                borderColor={baseColor}
+                borderWidth={2 * Math.sqrt(scale)}
+                interactive={true}
+                pointerdown={(e) => {
+                  e.stopPropagation();
+                  console.log("City clicked:", city);
+                }}
+                baseZ={150 + centerY}
+              />
+              {showName && (
+                <NationLabel
+                  text={city.type === "capital" ? `${city.name} (Capital)` : city.name}
+                  x={centerX}
+                  y={centerY + iconSize * 0.6}
+                  fontSize={Math.max(12, labelFontSize * 0.75)}
+                  alpha={0.9}
+                  scale={scale}
+                />
+              )}
+            </React.Fragment>
+          );
+        })}
     </>
   );
 };
@@ -364,40 +971,256 @@ const GameCanvas = ({
   mappings,
   gameState,
   userId,
-  onArmyTargetSelect,
+  nationColors,
+  config,
   foundingNation,
   onFoundNation,
   buildingStructure,
   onBuildCity,
   onCancelBuild,
+  drawingArrowType,
+  onStartDrawArrow,
+  currentArrowPath,
+  onArrowPathUpdate,
+  onSendArrow,
+  onCancelArrow,
+  activeAttackArrows,
+  activeDefendArrow,
+  uiMode,
+  isMobile,
+  onInspectCell,
+  troopDensityMap,
 }) => {
   const stageWidth = window.innerWidth;
   const stageHeight = window.innerHeight;
 
-  // Use our custom pan/zoom hook
   const {
     cellSize,
     scale,
     offset,
-    setOffset,
+    setOffsetClamped,
+    panBy,
     handleWheel,
     getCellCoordinates,
-    computedMinScale,
   } = usePanZoom({ mapMetadata, stageWidth, stageHeight });
 
-  // Use our selection hook
-  const { selectionBox, startSelection, updateSelection, clearSelection } =
-    useSelection();
-
   // Local state for unit selections and hovered cell
-  const [selectedArmies, setSelectedArmies] = useState([]);
-  const [selectedArmy, setSelectedArmy] = useState(null);
   const [hoveredCell, setHoveredCell] = useState(null);
+  const hoverFrameRef = useRef(null);
+  const pendingHoverRef = useRef(null);
+  const nations = gameState?.gameState?.nations || [];
+  const resourceNodeClaims = gameState?.gameState?.resourceNodeClaims || {};
+  const captureTicks =
+    config?.territorial?.resourceCaptureTicks || 20;
+  const [captureEffects, setCaptureEffects] = useState([]);
+  const [captureEffectTime, setCaptureEffectTime] = useState(0);
+  const captureInitRef = useRef(false);
+  const lastClaimOwnersRef = useRef({});
+  const ownershipMap = useMemo(() => {
+    const map = new Map();
+    nations.forEach((nation) => {
+      const tx = nation?.territory?.x || [];
+      const ty = nation?.territory?.y || [];
+      for (let i = 0; i < tx.length; i++) {
+        map.set(`${tx[i]},${ty[i]}`, nation.owner);
+      }
+    });
+    return map;
+  }, [nations]);
 
-  /* ----- Middle Mouse Panning State ----- */
+  useEffect(() => {
+    if (!resourceNodeClaims) return;
+    const currentOwners = {};
+    const newEffects = [];
+    Object.entries(resourceNodeClaims).forEach(([key, claim]) => {
+      const owner = claim?.owner || null;
+      currentOwners[key] = owner;
+      if (!owner || !captureInitRef.current) return;
+      const prevOwner = lastClaimOwnersRef.current?.[key] || null;
+      if (owner === prevOwner) return;
+      if (userId && owner !== userId) return;
+      const [xStr, yStr] = key.split(",");
+      const x = Number(xStr);
+      const y = Number(yStr);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const resourceName = String(claim?.type || "resource").replace(/_/g, " ");
+      newEffects.push({
+        id: `${key}-${owner}-${Date.now()}`,
+        x,
+        y,
+        text: `${resourceName} node captured`,
+        createdAt: performance.now(),
+      });
+    });
+    if (!captureInitRef.current) {
+      captureInitRef.current = true;
+      lastClaimOwnersRef.current = currentOwners;
+      return;
+    }
+    lastClaimOwnersRef.current = currentOwners;
+    if (newEffects.length) {
+      setCaptureEffects((prev) => {
+        const next = [...prev, ...newEffects];
+        return next.slice(-CAPTURE_EFFECT_MAX);
+      });
+    }
+  }, [resourceNodeClaims, userId]);
+
+  const buildCellInfo = useCallback(
+    (cell, x, y) => {
+      if (!cell) return null;
+      const biomeName =
+        mappings?.biomes?.[cell[3]] || cell[3] || "UNKNOWN";
+      const rawResources = Array.isArray(cell[5]) ? cell[5] : [];
+      const resources = rawResources.map((r) =>
+        typeof r === "string" ? r : mappings?.resources?.[r] ?? r
+      );
+      const key = `${x},${y}`;
+      const owner = ownershipMap.get(key) || null;
+      const ownerNation = owner
+        ? nations.find((n) => n.owner === owner)
+        : null;
+      const structure = ownerNation?.cities?.find(
+        (c) => c.x === x && c.y === y
+      );
+      const claim = resourceNodeClaims?.[key] || null;
+      return {
+        x,
+        y,
+        biome: biomeName,
+        resources,
+        owner,
+        ownerColor: owner ? nationColors?.[owner] : null,
+        structure,
+        claim,
+      };
+    },
+    [mappings, ownershipMap, nations, resourceNodeClaims, nationColors]
+  );
+
+  const mapGridByRow = useMemo(() => {
+    if (!mapMetadata) return [];
+    const rows = Array.from({ length: mapMetadata.height }, () =>
+      Array.from({ length: mapMetadata.width }, () => null)
+    );
+    for (let i = 0; i < mapGrid.length; i++) {
+      const entry = mapGrid[i];
+      if (!entry) continue;
+      const { cell, x, y } = entry;
+      if (y >= 0 && y < rows.length && x >= 0 && x < rows[y].length) {
+        rows[y][x] = cell;
+      }
+    }
+    return rows;
+  }, [mapGrid, mapMetadata]);
+
+  const biomeColors = useMemo(
+    () => ({
+      OCEAN: 0x1b4f72,
+      COASTAL: 0x2e86c1,
+      RIVER: 0x3498db,
+      MOUNTAIN: 0x7f8c8d,
+      DESERT: 0xd4ac0d,
+      SAVANNA: 0xa9c46a,
+      TROPICAL_FOREST: 0x1e8449,
+      RAINFOREST: 0x145a32,
+      TUNDRA: 0xd6eaf8,
+      TAIGA: 0x4d9078,
+      GRASSLAND: 0x6aa84f,
+      WOODLAND: 0x3d7b3f,
+      FOREST: 0x1b5e20,
+      default: 0x6aa84f,
+    }),
+    []
+  );
+
+  const fullMapImageUrl = useMemo(() => {
+    if (!mapMetadata || mapGridByRow.length === 0) return null;
+    const width = mapMetadata.width;
+    const height = mapMetadata.height;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    const imageData = ctx.createImageData(width, height);
+    const data = imageData.data;
+    const biomeLookup = mappings?.biomes || {};
+    for (let y = 0; y < height; y++) {
+      const row = mapGridByRow[y];
+      if (!row) continue;
+      for (let x = 0; x < width; x++) {
+        const cell = row[x];
+        if (!cell) continue;
+        const biomeName = biomeLookup[cell[3]] || "default";
+        const color = biomeColors[biomeName] ?? biomeColors.default;
+        const idx = (y * width + x) * 4;
+        data[idx] = (color >> 16) & 0xff;
+        data[idx + 1] = (color >> 8) & 0xff;
+        data[idx + 2] = color & 0xff;
+        data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return canvas.toDataURL();
+  }, [mapMetadata, mapGridByRow, mappings, biomeColors]);
+
+  useEffect(() => {
+    if (captureEffects.length === 0) return undefined;
+    let animationFrameId;
+    let lastUpdate = performance.now();
+    const tick = (now) => {
+      if (now - lastUpdate >= 50) {
+        lastUpdate = now;
+        setCaptureEffectTime(now);
+      }
+      animationFrameId = requestAnimationFrame(tick);
+    };
+    animationFrameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [captureEffects.length]);
+
+  useEffect(() => {
+    if (captureEffects.length === 0) return;
+    const now = captureEffectTime || performance.now();
+    const cutoff = now - CAPTURE_EFFECT_DURATION_MS;
+    const hasExpired = captureEffects.some((effect) => effect.createdAt < cutoff);
+    if (!hasExpired) return;
+    setCaptureEffects((prev) =>
+      prev.filter((effect) => effect.createdAt >= cutoff)
+    );
+  }, [captureEffectTime, captureEffects]);
+
+  useEffect(() => {
+    return () => {
+      if (hoverFrameRef.current) {
+        cancelAnimationFrame(hoverFrameRef.current);
+      }
+    };
+  }, []);
+
+  /* ----- Viewport State ----- */
   const [isPanning, setIsPanning] = useState(false);
-  const panStartPosRef = useRef(null);
-  const panStartOffsetRef = useRef(null);
+  const drawTypeRef = useRef(null);
+  const panRef = useRef({
+    active: false,
+    startX: 0,
+    startY: 0,
+    startOffset: { x: 0, y: 0 },
+    moved: false,
+    button: null,
+  });
+
+  /* ----- Arrow Drawing State ----- */
+  const isDrawingArrowRef = useRef(false);
+  const arrowPathRef = useRef([]);
+  const lastArrowPointRef = useRef(null);
+  const configRef = useRef(config);
+  configRef.current = config;
+  const gameStateRef = useRef(gameState);
+  gameStateRef.current = gameState;
+
+  /* ----- Arrow Animation State ----- */
 
   /* ----- Smoother WASD Panning via Animation Frame ----- */
   const keysRef = useRef({ w: false, a: false, s: false, d: false });
@@ -432,10 +1255,7 @@ const GameCanvas = ({
       if (keysRef.current.a) dx += panSpeed * deltaTime;
       if (keysRef.current.d) dx -= panSpeed * deltaTime;
       if (dx !== 0 || dy !== 0) {
-        setOffset((prev) => ({
-          x: prev.x + dx,
-          y: prev.y + dy,
-        }));
+        panBy(dx, dy);
       }
       animationFrameId = requestAnimationFrame(update);
     };
@@ -445,7 +1265,7 @@ const GameCanvas = ({
       window.removeEventListener("keyup", handleKeyUp);
       cancelAnimationFrame(animationFrameId);
     };
-  }, [setOffset]);
+  }, [panBy]);
 
   /* ----- Pointer Handlers ----- */
   const handlePointerDown = useCallback(
@@ -458,32 +1278,105 @@ const GameCanvas = ({
         x = e.nativeEvent.clientX - rect.left;
         y = e.nativeEvent.clientY - rect.top;
       }
-      // Check which button is pressed (0: left, 1: middle)
+      // Check which button is pressed (0: left, 1: middle, 2: right)
       const button = e.data?.originalEvent?.button ?? e.nativeEvent?.button;
-      if (button === 1) {
-        // Middle mouse pressed: start panning
-        setIsPanning(true);
-        panStartPosRef.current = { x, y };
-        panStartOffsetRef.current = { ...offset };
+      const buttons =
+        e.data?.originalEvent?.buttons ?? e.nativeEvent?.buttons ?? 0;
+      const leftDown = (buttons & 1) === 1;
+      const rightDown = (buttons & 2) === 2;
+      const middleDown = (buttons & 4) === 4;
+      const defendCombo = leftDown && rightDown;
+
+      if (button === 2) {
+        e.data?.originalEvent?.preventDefault?.();
+        e.preventDefault?.();
+      }
+      const forcedDraw =
+        uiMode === "drawAttack"
+          ? "attack"
+          : uiMode === "drawDefend"
+          ? "defend"
+          : drawingArrowType;
+      const canDraw = !foundingNation && !buildingStructure;
+      const shouldPan =
+        button === 1 ||
+        button === 2 ||
+        middleDown ||
+        rightDown ||
+        uiMode === "pan" ||
+        (isMobile && uiMode === "idle");
+
+      if (defendCombo && canDraw) {
+        if (panRef.current.active) {
+          panRef.current.active = false;
+          panRef.current.moved = false;
+          panRef.current.button = null;
+          setIsPanning(false);
+        }
+        const cell = getCellCoordinates(x, y);
+        if (
+          cell.x >= 0 &&
+          cell.x < mapMetadata.width &&
+          cell.y >= 0 &&
+          cell.y < mapMetadata.height
+        ) {
+          drawTypeRef.current = "defend";
+          if (drawingArrowType !== "defend") {
+            onStartDrawArrow?.("defend");
+          }
+          isDrawingArrowRef.current = true;
+          arrowPathRef.current = [{ x: cell.x, y: cell.y }];
+          lastArrowPointRef.current = { x: cell.x, y: cell.y };
+          onArrowPathUpdate?.([{ x: cell.x, y: cell.y }]);
+        }
         return;
       }
-      // If not panning and no special mode active, start selection.
-      if (
-        !foundingNation &&
-        !buildingStructure &&
-        !selectedArmy &&
-        selectedArmies.length === 0
-      ) {
-        startSelection({ x, y });
+
+      if (shouldPan) {
+        panRef.current.active = true;
+        panRef.current.moved = false;
+        panRef.current.startX = x;
+        panRef.current.startY = y;
+        panRef.current.startOffset = { ...offset };
+        panRef.current.button = button;
+        setIsPanning(true);
+        return;
       }
+
+      // Arrow drawing mode
+      if (canDraw && button === 0) {
+        const drawMode = forcedDraw || "attack";
+        const cell = getCellCoordinates(x, y);
+        if (
+          cell.x >= 0 &&
+          cell.x < mapMetadata.width &&
+          cell.y >= 0 &&
+          cell.y < mapMetadata.height
+        ) {
+          drawTypeRef.current = drawMode;
+          if (drawingArrowType !== drawMode) {
+            onStartDrawArrow?.(drawMode);
+          }
+          isDrawingArrowRef.current = true;
+          arrowPathRef.current = [{ x: cell.x, y: cell.y }];
+          lastArrowPointRef.current = { x: cell.x, y: cell.y };
+          onArrowPathUpdate?.([{ x: cell.x, y: cell.y }]);
+        }
+        return;
+      }
+
     },
     [
       foundingNation,
       buildingStructure,
-      selectedArmy,
-      selectedArmies,
+      drawingArrowType,
+      uiMode,
+      isMobile,
+      getCellCoordinates,
+      mapMetadata,
+      onArrowPathUpdate,
+      onStartDrawArrow,
       offset,
-      startSelection,
     ]
   );
 
@@ -497,21 +1390,20 @@ const GameCanvas = ({
         x = e.nativeEvent.clientX - rect.left;
         y = e.nativeEvent.clientY - rect.top;
       }
-      // If middle mouse panning is active, update offset based on pointer movement.
-      if (isPanning) {
-        const deltaX = x - panStartPosRef.current.x;
-        const deltaY = y - panStartPosRef.current.y;
-        const newOffset = {
-          x: panStartOffsetRef.current.x + deltaX,
-          y: panStartOffsetRef.current.y + deltaY,
-        };
-        setOffset(newOffset);
+      if (panRef.current.active) {
+        const dx = x - panRef.current.startX;
+        const dy = y - panRef.current.startY;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+          panRef.current.moved = true;
+        }
+        setOffsetClamped({
+          x: panRef.current.startOffset.x + dx,
+          y: panRef.current.startOffset.y + dy,
+        });
         return;
       }
-      // If a selection is active, update the selection box.
-      if (selectionBox) {
-        updateSelection({ x, y });
-      } else {
+      // Arrow drawing - add points to path, clamped to max range
+      if (isDrawingArrowRef.current && (drawTypeRef.current || drawingArrowType)) {
         const cell = getCellCoordinates(x, y);
         if (
           cell.x >= 0 &&
@@ -519,27 +1411,118 @@ const GameCanvas = ({
           cell.y >= 0 &&
           cell.y < mapMetadata.height
         ) {
-          setHoveredCell(cell);
-        } else {
-          setHoveredCell(null);
+          const last = lastArrowPointRef.current;
+          if (!last || cell.x !== last.x || cell.y !== last.y) {
+            // Compute max arrow range from config + player population
+            const cfg = configRef.current;
+            const baseRange = cfg?.territorial?.arrowBaseRange ?? 15;
+            const rangePerSqrtPop = cfg?.territorial?.arrowRangePerSqrtPop ?? 0.15;
+            const maxRangeCfg = cfg?.territorial?.arrowMaxRange ?? 60;
+            const gs = gameStateRef.current;
+            const playerNation = gs?.gameState?.nations?.find(
+              (n) => n.owner === userId
+            );
+            const pop = playerNation?.population || 0;
+            const maxRange = Math.min(maxRangeCfg, baseRange + Math.sqrt(pop) * rangePerSqrtPop);
+
+            // Compute current path length
+            const path = arrowPathRef.current;
+            let pathLen = 0;
+            for (let i = 1; i < path.length; i++) {
+              pathLen += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+            }
+            const segLen = Math.hypot(cell.x - last.x, cell.y - last.y);
+
+            // Only add point if within max range
+            if (pathLen + segLen <= maxRange) {
+              arrowPathRef.current.push({ x: cell.x, y: cell.y });
+              lastArrowPointRef.current = { x: cell.x, y: cell.y };
+              onArrowPathUpdate?.([...arrowPathRef.current]);
+            }
+            // else: silently stop extending — arrow is at max range
+          }
         }
+        return;
+      }
+      const cell = getCellCoordinates(x, y);
+      if (
+        cell.x >= 0 &&
+        cell.x < mapMetadata.width &&
+        cell.y >= 0 &&
+        cell.y < mapMetadata.height
+      ) {
+        pendingHoverRef.current = cell;
+      } else {
+        pendingHoverRef.current = null;
+      }
+      if (!hoverFrameRef.current) {
+        hoverFrameRef.current = requestAnimationFrame(() => {
+          hoverFrameRef.current = null;
+          setHoveredCell(pendingHoverRef.current);
+        });
       }
     },
     [
-      isPanning,
-      selectionBox,
-      updateSelection,
       getCellCoordinates,
       mapMetadata,
-      setOffset,
+      drawingArrowType,
+      onArrowPathUpdate,
+      setOffsetClamped,
     ]
   );
 
+  // Clean up arrow drawing state — shared by pointerup and pointerleave
+  const finishArrowDrawing = useCallback(
+    (submit) => {
+      if (!isDrawingArrowRef.current) return;
+      isDrawingArrowRef.current = false;
+      const drawType = drawTypeRef.current || drawingArrowType;
+      const path = [...arrowPathRef.current];
+      arrowPathRef.current = [];
+      lastArrowPointRef.current = null;
+      drawTypeRef.current = null;
+
+      if (submit) {
+        const simplifiedPath = simplifyArrowPath(path, 3);
+        if (simplifiedPath.length >= 2) {
+          onSendArrow?.(drawType, simplifiedPath);
+        } else {
+          onCancelArrow?.();
+        }
+      } else {
+        onCancelArrow?.();
+      }
+    },
+    [drawingArrowType, onSendArrow, onCancelArrow]
+  );
+
+  const handlePointerLeave = useCallback(() => {
+    // If the pointer leaves the canvas while drawing, cancel the arrow
+    finishArrowDrawing(false);
+    if (panRef.current.active) {
+      panRef.current.active = false;
+      panRef.current.moved = false;
+      panRef.current.button = null;
+      setIsPanning(false);
+    }
+  }, [finishArrowDrawing]);
+
   const handlePointerUp = useCallback(
     (e) => {
-      // If we were panning with the middle mouse button, end panning.
-      if (isPanning) {
+      if (panRef.current.active) {
+        const wasMoved = panRef.current.moved;
+        const panButton = panRef.current.button;
+        panRef.current.active = false;
+        panRef.current.moved = false;
+        panRef.current.button = null;
         setIsPanning(false);
+        if (panButton === 1 || panButton === 2 || wasMoved || uiMode === "pan") {
+          return;
+        }
+      }
+      // Arrow drawing completed
+      if (isDrawingArrowRef.current && (drawTypeRef.current || drawingArrowType)) {
+        finishArrowDrawing(true);
         return;
       }
       let x, y;
@@ -558,7 +1541,6 @@ const GameCanvas = ({
         cell.y < 0 ||
         cell.y >= mapMetadata.height
       ) {
-        clearSelection();
         return;
       }
       if (foundingNation) {
@@ -581,13 +1563,17 @@ const GameCanvas = ({
         const userNation = gameState?.gameState?.nations?.find(
           (n) => n.owner === userId
         );
-        const territoryValid =
-          userNation &&
-          userNation.territory &&
-          userNation.territory.x &&
-          userNation.territory.y &&
-          userNation.territory.x.includes(cell.x) &&
-          userNation.territory.y.includes(cell.y);
+        let territoryValid = false;
+        if (userNation?.territory?.x && userNation?.territory?.y) {
+          const tx = userNation.territory.x;
+          const ty = userNation.territory.y;
+          for (let ti = 0; ti < tx.length; ti++) {
+            if (tx[ti] === cell.x && ty[ti] === cell.y) {
+              territoryValid = true;
+              break;
+            }
+          }
+        }
         resourceValid =
           resourceValid ||
           ["town", "capital", "fort"].includes(buildingStructure);
@@ -597,67 +1583,12 @@ const GameCanvas = ({
         onCancelBuild();
         return;
       }
-      if (selectionBox) {
-        const adjustedStart = {
-          x: (selectionBox.start.x - offset.x) / scale,
-          y: (selectionBox.start.y - offset.y) / scale,
-        };
-        const adjustedEnd = {
-          x: (selectionBox.end.x - offset.x) / scale,
-          y: (selectionBox.end.y - offset.y) / scale,
-        };
-        const boxMinX = Math.min(adjustedStart.x, adjustedEnd.x);
-        const boxMaxX = Math.max(adjustedStart.x, adjustedEnd.x);
-        const boxMinY = Math.min(adjustedStart.y, adjustedEnd.y);
-        const boxMaxY = Math.max(adjustedStart.y, adjustedEnd.y);
-        const newlySelected = [];
-        if (gameState?.gameState?.nations) {
-          gameState.gameState.nations.forEach((nation) => {
-            nation.armies?.forEach((army) => {
-              const armyCenterX =
-                Math.floor(army.position.x) * cellSize + cellSize / 2;
-              const armyCenterY =
-                Math.floor(army.position.y) * cellSize + cellSize / 2;
-              if (
-                armyCenterX >= boxMinX &&
-                armyCenterX <= boxMaxX &&
-                armyCenterY >= boxMinY &&
-                armyCenterY <= boxMaxY
-              ) {
-                newlySelected.push(army);
-              }
-            });
-          });
-        }
-        setSelectedArmies(newlySelected);
-        clearSelection();
-      } else {
-        if (selectedArmies.length > 0) {
-          selectedArmies.forEach((army) =>
-            onArmyTargetSelect?.(army.id, cell.x, cell.y)
-          );
-          setSelectedArmies([]);
-          return;
-        }
-        let foundArmy = null;
-        if (gameState?.gameState?.nations) {
-          for (const nation of gameState.gameState.nations) {
-            const army = nation.armies?.find((army) => {
-              const armyX = Math.round(army.position.x);
-              const armyY = Math.round(army.position.y);
-              return armyX === cell.x && armyY === cell.y && !army.attackTarget;
-            });
-            if (army) {
-              foundArmy = { army, nation };
-              break;
-            }
-          }
-        }
-        if (foundArmy && foundArmy.nation.owner === userId) {
-          setSelectedArmy(foundArmy.army);
-        } else {
-          setSelectedArmy(null);
-        }
+      if (uiMode === "idle" && onInspectCell) {
+        const gridCell = mapGrid.find((c) => c.x === cell.x && c.y === cell.y);
+        const info = gridCell
+          ? buildCellInfo(gridCell.cell, cell.x, cell.y)
+          : null;
+        if (info) onInspectCell(info);
       }
     },
     [
@@ -667,24 +1598,16 @@ const GameCanvas = ({
       onFoundNation,
       buildingStructure,
       onBuildCity,
-      selectionBox,
-      offset,
-      scale,
       mapGrid,
       gameState,
       userId,
-      clearSelection,
       onCancelBuild,
-      selectedArmies,
-      onArmyTargetSelect,
-      cellSize,
+      drawingArrowType,
+      finishArrowDrawing,
+      uiMode,
+      onInspectCell,
+      buildCellInfo,
     ]
-  );
-
-  // Memoize resources rendering
-  const memoizedResources = useMemo(
-    () => renderResources(mapGrid, cellSize, scale),
-    [mapGrid, cellSize, scale]
   );
 
   // Prepare textures mapping for MapTiles
@@ -700,39 +1623,29 @@ const GameCanvas = ({
     return result;
   }, [mappings]);
 
-  /* ----- Render Selection Box ----- */
-  const renderSelectionBox = () => {
-    if (!selectionBox) return null;
-    const { start, end } = selectionBox;
-    const adjustedStart = {
-      x: (start.x - offset.x) / scale,
-      y: (start.y - offset.y) / scale,
-    };
-    const adjustedEnd = {
-      x: (end.x - offset.x) / scale,
-      y: (end.y - offset.y) / scale,
-    };
-    const x = Math.min(adjustedStart.x, adjustedEnd.x);
-    const y = Math.min(adjustedStart.y, adjustedEnd.y);
-    const width = Math.abs(adjustedEnd.x - adjustedStart.x);
-    const height = Math.abs(adjustedEnd.y - adjustedStart.y);
-    return (
-      <Graphics
-        draw={(g) => {
-          g.clear();
-          g.lineStyle(1, 0x00ff00, 1);
-          g.drawRect(x, y, width, height);
-        }}
-        zIndex={10000}
-      />
-    );
-  };
-
   /* ----- Render Nation Overlays using NationOverlay ----- */
+  const visibleBounds = useMemo(() => {
+    if (!mapMetadata) return null;
+    const visibleLeft = -offset.x / scale;
+    const visibleTop = -offset.y / scale;
+    const visibleRight = visibleLeft + stageWidth / scale;
+    const visibleBottom = visibleTop + stageHeight / scale;
+    const minX = Math.max(0, Math.floor(visibleLeft / cellSize) - 2);
+    const maxX = Math.min(
+      mapMetadata.width - 1,
+      Math.ceil(visibleRight / cellSize) + 2
+    );
+    const minY = Math.max(0, Math.floor(visibleTop / cellSize) - 2);
+    const maxY = Math.min(
+      mapMetadata.height - 1,
+      Math.ceil(visibleBottom / cellSize) + 2
+    );
+    return { minX, maxX, minY, maxY };
+  }, [mapMetadata, offset, scale, stageWidth, stageHeight, cellSize]);
+
   const renderNationOverlays = useMemo(() => {
     const overlays = [];
-    if (!gameState?.gameState?.nations) return overlays;
-    gameState.gameState.nations.forEach((nation, nationIndex) => {
+    nations.forEach((nation, nationIndex) => {
       overlays.push(
         <NationOverlay
           key={`nation-${nation.owner}`}
@@ -740,39 +1653,122 @@ const GameCanvas = ({
           nationIndex={nationIndex}
           cellSize={cellSize}
           scale={scale}
-          selectedArmies={selectedArmies}
           userId={userId}
-          setSelectedArmy={setSelectedArmy}
+          nationColors={nationColors}
+          ownershipMap={ownershipMap}
+          visibleBounds={visibleBounds}
         />
       );
     });
     return overlays;
-  }, [gameState.gameState.nations]);
+  }, [
+    nations,
+    cellSize,
+    scale,
+    userId,
+    nationColors,
+    ownershipMap,
+    visibleBounds,
+  ]);
 
   // Compute the visible portion of the map for performance.
   const visibleMapGrid = useMemo(() => {
-    if (!mapMetadata) return [];
+    if (!mapMetadata || mapGridByRow.length === 0 || !visibleBounds) return [];
     const visibleCells = [];
-    const visibleLeft = -offset.x / scale;
-    const visibleTop = -offset.y / scale;
-    const visibleRight = visibleLeft + stageWidth / scale;
-    const visibleBottom = visibleTop + stageHeight / scale;
-    mapGrid.forEach(({ cell, x, y }) => {
-      const cellLeft = x * cellSize;
-      const cellTop = y * cellSize;
-      const cellRight = cellLeft + cellSize;
-      const cellBottom = cellTop + cellSize;
-      if (
-        cellRight >= visibleLeft &&
-        cellLeft <= visibleRight &&
-        cellBottom >= visibleTop &&
-        cellTop <= visibleTop + stageHeight / scale
-      ) {
+    for (let y = visibleBounds.minY; y <= visibleBounds.maxY; y++) {
+      const row = mapGridByRow[y];
+      if (!row) continue;
+      for (let x = visibleBounds.minX; x <= visibleBounds.maxX; x++) {
+        const cell = row[x];
+        if (!cell) continue;
         visibleCells.push({ cell, x, y });
       }
-    });
+    }
     return visibleCells;
-  }, [mapGrid, offset, scale, stageWidth, stageHeight, cellSize]);
+  }, [mapGridByRow, mapMetadata, visibleBounds]);
+
+  // Memoize resources rendering (only visible cells)
+  const memoizedResources = useMemo(() => {
+    if (scale < 0.4) return null;
+    if (
+      process.env.REACT_APP_DEBUG_RESOURCES === "true" &&
+      visibleMapGrid.length &&
+      mappings?.resources
+    ) {
+      const counts = {};
+      visibleMapGrid.slice(0, 200).forEach(({ cell }) => {
+        const resources = Array.isArray(cell[5]) ? cell[5] : [];
+        resources.forEach((r) => {
+          const name = mappings.resources[r] ?? r;
+          counts[name] = (counts[name] || 0) + 1;
+        });
+      });
+      console.log("[CLIENT RESOURCES] sample counts", counts);
+    }
+    return renderResources(visibleMapGrid, cellSize, scale);
+  }, [visibleMapGrid, cellSize, scale]);
+  const memoizedCaptureOverlays = useMemo(() => {
+    if (scale < 0.45) return null;
+    return renderResourceCaptureOverlays(
+      visibleMapGrid,
+      cellSize,
+      ownershipMap,
+      resourceNodeClaims,
+      captureTicks
+    );
+  }, [visibleMapGrid, cellSize, scale, ownershipMap, resourceNodeClaims, captureTicks]);
+
+  const captureEffectNodes = useMemo(() => {
+    if (!captureEffects.length) return null;
+    const now = captureEffectTime || performance.now();
+    const invScale = 1 / Math.max(0.35, scale || 1);
+    const baseFontSize = Math.max(16, Math.min(26, cellSize * 0.9));
+    const riseDistance = 22 / Math.max(scale || 1, 0.35);
+    return captureEffects.map((effect) => {
+      const t = Math.min(
+        1,
+        Math.max(0, (now - effect.createdAt) / CAPTURE_EFFECT_DURATION_MS)
+      );
+      const fade =
+        t < 0.2 ? t / 0.2 : Math.max(0, 1 - (t - 0.2) / 0.8);
+      const pulse = t < 0.25 ? 0.6 + 0.4 * Math.sin((t / 0.25) * Math.PI) : 1;
+      const alpha = Math.min(1, fade * pulse);
+      const baseX = effect.x * cellSize + cellSize / 2;
+      const baseY = effect.y * cellSize + cellSize / 2 - cellSize * 0.2;
+      return (
+        <Text
+          key={effect.id}
+          text={effect.text}
+          x={baseX}
+          y={baseY - riseDistance * t}
+          anchor={0.5}
+          zIndex={230}
+          alpha={alpha}
+          scale={{ x: invScale, y: invScale }}
+          style={{
+            fontFamily: "Barlow Semi Condensed, system-ui",
+            fill: "#7CFF6B",
+            fontSize: baseFontSize,
+            fontWeight: "600",
+            stroke: "#0b2a16",
+            strokeThickness: 3,
+          }}
+        />
+      );
+    });
+  }, [captureEffects, captureEffectTime, scale, cellSize]);
+  // Note: memoizedTowers removed - towers are now rendered as structures in NationOverlay
+
+  const visibleTileCount = useMemo(() => {
+    if (!visibleBounds || !mapMetadata) return 0;
+    return (
+      (visibleBounds.maxX - visibleBounds.minX + 1) *
+      (visibleBounds.maxY - visibleBounds.minY + 1)
+    );
+  }, [visibleBounds, mapMetadata]);
+
+  const useFullMapTexture =
+    !!fullMapImageUrl && (scale <= 0.65 || visibleTileCount > 60000);
 
   // Build mode preview for structures
   let buildPreview = null;
@@ -794,21 +1790,27 @@ const GameCanvas = ({
     const userNation = gameState?.gameState?.nations?.find(
       (n) => n.owner === userId
     );
-    // (Using the old hasCellInTerritory logic here – if needed, this can be optimized similarly.)
-    const territoryValid =
-      userNation &&
-      userNation.territory &&
-      userNation.territory.x &&
-      userNation.territory.y &&
-      userNation.territory.x.includes(hoveredCell.x) &&
-      userNation.territory.y.includes(hoveredCell.y);
+    let territoryValid = false;
+    if (userNation?.territory?.x && userNation?.territory?.y) {
+      const tx = userNation.territory.x;
+      const ty = userNation.territory.y;
+      for (let ti = 0; ti < tx.length; ti++) {
+        if (tx[ti] === hoveredCell.x && ty[ti] === hoveredCell.y) {
+          territoryValid = true;
+          break;
+        }
+      }
+    }
     resourceValid =
-      resourceValid || ["town", "capital", "fort"].includes(buildingStructure);
+      resourceValid || ["town", "capital", "fort", "tower"].includes(buildingStructure);
     const valid = resourceValid && territoryValid;
     const borderColor = valid ? 0x00ff00 : 0xff0000;
+    const previewTexture =
+      buildIconMap[buildingStructure] ||
+      `/${buildingStructure.toLowerCase().replace(" ", "_")}.png`;
     buildPreview = (
       <BorderedSprite
-        texture={`/${buildingStructure.toLowerCase().replace(" ", "_")}.png`}
+        texture={previewTexture}
         x={hoveredCell.x * cellSize + cellSize / 2}
         y={hoveredCell.y * cellSize + cellSize / 2}
         width={cellSize * 2}
@@ -822,6 +1824,122 @@ const GameCanvas = ({
     );
   }
 
+  const sceneChildren = useMemo(() => {
+    const children = [];
+    if (useFullMapTexture && fullMapImageUrl && mapMetadata) {
+      children.push(
+        <Sprite
+          key="full-map"
+          image={fullMapImageUrl}
+          x={0}
+          y={0}
+          width={mapMetadata.width * cellSize}
+          height={mapMetadata.height * cellSize}
+        />
+      );
+    } else {
+      children.push(
+        <MapTiles
+          key="map-tiles"
+          mapGrid={visibleMapGrid}
+          cellSize={cellSize}
+          mappings={mappings}
+          textures={textures}
+        />
+      );
+      if (memoizedResources) {
+        if (Array.isArray(memoizedResources)) {
+          children.push(...memoizedResources);
+        } else {
+          children.push(memoizedResources);
+        }
+      }
+      if (memoizedCaptureOverlays) {
+        if (Array.isArray(memoizedCaptureOverlays)) {
+          children.push(...memoizedCaptureOverlays);
+        } else {
+          children.push(memoizedCaptureOverlays);
+        }
+      }
+    }
+
+    if (captureEffectNodes) {
+      if (Array.isArray(captureEffectNodes)) {
+        children.push(...captureEffectNodes);
+      } else {
+        children.push(captureEffectNodes);
+      }
+    }
+
+    if (USE_OPTIMIZED_TERRITORY && mapMetadata) {
+      children.push(
+        <TerritoryLayer
+          key="territory-layer"
+          mapWidth={mapMetadata.width}
+          mapHeight={mapMetadata.height}
+          cellSize={cellSize}
+          nations={nations}
+          nationColors={nationColors}
+          zIndex={100}
+        />
+      );
+    } else if (renderNationOverlays?.length) {
+      children.push(...renderNationOverlays);
+    }
+
+    // Troop density heatmap (after territory, before arrows)
+    if (troopDensityMap && scale > 0.3) {
+      children.push(
+        <TroopDensityHeatmap
+          key="troop-density-heatmap"
+          densityMap={troopDensityMap}
+          cellSize={cellSize}
+          visibleBounds={visibleBounds}
+        />
+      );
+    }
+
+    // NOTE: Attack and defend arrows are rendered OUTSIDE this useMemo
+    // (directly in the JSX below) so they always reflect the latest state
+    // and don't get stuck from stale memoization.
+
+    if (drawingArrowType && currentArrowPath && currentArrowPath.length > 0) {
+      const node = renderArrowPath(
+        currentArrowPath,
+        cellSize,
+        drawingArrowType,
+        false,
+        "drawing-arrow",
+        null,
+        scale
+      );
+      if (node) children.push(node);
+    }
+
+    if (buildPreview) children.push(buildPreview);
+
+    return children;
+  }, [
+    useFullMapTexture,
+    fullMapImageUrl,
+    mapMetadata,
+    cellSize,
+    visibleMapGrid,
+    mappings,
+    textures,
+    memoizedResources,
+    memoizedCaptureOverlays,
+    captureEffectNodes,
+    renderNationOverlays,
+    troopDensityMap,
+    visibleBounds,
+    drawingArrowType,
+    currentArrowPath,
+    buildPreview,
+    nations,
+    nationColors,
+  ]);
+
   return (
     <Stage
       interactive={true}
@@ -829,21 +1947,31 @@ const GameCanvas = ({
       height={stageHeight}
       options={{
         backgroundColor: 0xeeeeee,
-        antialias: true,
-        resolution: window.devicePixelRatio || 1,
+        antialias: scale > 0.6,
+        resolution: scale < 0.45 ? 1 : window.devicePixelRatio || 1,
         autoDensity: true,
       }}
+      onContextMenu={(e) => e.preventDefault()}
       onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerLeave}
       style={{
         width: "100%",
         height: "100%",
         cursor:
-          buildingStructure || foundingNation || selectedArmy
+          buildingStructure ||
+          foundingNation ||
+          uiMode === "drawAttack" ||
+          uiMode === "drawDefend" ||
+          drawingArrowType
             ? "crosshair"
-            : "default",
+            : isPanning
+            ? "grabbing"
+            : uiMode === "pan"
+            ? "grab"
+            : "grab",
       }}
     >
       <Container
@@ -852,16 +1980,24 @@ const GameCanvas = ({
         scale={scale}
         sortableChildren={true}
       >
-        <MapTiles
-          mapGrid={visibleMapGrid}
-          cellSize={cellSize}
-          mappings={mappings}
-          textures={textures}
-        />
-        {memoizedResources}
-        {renderNationOverlays}
-        {buildPreview}
-        {renderSelectionBox()}
+        {sceneChildren}
+        {/* Attack arrows rendered outside useMemo so they always reflect latest state */}
+        {activeAttackArrows?.map((arrow, i) =>
+          arrow?.path
+            ? renderArrowV2(arrow, cellSize, `active-attack-${arrow.id || i}`, scale)
+            : null
+        )}
+        {activeDefendArrow?.path
+          ? renderArrowPath(
+              activeDefendArrow.path,
+              cellSize,
+              "defend",
+              true,
+              "active-defend-arrow",
+              activeDefendArrow.remainingPower,
+              scale
+            )
+          : null}
       </Container>
     </Stage>
   );

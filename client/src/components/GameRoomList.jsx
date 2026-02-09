@@ -4,9 +4,9 @@ import { ErrorMessage, LoadingSpinner } from "./ErrorHandling";
 import MapCreationPoller from "./MapCreationPoller";
 
 const MAP_SIZES = {
-  Small: { width: 100, height: 100, erosion_passes: 3, num_blobs: 7 },
-  Normal: { width: 150, height: 150, erosion_passes: 3, num_blobs: 9 },
-  Large: { width: 250, height: 250, erosion_passes: 3, num_blobs: 10 },
+  Small: { width: 250, height: 250, erosion_passes: 3, num_blobs: 7 },
+  Normal: { width: 500, height: 500, erosion_passes: 3, num_blobs: 9 },
+  Large: { width: 1000, height: 1000, erosion_passes: 3, num_blobs: 12 },
 };
 
 const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
@@ -23,6 +23,8 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
     creatorName: "",
     creatorPassword: "",
     joinCode: "",
+    botCount: 0,
+    allowRefound: true,
   });
 
   if (!isOpen) return null;
@@ -180,6 +182,46 @@ const CreateGameRoomForm = ({ isOpen, onClose, onSubmit, isCreating }) => {
                   </div>
                 </div>
 
+                {/* Bot Count */}
+                <div>
+                  <label
+                    htmlFor="botCount"
+                    className="block text-sm font-medium text-gray-500"
+                  >
+                    Bot Opponents
+                  </label>
+                  <input
+                    type="number"
+                    id="botCount"
+                    name="botCount"
+                    min="0"
+                    max="20"
+                    value={formData.botCount}
+                    onChange={handleChange}
+                    className="mt-1 text-black block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    0 = no bots. Max 20.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="allowRefound"
+                    name="allowRefound"
+                    checked={formData.allowRefound}
+                    onChange={handleChange}
+                    className="h-4 w-4"
+                  />
+                  <label
+                    htmlFor="allowRefound"
+                    className="text-sm font-medium text-gray-500"
+                  >
+                    Allow refounding after defeat
+                  </label>
+                </div>
+
                 {/* Form Buttons */}
                 <div className="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
                   <button
@@ -282,6 +324,8 @@ const GameRoomList = () => {
             height: formData.height,
             erosion_passes: formData.erosion_passes,
             num_blobs: formData.num_blobs,
+            botCount: Number(formData.botCount || 0),
+            allowRefound: !!formData.allowRefound,
           }),
         }
       );
@@ -398,7 +442,10 @@ const GameRoomList = () => {
                   Map: {room.map.name} ({room.map.width}x{room.map.height})
                 </p>
                 <p className="text-gray-500 text-sm">
-                  Players: {room.players?.length + 1 || 1}
+                  Players: {room.players?.length || 0}
+                </p>
+                <p className="text-gray-500 text-sm">
+                  Refounding: {room.allowRefound === false ? "Disabled" : "Allowed"}
                 </p>
               </div>
               <div className="flex gap-3">
