@@ -15,7 +15,7 @@ import { tickLoyaltyDiffusion } from "../utils/matrixLoyalty.js";
 import { tickPopulationDensity, computeDefenseStrength } from "../utils/matrixPopulation.js";
 import { tickMobilization, tickTroopDensityDiffusion } from "../utils/matrixTroopDensity.js";
 import { deriveOwnershipFromLoyalty } from "../utils/matrixKernels.js";
-import { serializeMatrix } from "../utils/matrixSerializer.js";
+import { serializeMatrix, deserializeMatrix } from "../utils/matrixSerializer.js";
 import { generateRegions } from "../utils/regionGenerator.js";
 
 const loyaltyEnabled = config?.loyalty?.enabled !== false;
@@ -79,8 +79,12 @@ function handleStructureCaptureMatrix(gameState, matrix) {
       ...citiesToTransfer.map((t) => t.cityIndex)
     ].sort((a, b) => b - a);
 
-    for (const idx of allToRemove) {
-      nation.cities.splice(idx, 1);
+    if (allToRemove.length > 0) {
+      for (const idx of allToRemove) {
+        nation.cities.splice(idx, 1);
+      }
+      // Invalidate loyalty city bonus cache
+      matrix._cityBonusVersion = (matrix._cityBonusVersion || 0) + 1;
     }
   }
 }
@@ -175,7 +179,7 @@ function updateEncircledTerritoryMatrix(gameState, matrix) {
     if (ownerIdx === UNOWNED) {
       // Unowned territory — instant capture with loyalty
       for (const ci of cells) {
-        matrix.ownership[ci] = encirclerIdx;
+        matrix.setOwnerByIndex(ci, encirclerIdx);
         matrix.loyalty[encirclerIdx * matrix.size + ci] = 1.0;
       }
     } else if (hasCapital) {
@@ -189,7 +193,7 @@ function updateEncircledTerritoryMatrix(gameState, matrix) {
     } else {
       // No capital — instant capture; transfer loyalty to prevent flicker
       for (const ci of cells) {
-        matrix.ownership[ci] = encirclerIdx;
+        matrix.setOwnerByIndex(ci, encirclerIdx);
         // Heavily reduce old owner's loyalty and set encircler's loyalty
         matrix.loyalty[ownerIdx * matrix.size + ci] *= 0.15;
         matrix.loyalty[encirclerIdx * matrix.size + ci] = 1.0;
@@ -247,61 +251,78 @@ function applyResourceNodeIncome(gameState, mapData) {
 /**
  * Resource node claims using matrix ownership
  */
-function updateResourceNodeClaimsMatrix(gameState, mapData, matrix) {
-  if (!gameState || !Array.isArray(mapData)) return;
-  const claims = gameState.resourceNodeClaims || {};
-  const captureTicks = config?.territorial?.resourceCaptureTicks ?? 20;
-  const { width, height } = matrix;
+// Cached resource node positions — extracted once per map instead of scanning each tick
+const cachedResourceNodes = new Map(); // mapKey -> [{x, y, type}]
 
-  const seen = new Set();
-
+function getResourceNodePositions(mapData, width, height, mapKey) {
+  if (cachedResourceNodes.has(mapKey)) return cachedResourceNodes.get(mapKey);
+  const nodes = [];
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const cell = mapData?.[y]?.[x];
-      if (!cell?.resourceNode?.type) continue;
-      const ownerIdx = matrix.getOwner(x, y);
-      if (ownerIdx === UNOWNED) continue;
-
-      const ownerId = matrix.getOwnerByIndex(ownerIdx);
-      if (!ownerId) continue;
-
-      const key = `${x},${y}`;
-      seen.add(key);
-
-      let claim = claims[key];
-      if (!claim) {
-        claim = {
-          type: cell.resourceNode.type,
-          owner: null,
-          progressOwner: null,
-          progress: 0,
-        };
+      if (cell?.resourceNode?.type) {
+        nodes.push({ x, y, type: cell.resourceNode.type });
       }
-
-      if (claim.owner && claim.owner !== ownerId) {
-        claim.owner = null;
-        claim.progressOwner = null;
-        claim.progress = 0;
-      }
-
-      if (claim.owner === ownerId) {
-        claim.type = cell.resourceNode.type;
-        claims[key] = claim;
-        continue;
-      }
-
-      if (claim.progressOwner !== ownerId) {
-        claim.progressOwner = ownerId;
-        claim.progress = 0;
-      }
-
-      claim.progress = Math.min(captureTicks, (claim.progress || 0) + 1);
-      if (claim.progress >= captureTicks) {
-        claim.owner = ownerId;
-      }
-      claim.type = cell.resourceNode.type;
-      claims[key] = claim;
     }
+  }
+  cachedResourceNodes.set(mapKey, nodes);
+  return nodes;
+}
+
+function updateResourceNodeClaimsMatrix(gameState, mapData, matrix, mapKey) {
+  if (!gameState || !Array.isArray(mapData)) return;
+  const claims = gameState.resourceNodeClaims || {};
+  const captureTicks = config?.territorial?.resourceCaptureTicks ?? 20;
+
+  // Use cached node positions — O(nodes) instead of O(width*height)
+  const nodes = getResourceNodePositions(mapData, matrix.width, matrix.height, mapKey);
+
+  const seen = new Set();
+
+  for (const node of nodes) {
+    const { x, y, type } = node;
+    const ownerIdx = matrix.getOwner(x, y);
+    if (ownerIdx === UNOWNED) continue;
+
+    const ownerId = matrix.getOwnerByIndex(ownerIdx);
+    if (!ownerId) continue;
+
+    const key = `${x},${y}`;
+    seen.add(key);
+
+    let claim = claims[key];
+    if (!claim) {
+      claim = {
+        type,
+        owner: null,
+        progressOwner: null,
+        progress: 0,
+      };
+    }
+
+    if (claim.owner && claim.owner !== ownerId) {
+      claim.owner = null;
+      claim.progressOwner = null;
+      claim.progress = 0;
+    }
+
+    if (claim.owner === ownerId) {
+      claim.type = type;
+      claims[key] = claim;
+      continue;
+    }
+
+    if (claim.progressOwner !== ownerId) {
+      claim.progressOwner = ownerId;
+      claim.progress = 0;
+    }
+
+    claim.progress = Math.min(captureTicks, (claim.progress || 0) + 1);
+    if (claim.progress >= captureTicks) {
+      claim.owner = ownerId;
+    }
+    claim.type = type;
+    claims[key] = claim;
   }
 
   Object.keys(claims).forEach((key) => {
@@ -357,9 +378,30 @@ class GameLoop {
   // ─── Matrix management ──────────────────────────────────────────
 
   /** Get or create the TerritoryMatrix for a room */
-  getMatrix(roomKey, mapData, nations) {
+  getMatrix(roomKey, mapData, nations, matrixState) {
     let matrix = this.cachedMatrix.get(roomKey);
     if (!matrix) {
+      // Try to restore from persisted matrixState first
+      if (matrixState) {
+        try {
+          matrix = deserializeMatrix(matrixState, mapData, config?.matrix);
+          if (matrix) {
+            // Ensure all active nations are registered in the restored matrix
+            for (const nation of nations) {
+              if (nation.status === "defeated") continue;
+              if (!matrix.ownerToIndex.has(nation.owner)) {
+                matrix.getNationIndex(nation.owner);
+              }
+            }
+            this.cachedMatrix.set(roomKey, matrix);
+            console.log(`[MATRIX] Restored ${matrix.width}x${matrix.height} matrix for room ${roomKey} from DB (${matrix.nextNationSlot} nations)`);
+            return matrix;
+          }
+        } catch (err) {
+          console.warn(`[MATRIX] Failed to deserialize matrix for room ${roomKey}, building from scratch:`, err.message);
+        }
+      }
+
       const height = mapData.length;
       const width = mapData[0]?.length || 0;
       const maxNations = config?.matrix?.maxNations || 64;
@@ -407,7 +449,7 @@ class GameLoop {
       if (ownerIdx === UNOWNED) continue;
       const ownerStr = matrix.getOwnerByIndex(ownerIdx);
       if (!ownerStr || !activeOwners.has(ownerStr)) {
-        matrix.ownership[i] = UNOWNED;
+        matrix.setOwnerByIndex(i, UNOWNED);
         // Clear loyalty for removed nations at this cell
         if (ownerIdx >= 0 && ownerIdx < matrix.maxNations) {
           matrix.loyalty[ownerIdx * matrix.size + i] = 0;
@@ -758,7 +800,7 @@ class GameLoop {
         return;
       }
 
-      const matrix = this.getMatrix(roomKey, mapData, gameRoom.gameState.nations);
+      const matrix = this.getMatrix(roomKey, mapData, gameRoom.gameState.nations, gameRoom.matrixState);
 
       // 1. Snapshot ownership for delta derivation at end of tick
       matrix.snapshotOwnership();
@@ -777,20 +819,21 @@ class GameLoop {
         deriveOwnershipFromLoyalty(matrix, config.loyalty?.ownershipThreshold || 0.6);
       }
 
-      // 4. Population density diffusion
+      // 4. Population density diffusion (every 2 ticks — diffusion doesn't need per-tick resolution)
       const regionData = this.cachedRegionData.get(roomKey) || null;
-      if (popDensityEnabled) {
+      const runDiffusion = currentTick % 2 === 0;
+      if (popDensityEnabled && runDiffusion) {
         tickPopulationDensity(matrix, config.populationDensity, gameRoom.gameState.nations, regionData, config.regions);
       }
 
-      // 4.5 Troop density: mobilization + diffusion
+      // 4.5 Troop density: mobilization + diffusion every tick (sub-steps handle speed)
       if (troopDensityEnabled) {
         tickMobilization(matrix, config.troopDensity, gameRoom.gameState.nations);
         tickTroopDensityDiffusion(matrix, config.troopDensity, gameRoom.gameState.nations);
       }
 
-      // 4.6 Defense strength (after troop density diffusion so it reflects current-tick troops)
-      if (popDensityEnabled) {
+      // 4.6 Defense strength (every 2 ticks — recompute after diffusion ticks)
+      if (popDensityEnabled && runDiffusion) {
         computeDefenseStrength(
           matrix,
           gameRoom.gameState.nations,
@@ -801,6 +844,12 @@ class GameLoop {
           config.regions
         );
       }
+
+      // 4.7 Chunk maintenance: rebuild border flags periodically, tick sleep counters
+      if (currentTick % 5 === 0) {
+        matrix.rebuildChunkBorderFlags();
+      }
+      matrix.tickChunkSleep();
 
       // 5. Build ownershipMap for gameLogic.js compatibility
       const ownershipMap = this.getOwnershipMap(roomKey, gameRoom.gameState.nations);
@@ -877,10 +926,12 @@ class GameLoop {
       // Territory deltas are consumed by updateOwnershipMapFromDeltas/updateFrontierSetsFromDeltas
       // above, then reset by applyMatrixToNations at step 12. No explicit reset needed here.
 
-      // 7.5 Passive concavity fill — fill gaps between tendrils (cascading passes)
-      const concavityMinNeighbors = config?.loyalty?.concavityFillMinNeighbors ?? 5;
-      const concavityMaxPasses = config?.loyalty?.concavityFillMaxPasses ?? 3;
-      passiveConcavityFill(matrix, updatedNations, concavityMinNeighbors, concavityMaxPasses);
+      // 7.5 Passive concavity fill — fill gaps between tendrils (every 3 ticks)
+      if (currentTick % 3 === 0) {
+        const concavityMinNeighbors = config?.loyalty?.concavityFillMinNeighbors ?? 5;
+        const concavityMaxPasses = config?.loyalty?.concavityFillMaxPasses ?? 3;
+        passiveConcavityFill(matrix, updatedNations, concavityMinNeighbors, concavityMaxPasses);
+      }
 
       gameRoom.gameState.nations = updatedNations;
 
@@ -902,7 +953,7 @@ class GameLoop {
       handleStructureCaptureMatrix(gameRoom.gameState, matrix);
 
       // 11. Resource claims
-      updateResourceNodeClaimsMatrix(gameRoom.gameState, mapData, matrix);
+      updateResourceNodeClaimsMatrix(gameRoom.gameState, mapData, matrix, roomKey);
       applyResourceNodeIncome(gameRoom.gameState, mapData);
 
       // 12. Derive client-compatible deltas from matrix snapshot diff
@@ -950,10 +1001,12 @@ class GameLoop {
           .catch((err) => {
             this.savingRooms.delete(roomKey);
             if (err.name === "VersionError") {
+              // Only invalidate the gameRoom and ownershipMap caches.
+              // The matrix holds accumulated loyalty/density state that is
+              // independent of Mongoose versioning — preserve it.
               this.cachedGameRoom.delete(roomKey);
               this.cachedOwnershipMap.delete(roomKey);
-              this.cachedMatrix.delete(roomKey);
-              console.log(`[DB] Version conflict for room ${roomKey}, cache invalidated`);
+              console.log(`[DB] Version conflict for room ${roomKey}, gameRoom cache invalidated (matrix preserved)`);
             } else {
               console.error(`[DB] Error saving room ${roomKey}:`, err.message);
               // Reset lastSaveTick so we retry on the next interval instead of waiting
@@ -1031,10 +1084,10 @@ class GameLoop {
       return;
     }
 
-    // Initialize matrix
+    // Initialize matrix (restore from DB if available)
     const gameRoom = await this.getLiveGameRoom(roomKey);
     if (gameRoom?.gameState?.nations) {
-      this.getMatrix(roomKey, mapData, gameRoom.gameState.nations);
+      this.getMatrix(roomKey, mapData, gameRoom.gameState.nations, gameRoom.matrixState);
     }
 
     const loopId = Date.now() + Math.random();
@@ -1112,6 +1165,7 @@ class GameLoop {
       this.cachedRegionData.delete(roomKey);
       this.lastSaveTick.delete(roomKey);
       this.lastBroadcast.delete(roomKey);
+      cachedResourceNodes.delete(roomKey);
       console.log(`[LOOP] Stopped room ${roomKey}`);
     }
   }
@@ -1161,6 +1215,7 @@ class GameLoop {
       this.roomMutationLocks.delete(roomKey);
       this.loopIds.delete(roomKey);
       this.roomTickCount.delete(roomKey);
+      cachedResourceNodes.delete(roomKey);
       console.log(`[LOOP] Stopped room ${roomKey}`);
     }
     console.log(`[LOOP] All rooms stopped`);

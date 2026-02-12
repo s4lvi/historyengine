@@ -19,6 +19,37 @@ import GameRoom from "../models/GameRoom.js";
 const MIN_FOUND_DISTANCE = 5;
 const DEFAULT_ALLOW_REFOUND = config?.territorial?.allowRefound !== false;
 
+/** Return only client-relevant config fields (strip bot AI, combat internals, density params) */
+function getClientSafeConfig(cfg) {
+  return {
+    winConditionPercentage: cfg?.winConditionPercentage,
+    structures: cfg?.structures,
+    buildCosts: cfg?.buildCosts,
+    resources: cfg?.resources,
+    territorial: {
+      allowRefound: cfg?.territorial?.allowRefound,
+      maxAttackArrows: cfg?.territorial?.maxAttackArrows,
+      maxDefendArrows: cfg?.territorial?.maxDefendArrows,
+      minAttackPercent: cfg?.territorial?.minAttackPercent,
+      maxAttackPercent: cfg?.territorial?.maxAttackPercent,
+      defaultAttackPercent: cfg?.territorial?.defaultAttackPercent,
+      arrowBaseRange: cfg?.territorial?.arrowBaseRange,
+      arrowRangePerSqrtPop: cfg?.territorial?.arrowRangePerSqrtPop,
+      arrowMaxRange: cfg?.territorial?.arrowMaxRange,
+      resourceTypes: cfg?.territorial?.resourceTypes,
+    },
+    arrowCosts: cfg?.arrowCosts,
+    regions: cfg?.regions ? {
+      enabled: cfg.regions.enabled,
+      maxTownsPerRegion: cfg.regions.maxTownsPerRegion,
+      maxTowersPerRegion: cfg.regions.maxTowersPerRegion,
+    } : undefined,
+    troopDensity: cfg?.troopDensity ? {
+      enabled: cfg.troopDensity.enabled,
+    } : undefined,
+  };
+}
+
 router.use(async (req, res, next) => {
   req.sessionUser = await getSessionUser(req);
   next();
@@ -792,15 +823,10 @@ router.get("/:id/metadata", async (req, res, next) => {
       return res.status(404).json({ error: "Game room not found" });
     const roomAllowRefound =
       gameRoom.gameState?.settings?.allowRefound;
-    const mergedConfig = {
-      ...config,
-      territorial: {
-        ...(config?.territorial || {}),
-        allowRefound:
-          roomAllowRefound !== undefined ? roomAllowRefound : DEFAULT_ALLOW_REFOUND,
-      },
-    };
-    res.json({ map: gameRoom.map, config: mergedConfig });
+    const safeConfig = getClientSafeConfig(config);
+    safeConfig.territorial.allowRefound =
+      roomAllowRefound !== undefined ? roomAllowRefound : DEFAULT_ALLOW_REFOUND;
+    res.json({ map: gameRoom.map, config: safeConfig });
   } catch (error) {
     next(error);
   }
@@ -1161,7 +1187,7 @@ router.post("/:id/join", async (req, res, next) => {
       res.json({
         message: "Rejoined game room successfully",
         userId: player.userId,
-        config: config,
+        config: getClientSafeConfig(config),
       });
     } else {
       if (!sessionActor && !password) {
@@ -1469,13 +1495,18 @@ router.post("/:id/foundNation", async (req, res, next) => {
 router.post("/:id/buildCity", async (req, res, next) => {
   console.log("[ROUTE] Build structure request:", req.body);
   try {
-    const { userId: legacyUserId, password, x, y, cityType, cityName } = req.body;
+    const { userId: legacyUserId, password, x: rawX, y: rawY, cityType, cityName } = req.body;
     const sessionActor = getSessionActor(req);
     const userId = sessionActor?.userId || legacyUserId;
-    if (!userId || x == null || y == null || !cityType) {
+    if (!userId || rawX == null || rawY == null || !cityType) {
       return res
         .status(400)
         .json({ error: "userId, x, y, and cityType are required" });
+    }
+    const x = Math.floor(Number(rawX));
+    const y = Math.floor(Number(rawY));
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+      return res.status(400).json({ error: "Invalid coordinates" });
     }
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
@@ -1652,6 +1683,20 @@ router.post("/:id/buildCity", async (req, res, next) => {
       const lockedNation = gameRoom.gameState?.nations?.find((n) => n.owner === userId);
       if (!lockedNation) throw Object.assign(new Error("Nation not found"), { status: 404 });
 
+      // Re-validate territory ownership inside lock (cell could have flipped during the gap)
+      let stillInTerritory = false;
+      if (lockedNation.territory?.x && lockedNation.territory?.y) {
+        for (let i = 0; i < lockedNation.territory.x.length; i++) {
+          if (lockedNation.territory.x[i] === x && lockedNation.territory.y[i] === y) {
+            stillInTerritory = true;
+            break;
+          }
+        }
+      }
+      if (!stillInTerritory) {
+        throw Object.assign(new Error("Selected cell is no longer within your territory"), { status: 400 });
+      }
+
       // Check resources again inside lock
       for (const resource in cost) {
         if ((lockedNation.resources[resource] || 0) < cost[resource]) {
@@ -1686,6 +1731,10 @@ router.post("/:id/buildCity", async (req, res, next) => {
         resource: producedResource,
       };
       lockedNation.cities.push(city);
+
+      // Invalidate loyalty city bonus cache
+      const matrix = gameLoop.cachedMatrix?.get(req.params.id.toString());
+      if (matrix) matrix._cityBonusVersion = (matrix._cityBonusVersion || 0) + 1;
 
       await persistRoomMutation(gameRoom, req.params.id, ["gameState.nations"]);
       broadcastRoomUpdate(req.params.id.toString(), gameRoom);

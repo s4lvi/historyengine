@@ -11,6 +11,9 @@ const MAP_SIZES = {
   Large: { width: 1000, height: 1000, erosion_passes: 3, num_blobs: 12 },
 };
 
+const buildDefaultRoomName = (creatorLabel) =>
+  `${creatorLabel || "Player"}'s room`;
+
 const CreateGameRoomForm = ({
   isOpen,
   onClose,
@@ -19,7 +22,7 @@ const CreateGameRoomForm = ({
   creatorLabel,
 }) => {
   const [formData, setFormData] = useState({
-    roomName: "",
+    roomName: buildDefaultRoomName(creatorLabel),
     selectedMapId: "",
     generateNewMap: true,
     mapName: "",
@@ -32,6 +35,14 @@ const CreateGameRoomForm = ({
     botCount: 0,
     allowRefound: true,
   });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setFormData((prev) => ({
+      ...prev,
+      roomName: buildDefaultRoomName(creatorLabel),
+    }));
+  }, [isOpen, creatorLabel]);
 
   if (!isOpen) return null;
 
@@ -351,17 +362,26 @@ const GameRoomList = () => {
   const displayName = profile?.displayName || user?.id || "Unknown";
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Open Games</h1>
+    <div className="w-full p-4 sm:p-6">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold text-white sm:text-3xl">Open Game Rooms</h1>
         <button
           onClick={() => setIsCreateDialogOpen(true)}
           disabled={!user || authLoading}
-          className="bg-blue-700 hover:bg-blue-600 disabled:bg-blue-300 px-6 py-2 rounded-lg transition-colors duration-200 font-medium shadow-sm"
+          className="rounded-lg bg-yellow-500 px-5 py-2 font-semibold text-gray-900 shadow-sm transition-colors duration-200 hover:bg-yellow-400 disabled:cursor-not-allowed disabled:bg-yellow-200"
         >
           Create New Game
         </button>
       </div>
+
+      {!user && !authLoading && (
+        <p
+          className="mb-4 rounded-md bg-gray-900 px-3 py-2 text-sm text-gray-200"
+          style={{ backgroundColor: "rgba(17, 24, 39, 0.78)" }}
+        >
+          Sign in to create rooms and save your profile name.
+        </p>
+      )}
 
       {!mapGenerationState.isPolling && (
         <CreateGameRoomForm
@@ -387,35 +407,41 @@ const GameRoomList = () => {
 
       <div className="space-y-4">
         {gameRooms.length === 0 && (
-          <div>No open games available. Try starting your own!</div>
+          <div
+            className="rounded-lg bg-gray-900 p-4 text-sm text-gray-200"
+            style={{ backgroundColor: "rgba(17, 24, 39, 0.78)" }}
+          >
+            No open games available. Start one and invite players from Discord.
+          </div>
         )}
         {gameRooms.map((room) => (
           <div
             key={room._id}
-            className="bg-gray-900 rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition-shadow duration-200"
+            className="rounded-lg bg-gray-900 p-4 shadow-sm transition-shadow duration-200 hover:shadow-md"
+            style={{ backgroundColor: "rgba(17, 24, 39, 0.78)" }}
           >
             <div className="flex justify-between items-center">
               <div>
                 <h2 className="text-xl font-semibold text-gray-100">
                   {room.roomName}
                 </h2>
-                <p className="text-gray-500 text-sm mt-1">
+                <p className="mt-1 text-sm text-gray-300">
                   Created: {new Date(room.createdAt).toLocaleDateString()}
                 </p>
-                <p className="text-gray-500 text-sm">
+                <p className="text-sm text-gray-300">
                   Map: {room.map.name} ({room.map.width}x{room.map.height})
                 </p>
-                <p className="text-gray-500 text-sm">
+                <p className="text-sm text-gray-300">
                   Players: {room.players?.length || 0}
                 </p>
-                <p className="text-gray-500 text-sm">
+                <p className="text-sm text-gray-300">
                   Refounding: {room.allowRefound === false ? "Disabled" : "Allowed"}
                 </p>
               </div>
               <div className="flex gap-3">
                 <button
                   onClick={() => navigate(`/rooms/${room._id}`)}
-                  className="bg-green-700 hover:bg-green-600 disabled:bg-green-300  px-4 py-2 rounded-md transition-colors duration-200 flex items-center gap-2"
+                  className="flex items-center gap-2 rounded-md bg-green-700 px-4 py-2 text-white transition-colors duration-200 hover:bg-green-600 disabled:bg-green-300"
                 >
                   Join Game
                 </button>

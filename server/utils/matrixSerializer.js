@@ -20,8 +20,9 @@ function safeBufferCopy(typedArray) {
 
 /**
  * Serialize dynamic layers of a TerritoryMatrix for MongoDB BSON storage.
- * Per-nation arrays (loyalty, troopDensity) are trimmed to only the used
- * nation slots (nextNationSlot) to keep BSON document under MongoDB's 16MB limit.
+ * Loyalty is quantized from Float32 to Uint8 (4x reduction) to stay under
+ * MongoDB's 16MB BSON document limit with many nations.
+ * TroopDensity is NOT serialized — it reseeds from troopCount on load.
  *
  * @param {TerritoryMatrix} matrix
  * @returns {object} Plain object with Buffer fields
@@ -30,10 +31,12 @@ export function serializeMatrix(matrix) {
   const usedSlots = matrix.nextNationSlot || 0;
   const size = matrix.size;
 
-  // For per-nation arrays, only serialize the first `usedSlots` layers
-  // Full array is size*maxNations but we only need size*usedSlots
-  const loyaltyTrimmed = matrix.loyalty.subarray(0, size * usedSlots);
-  const troopDensityTrimmed = matrix.troopDensity.subarray(0, size * usedSlots);
+  // Quantize loyalty from Float32 [0,1] to Uint8 [0,255] — 4x size reduction
+  const loyaltyLen = size * usedSlots;
+  const loyaltyQuantized = new Uint8Array(loyaltyLen);
+  for (let i = 0; i < loyaltyLen; i++) {
+    loyaltyQuantized[i] = Math.round(matrix.loyalty[i] * 255);
+  }
 
   return {
     width: matrix.width,
@@ -42,6 +45,8 @@ export function serializeMatrix(matrix) {
     nextNationSlot: usedSlots,
     // Track how many slots are serialized for deserializer
     serializedNationSlots: usedSlots,
+    // Format version: 2 = quantized loyalty (Uint8), no troopDensity
+    serializationVersion: 2,
 
     // Nation registry
     ownerToIndex: Object.fromEntries(matrix.ownerToIndex),
@@ -52,11 +57,10 @@ export function serializeMatrix(matrix) {
     populationDensity: safeBufferCopy(matrix.populationDensity),
     resourceClaimProgress: safeBufferCopy(matrix.resourceClaimProgress),
     resourceClaimOwner: safeBufferCopy(matrix.resourceClaimOwner),
-    // defenseStrength is recomputed every tick — no need to persist
 
-    // Per-nation-per-cell layers (trimmed to used slots)
-    loyalty: safeBufferCopy(loyaltyTrimmed),
-    troopDensity: safeBufferCopy(troopDensityTrimmed),
+    // Per-nation-per-cell layers (quantized Uint8, trimmed to used slots)
+    loyalty: safeBufferCopy(loyaltyQuantized),
+    // troopDensity omitted — reseeded from troopCount via tickMobilization
   };
 }
 
@@ -132,7 +136,6 @@ export function deserializeMatrix(data, mapData, matrixConfig) {
   };
 
   restoreInt8(data.ownership, matrix.ownership);
-  restoreFloat32(data.loyalty, matrix.loyalty);
   restoreFloat32(data.populationDensity, matrix.populationDensity);
   // defenseStrength is recomputed every tick, but handle old saves that included it
   if (data.defenseStrength) {
@@ -140,7 +143,30 @@ export function deserializeMatrix(data, mapData, matrixConfig) {
   }
   restoreFloat32(data.resourceClaimProgress, matrix.resourceClaimProgress);
   restoreInt8(data.resourceClaimOwner, matrix.resourceClaimOwner);
-  restoreFloat32(data.troopDensity, matrix.troopDensity);
+
+  // Loyalty: v2 uses quantized Uint8 [0,255] → Float32 [0,1]; v1 uses Float32 directly
+  if (data.serializationVersion >= 2) {
+    const bytes = safeBytes(data.loyalty);
+    if (bytes && bytes.byteLength > 0) {
+      const src = new Uint8Array(bytes.buffer, 0, bytes.byteLength);
+      const loyaltyLen = Math.min(src.length, matrix.loyalty.length);
+      for (let i = 0; i < loyaltyLen; i++) {
+        matrix.loyalty[i] = src[i] / 255;
+      }
+    }
+  } else {
+    // Legacy Float32 format
+    restoreFloat32(data.loyalty, matrix.loyalty);
+  }
+
+  // TroopDensity: v2 omits it (reseeded by tickMobilization); v1 restores it
+  if (data.troopDensity) {
+    restoreFloat32(data.troopDensity, matrix.troopDensity);
+  }
+  // If troopDensity is missing, tickMobilization will reseed from troopCount
+
+  // Rebuild running counters and bbox from restored ownership
+  matrix.rebuildCountersFromOwnership();
 
   return matrix;
 }

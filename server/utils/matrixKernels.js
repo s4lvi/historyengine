@@ -47,7 +47,7 @@ export function deriveOwnershipFromLoyalty(matrix, threshold = 0.6) {
     }
 
     // Flip: unowned cell claimed, or challenger beat the defender
-    ownership[i] = bestNation;
+    matrix.setOwnerByIndex(i, bestNation);
     changes++;
   }
 
@@ -446,7 +446,7 @@ export function passiveConcavityFill(matrix, nations, minNeighbors = 5, maxPasse
       if (tied) continue;
 
       // Claim cell — set full loyalty for winner and zero out all others
-      ownership[i] = bestNation;
+      matrix.setOwnerByIndex(i, bestNation);
       if (bestNation >= 0 && bestNation < matrix.maxNations) {
         matrix.loyalty[bestNation * size + i] = 1.0;
         for (let n = 0; n < matrix.nextNationSlot; n++) {
@@ -476,7 +476,7 @@ export function removeDisconnectedTerritory(matrix, nationIdx, capitalX, capital
 
   for (let i = 0; i < size; i++) {
     if (ownership[i] === nationIdx && !connected[i]) {
-      ownership[i] = UNOWNED;
+      matrix.setOwnerByIndex(i, UNOWNED);
       // Heavily reduce this nation's loyalty at the disconnected cell so
       // deriveOwnershipFromLoyalty doesn't immediately re-claim it
       loyalty[nationIdx * size + i] *= 0.15;

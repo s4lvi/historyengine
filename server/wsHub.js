@@ -22,7 +22,7 @@ function removeFromRoom(ws) {
 
 function safeSend(ws, payload) {
   if (ws.readyState === 1) {
-    ws.send(JSON.stringify(payload));
+    ws.send(typeof payload === "string" ? payload : JSON.stringify(payload));
   }
 }
 
@@ -128,6 +128,7 @@ export function initWebSocket(server, getLiveRoom, getMatrix) {
     });
     ws.on("error", (err) => {
       console.warn(`[WS] Error: ${err?.message || err}`);
+      removeFromRoom(ws);
     });
   });
 
@@ -157,16 +158,42 @@ export function broadcastRoomUpdate(roomId, gameRoom, matrix = null) {
     }
     return;
   }
-  let sentCount = 0;
+
+  // Group clients by type: owners (need per-user response) vs spectators (share enemy view)
+  const ownerClients = []; // clients that own a nation (need unique troop density data)
+  const enemyClients = []; // clients that don't own a nation (share identical response)
   set.forEach((ws) => {
     if (!ws.userId) return;
+    const isOwner = (gameRoom.gameState?.nations || []).some(
+      (n) => n.owner === ws.userId && n.status !== "defeated"
+    );
+    if (isOwner) {
+      ownerClients.push(ws);
+    } else {
+      enemyClients.push(ws);
+    }
+  });
+
+  // Build and cache enemy (non-owner) response JSON once for all spectators
+  let cachedEnemyJson = null;
+  if (enemyClients.length > 0) {
+    // Use a dummy userId that won't match any nation
+    const enemyResponse = buildGameStateResponse(gameRoom, "__spectator__", false, matrix);
+    cachedEnemyJson = JSON.stringify({ type: "state", ...enemyResponse });
+    for (const ws of enemyClients) {
+      safeSend(ws, cachedEnemyJson);
+    }
+  }
+
+  // Owner clients still need per-user responses (troop density data is per-nation)
+  for (const ws of ownerClients) {
     safeSend(ws, {
       type: "state",
       ...buildGameStateResponse(gameRoom, ws.userId, ws.full, matrix),
     });
-    sentCount++;
-  });
+  }
+
   if (process.env.DEBUG_WS === "true") {
-    console.log(`[WS] Broadcast to ${sentCount} clients in room ${roomId} (tick ${gameRoom.tickCount})`);
+    console.log(`[WS] Broadcast to ${ownerClients.length} owners + ${enemyClients.length} spectators in room ${roomId} (tick ${gameRoom.tickCount})`);
   }
 }

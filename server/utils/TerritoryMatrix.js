@@ -99,6 +99,17 @@ DEFAULT_BIOME_RESISTANCE[BIOME_ENUM.DESERT] = 0.05;
 DEFAULT_BIOME_RESISTANCE[BIOME_ENUM.SAVANNA] = 0.05;
 DEFAULT_BIOME_RESISTANCE[BIOME_ENUM.GRASSLAND] = 0.05;
 
+/**
+ * Map subclass that auto-stringifies keys to avoid ObjectId vs string mismatches.
+ * Ensures consistent key lookup after MongoDB round-trip serialization.
+ */
+class StringKeyMap extends Map {
+  get(key)    { return super.get(String(key)); }
+  set(key, v) { return super.set(String(key), v); }
+  has(key)    { return super.has(String(key)); }
+  delete(key) { return super.delete(String(key)); }
+}
+
 export class TerritoryMatrix {
   /**
    * @param {number} width  - map width in cells
@@ -113,7 +124,7 @@ export class TerritoryMatrix {
 
     // --- Nation index registry ---
     // Bidirectional: ownerString <-> int index
-    this.ownerToIndex = new Map(); // ownerString -> int
+    this.ownerToIndex = new StringKeyMap(); // ownerString -> int
     this.indexToOwner = []; // int -> ownerString|null
     this.nextNationSlot = 0;
 
@@ -138,10 +149,27 @@ export class TerritoryMatrix {
 
     // --- Troop density layer (per-nation per-cell) ---
     this.troopDensity = new Float32Array(this.size * maxNations);
-    this.troopDensityReadBuffer = new Float32Array(this.size * maxNations);
 
-    // --- Pre-allocated buffers for diffusion (avoid per-tick allocation) ---
-    this.loyaltyReadBuffer = new Float32Array(this.size * maxNations);
+    // --- City bonus grid cache for loyalty diffusion ---
+    this._cityBonusGrids = new Map(); // nIdx -> Float32Array(size)
+    this._cityBonusVersion = 0; // bumped on city build/capture/destroy
+    this._cityBonusBuiltVersion = -1; // version when grids were last built
+
+    // --- Running counters per nation (updated by setOwnerByIndex) ---
+    this.ownedCellCount = new Int32Array(maxNations);
+    this.troopDensitySum = new Float64Array(maxNations);
+    this.nationBBox = Array.from({ length: maxNations }, () => ({
+      minX: Infinity, maxX: -1, minY: Infinity, maxY: -1, dirty: false,
+    }));
+
+    // --- Chunk-based active cell tracking (16x16 chunks) ---
+    this.chunkW = 16;
+    this.chunksX = Math.ceil(width / 16);
+    this.chunksY = Math.ceil(height / 16);
+    this.totalChunks = this.chunksX * this.chunksY;
+    this.chunkDirty = new Uint8Array(this.totalChunks);
+    this.chunkSleepCounter = new Uint16Array(this.totalChunks);
+    this.chunkHasBorder = new Uint8Array(this.totalChunks);
 
     // --- Snapshot layer (for delta derivation) ---
     this.prevOwnership = new Int8Array(this.size).fill(UNOWNED);
@@ -188,7 +216,7 @@ export class TerritoryMatrix {
     }
 
     this.ownerToIndex.set(owner, idx);
-    this.indexToOwner[idx] = owner;
+    this.indexToOwner[idx] = String(owner);
     return idx;
   }
 
@@ -205,7 +233,7 @@ export class TerritoryMatrix {
     // Clear all ownership and prevOwnership for this nation
     for (let i = 0; i < this.size; i++) {
       if (this.ownership[i] === nIdx) {
-        this.ownership[i] = UNOWNED;
+        this.setOwnerByIndex(i, UNOWNED);
       }
       if (this.prevOwnership[i] === nIdx) {
         this.prevOwnership[i] = UNOWNED;
@@ -228,6 +256,10 @@ export class TerritoryMatrix {
     for (let i = 0; i < this.size; i++) {
       this.troopDensity[troopOffset + i] = 0;
     }
+    // Reset counters/bbox for this nation
+    this.ownedCellCount[nIdx] = 0;
+    this.troopDensitySum[nIdx] = 0;
+    this.nationBBox[nIdx] = { minX: Infinity, maxX: -1, minY: Infinity, maxY: -1, dirty: false };
     // Mark slot as available (but don't reuse to keep indices stable within a session)
     this.indexToOwner[nIdx] = null;
     this.ownerToIndex.delete(owner);
@@ -330,10 +362,39 @@ export class TerritoryMatrix {
     return nIdx === UNOWNED ? null : this.getOwnerByIndex(nIdx);
   }
 
+  /** Set owner of flat index i to nation index newIdx (centralized mutation) */
+  setOwnerByIndex(i, newIdx) {
+    const oldIdx = this.ownership[i];
+    if (oldIdx === newIdx) return;
+    this.ownership[i] = newIdx;
+
+    // Update running counters
+    if (oldIdx >= 0) {
+      this.ownedCellCount[oldIdx]--;
+      this.nationBBox[oldIdx].dirty = true;
+    }
+    if (newIdx >= 0) {
+      this.ownedCellCount[newIdx]++;
+      const x = i % this.width, y = (i / this.width) | 0;
+      const bb = this.nationBBox[newIdx];
+      if (x < bb.minX) bb.minX = x;
+      if (x > bb.maxX) bb.maxX = x;
+      if (y < bb.minY) bb.minY = y;
+      if (y > bb.maxY) bb.maxY = y;
+    }
+
+    // Mark chunk dirty
+    const cx = (i % this.width) >> 4;
+    const cy = ((i / this.width) | 0) >> 4;
+    const ci = cy * this.chunksX + cx;
+    this.chunkDirty[ci] = 1;
+    this.chunkSleepCounter[ci] = 0;
+  }
+
   /** Set owner of cell (x,y) to nation index nIdx */
   setOwner(x, y, nIdx) {
     if (!this.inBounds(x, y)) return;
-    this.ownership[this.idx(x, y)] = nIdx;
+    this.setOwnerByIndex(this.idx(x, y), nIdx);
   }
 
   /** Check if cell (x,y) is owned by nIdx */
@@ -390,13 +451,12 @@ export class TerritoryMatrix {
 
   // ─── Territory queries ──────────────────────────────────────────
 
-  /** Count cells owned by nation nIdx */
+  /** Count cells owned by nation nIdx (O(1) from running counter) */
   countTerritory(nIdx) {
-    let count = 0;
-    for (let i = 0; i < this.size; i++) {
-      if (this.ownership[i] === nIdx) count++;
+    if (nIdx >= 0 && nIdx < this.maxNations) {
+      return this.ownedCellCount[nIdx];
     }
-    return count;
+    return 0;
   }
 
   /** Get all cells for a nation as {x[], y[]} (for compat layer) */
@@ -454,11 +514,61 @@ export class TerritoryMatrix {
           const cellIdx = this.idx(x, y);
           // Only claim if unclaimed (first writer wins, like buildInitialOwnershipMap)
           if (this.ownership[cellIdx] === UNOWNED) {
-            this.ownership[cellIdx] = nIdx;
+            this.setOwnerByIndex(cellIdx, nIdx);
             // Set full loyalty so deriveOwnershipFromLoyalty doesn't wipe ownership
             this.loyalty[nIdx * this.size + cellIdx] = 1.0;
           }
         }
+      }
+    }
+  }
+
+  /** Rebuild ownedCellCount and nationBBox from current ownership (for deserialization) */
+  rebuildCountersFromOwnership() {
+    this.ownedCellCount.fill(0);
+    for (let n = 0; n < this.maxNations; n++) {
+      this.nationBBox[n] = { minX: Infinity, maxX: -1, minY: Infinity, maxY: -1, dirty: false };
+    }
+    for (let i = 0; i < this.size; i++) {
+      const o = this.ownership[i];
+      if (o < 0) continue;
+      this.ownedCellCount[o]++;
+      const x = i % this.width, y = (i / this.width) | 0;
+      const bb = this.nationBBox[o];
+      if (x < bb.minX) bb.minX = x;
+      if (x > bb.maxX) bb.maxX = x;
+      if (y < bb.minY) bb.minY = y;
+      if (y > bb.maxY) bb.maxY = y;
+    }
+  }
+
+  /** Rebuild chunkHasBorder flags from current ownership */
+  rebuildChunkBorderFlags() {
+    this.chunkHasBorder.fill(0);
+    const { width, height, ownership, oceanMask, chunksX } = this;
+    for (let i = 0; i < this.size; i++) {
+      const o = ownership[i];
+      if (o === UNOWNED) continue;
+      const x = i % width, y = (i / width) | 0;
+      let isBorder = false;
+      if (x > 0 && ownership[i - 1] !== o) isBorder = true;
+      else if (x < width - 1 && ownership[i + 1] !== o) isBorder = true;
+      else if (y > 0 && ownership[i - width] !== o) isBorder = true;
+      else if (y < height - 1 && ownership[i + width] !== o) isBorder = true;
+      if (isBorder) {
+        this.chunkHasBorder[(y >> 4) * chunksX + (x >> 4)] = 1;
+      }
+    }
+  }
+
+  /** Tick chunk sleep counters; call once per tick after diffusion */
+  tickChunkSleep() {
+    for (let ci = 0; ci < this.totalChunks; ci++) {
+      if (this.chunkDirty[ci]) {
+        this.chunkDirty[ci] = 0;
+        this.chunkSleepCounter[ci] = 0;
+      } else if (this.chunkSleepCounter[ci] < 65535) {
+        this.chunkSleepCounter[ci]++;
       }
     }
   }

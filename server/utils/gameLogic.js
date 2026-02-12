@@ -11,7 +11,11 @@ import {
 } from "./matrixKernels.js";
 import { applyArrowLoyaltyPressure } from "./matrixLoyalty.js";
 import { resolveDensityCombat } from "./matrixTroopDensity.js";
-import { generateCityName, generateTowerName, generateUniqueName } from "./nameGenerator.js";
+import {
+  generateCityName,
+  generateTowerName,
+  generateUniqueName,
+} from "./nameGenerator.js";
 
 export function checkWinCondition(gameState, mapData, totalClaimableOverride) {
   const totalClaimable =
@@ -330,6 +334,48 @@ function updateNationTerritorial(
         (updatedNation.resources.gold || 0) + bonuses.goldIncome * goldScale;
     }
 
+    // Troop maintenance costs — scales with mobilization ratio
+    const maintCfg = config?.troopMaintenance;
+    if (
+      maintCfg &&
+      troopDensityEnabled &&
+      updatedNation.troopCount > 0 &&
+      currentPop > 0
+    ) {
+      const mobRatio = updatedNation.troopCount / currentPop;
+      const threshold = maintCfg.freeThreshold || 0.25;
+      const costMult = mobRatio / threshold;
+
+      const foodCost =
+        updatedNation.troopCount * (maintCfg.foodCostPerTroop || 0) * costMult;
+      const goldCost =
+        updatedNation.troopCount * (maintCfg.goldCostPerTroop || 0) * costMult;
+
+      updatedNation.resources.food =
+        (updatedNation.resources.food || 0) - foodCost;
+      updatedNation.resources.gold =
+        (updatedNation.resources.gold || 0) - goldCost;
+
+      // Auto-reduce mobilization when resources depleted
+      const autoTarget = maintCfg.autoReduceTarget || 0.15;
+      if (
+        updatedNation.resources.food <= 0 ||
+        updatedNation.resources.gold <= 0
+      ) {
+        updatedNation.resources.food = Math.max(
+          0,
+          updatedNation.resources.food,
+        );
+        updatedNation.resources.gold = Math.max(
+          0,
+          updatedNation.resources.gold,
+        );
+        if (updatedNation.troopTarget > autoTarget) {
+          updatedNation.troopTarget = autoTarget;
+        }
+      }
+    }
+
     if (updatedNation.isBot) {
       maybeEnqueueBotArrow(
         updatedNation,
@@ -346,6 +392,7 @@ function updateNationTerritorial(
         gameState,
         currentTick,
         regionData,
+        matrix,
       );
     }
 
@@ -392,8 +439,11 @@ function updateNationTerritorial(
       );
       // Always clear disconnected cells blacklist at start of connectivity check
       // so cells that reconnect via a different path are no longer blocked
-      if (updatedNation._disconnectedCells)
+      if (updatedNation._disconnectedCells instanceof Set) {
         updatedNation._disconnectedCells.clear();
+      } else {
+        updatedNation._disconnectedCells = new Set();
+      }
 
       if (useMatrix && nIdx !== undefined && currentCapital) {
         // Matrix path: BFS on typed array — O(cells) with no string allocation
@@ -499,7 +549,14 @@ function computeConnectedTerritorySet(nation, mapData) {
  * Bot building logic: attempts to build towns and towers when affordable.
  * Runs every ~50 ticks to avoid spamming.
  */
-function maybeEnqueueBotBuild(nation, mapData, gameState, currentTick, regionData) {
+function maybeEnqueueBotBuild(
+  nation,
+  mapData,
+  gameState,
+  currentTick,
+  regionData,
+  matrix = null,
+) {
   if (nation.status === "defeated") return;
 
   // Only try building every 50 ticks (~5 seconds)
@@ -537,13 +594,15 @@ function maybeEnqueueBotBuild(nation, mapData, gameState, currentTick, regionDat
 
     // Count existing structures of this type
     const existing = (nation.cities || []).filter(
-      (c) => c.type === buildType || (buildType === "town" && c.type === "capital")
+      (c) =>
+        c.type === buildType || (buildType === "town" && c.type === "capital"),
     );
 
     // Bots limit: 1 town per ~100 territory, up to 3; towers: 1 per ~60 territory, up to 4
-    const maxForBot = buildType === "town"
-      ? Math.min(3, Math.floor(territory.x.length / 100))
-      : Math.min(4, Math.floor(territory.x.length / 60));
+    const maxForBot =
+      buildType === "town"
+        ? Math.min(3, Math.floor(territory.x.length / 100))
+        : Math.min(4, Math.floor(territory.x.length / 60));
     if (existing.length >= maxForBot) continue;
 
     // Find a valid cell to build on
@@ -586,14 +645,16 @@ function maybeEnqueueBotBuild(nation, mapData, gameState, currentTick, regionDat
       if (buildType === "town") {
         // Must be 5+ cells from other towns/capitals
         const tooClose = allCities.some(
-          (c) => (c.type === "town" || c.type === "capital") &&
-            Math.abs(c.x - cx) + Math.abs(c.y - cy) < 5
+          (c) =>
+            (c.type === "town" || c.type === "capital") &&
+            Math.abs(c.x - cx) + Math.abs(c.y - cy) < 5,
         );
         if (tooClose) continue;
       } else if (buildType === "tower") {
         // Must be 3+ cells from other towers
         const tooClose = (nation.cities || []).some(
-          (c) => c.type === "tower" && Math.abs(c.x - cx) + Math.abs(c.y - cy) < 3
+          (c) =>
+            c.type === "tower" && Math.abs(c.x - cx) + Math.abs(c.y - cy) < 3,
         );
         if (tooClose) continue;
       }
@@ -605,8 +666,10 @@ function maybeEnqueueBotBuild(nation, mapData, gameState, currentTick, regionDat
           if (buildType === "town") {
             let townCount = 0;
             for (const c of allCities) {
-              if ((c.type === "town" || c.type === "capital") &&
-                  assignment[c.y * regWidth + c.x] === rId) {
+              if (
+                (c.type === "town" || c.type === "capital") &&
+                assignment[c.y * regWidth + c.x] === rId
+              ) {
                 townCount++;
               }
             }
@@ -614,7 +677,10 @@ function maybeEnqueueBotBuild(nation, mapData, gameState, currentTick, regionDat
           } else if (buildType === "tower") {
             let towerCount = 0;
             for (const c of nation.cities || []) {
-              if (c.type === "tower" && assignment[c.y * regWidth + c.x] === rId) {
+              if (
+                c.type === "tower" &&
+                assignment[c.y * regWidth + c.x] === rId
+              ) {
                 towerCount++;
               }
             }
@@ -650,9 +716,10 @@ function maybeEnqueueBotBuild(nation, mapData, gameState, currentTick, regionDat
 
     // Create the structure with a proper generated name
     const existingNames = new Set((nation.cities || []).map((c) => c.name));
-    const structureName = buildType === "town"
-      ? generateUniqueName(generateCityName, existingNames)
-      : generateUniqueName(generateTowerName, existingNames);
+    const structureName =
+      buildType === "town"
+        ? generateUniqueName(generateCityName, existingNames)
+        : generateUniqueName(generateTowerName, existingNames);
 
     nation.cities = nation.cities || [];
     nation.cities.push({
@@ -663,8 +730,11 @@ function maybeEnqueueBotBuild(nation, mapData, gameState, currentTick, regionDat
       type: buildType,
     });
 
+    // Invalidate loyalty city bonus cache
+    if (matrix) matrix._cityBonusVersion = (matrix._cityBonusVersion || 0) + 1;
+
     console.log(
-      `[BOTS] ${nation.name || nation.owner} built ${buildType} "${structureName}" at (${bestCell.x},${bestCell.y})`
+      `[BOTS] ${nation.name || nation.owner} built ${buildType} "${structureName}" at (${bestCell.x},${bestCell.y})`,
     );
 
     // Only build one structure per tick
@@ -872,9 +942,16 @@ function maybeEnqueueBotArrow(
     // First arrow free: applies when bot has no active arrows at all
     const isFirstArrow = arrowCostCfg.firstArrowFree && attacks.length === 0;
     if (!isFirstArrow) {
-      const estPathLen = Math.hypot(candidate.x - anchor.x, candidate.y - anchor.y);
-      const foodCost = Math.ceil(arrowCostCfg.food.base + arrowCostCfg.food.perTile * estPathLen);
-      const goldCost = Math.ceil(arrowCostCfg.gold.base + arrowCostCfg.gold.perTile * estPathLen);
+      const estPathLen = Math.hypot(
+        candidate.x - anchor.x,
+        candidate.y - anchor.y,
+      );
+      const foodCost = Math.ceil(
+        arrowCostCfg.food.base + arrowCostCfg.food.perTile * estPathLen,
+      );
+      const goldCost = Math.ceil(
+        arrowCostCfg.gold.base + arrowCostCfg.gold.perTile * estPathLen,
+      );
       // Bots keep a resource buffer — don't spend last 30% of resources on arrows
       const foodAvail = (nation.resources?.food || 0) * 0.7;
       const goldAvail = (nation.resources?.gold || 0) * 0.7;
@@ -883,6 +960,55 @@ function maybeEnqueueBotArrow(
       }
       nation.resources.food -= foodCost;
       nation.resources.gold -= goldCost;
+    }
+  }
+
+  // In troop density mode, verify there's meaningful troop density near the
+  // border in the target direction before committing resources to an arrow.
+  // Without this check, bots create arrows targeting border areas with no
+  // troops, which immediately stall and waste arrow slots + resources.
+  if (troopDensityEnabled && matrix) {
+    const nIdx2 = matrix.ownerToIndex.get(nation.owner);
+    if (nIdx2 !== undefined) {
+      // Walk from anchor toward candidate, find the border crossing
+      const bdx = candidate.x - anchor.x;
+      const bdy = candidate.y - anchor.y;
+      const bdist = Math.hypot(bdx, bdy);
+      if (bdist > 1) {
+        const bnx = bdx / bdist;
+        const bny = bdy / bdist;
+        let borderX = -1,
+          borderY = -1;
+        for (let s = 0; s <= Math.ceil(bdist); s++) {
+          const sx = Math.round(anchor.x + bnx * s);
+          const sy = Math.round(anchor.y + bny * s);
+          if (!matrix.inBounds(sx, sy)) break;
+          if (!matrix.isOwnedBy(sx, sy, nIdx2)) {
+            borderX = Math.round(anchor.x + bnx * Math.max(0, s - 1));
+            borderY = Math.round(anchor.y + bny * Math.max(0, s - 1));
+            break;
+          }
+        }
+        if (borderX >= 0 && borderY >= 0) {
+          // Check troop density in a small radius around the border crossing
+          let borderDensity = 0;
+          const checkR = 5;
+          for (let dy2 = -checkR; dy2 <= checkR; dy2++) {
+            for (let dx2 = -checkR; dx2 <= checkR; dx2++) {
+              const fx = borderX + dx2;
+              const fy = borderY + dy2;
+              if (!matrix.inBounds(fx, fy)) continue;
+              const fi = matrix.idx(fx, fy);
+              if (matrix.ownership[fi] === nIdx2) {
+                borderDensity += matrix.troopDensity[nIdx2 * matrix.size + fi];
+              }
+            }
+          }
+          if (borderDensity < 5) {
+            return; // Not enough troops near border in this direction
+          }
+        }
+      }
     }
   }
 
@@ -1279,7 +1405,7 @@ function processAttackArrowFrontline(
   // Fail-safe: check matrix directly for arrow completion (bypasses stale caches)
   const arrowTickCount = (arrow._debugTickCount || 0) + 1;
   arrow._debugTickCount = arrowTickCount;
-  const shouldLog = arrowTickCount <= 3 || arrowTickCount % 10 === 0;
+  const shouldLog = arrowTickCount === 1 || arrowTickCount % 50 === 0;
   const arrowLabel = `[ARROW-STUCK ${nation.name || nation.owner} #${arrow._debugTickCount}]`;
 
   if (useMatrix && nIdx !== undefined) {
@@ -1306,9 +1432,9 @@ function processAttackArrowFrontline(
       }
     }
     if (allWaypointsOwned) {
-      console.log(
-        `${arrowLabel} FAIL-SAFE REMOVE: all waypoints owned in matrix, power=${remaining}, pathLen=${arrow.path.length}, curIdx=${arrow.currentIndex}`,
-      );
+      // console.log(
+      //   `${arrowLabel} FAIL-SAFE REMOVE: all waypoints owned in matrix, power=${remaining}, pathLen=${arrow.path.length}, curIdx=${arrow.currentIndex}`,
+      // );
       nation.population = (nation.population || 0) + Math.max(0, remaining);
       return "remove";
     } else if (shouldLog) {
@@ -1463,7 +1589,7 @@ function processAttackArrowFrontline(
       let frontDensity = 0;
       const hx = Math.round(arrow.headX ?? 0);
       const hy = Math.round(arrow.headY ?? 0);
-      const scanR = 5;
+      const scanR = config?.territorial?.arrowFrontDensityScanRadius || 8;
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
           const fx = hx + dx;
@@ -1569,11 +1695,14 @@ function processAttackArrowFrontline(
     // for at least 50 ticks (~5s). This prevents premature removal of arrows
     // whose attractor hasn't had time to pull troops to the border.
     const arrowAge = arrow._debugTickCount || 0;
-    const emptyFrontGraceTicks = 50;
+    const emptyFrontGraceTicks =
+      config?.territorial?.arrowEmptyFrontGraceTicks || 50;
+    const emptyFrontMaxTicks =
+      config?.territorial?.arrowEmptyFrontMaxTicks || 20;
     if ((arrow.effectiveDensityAtFront || 0) < 1) {
       if (arrowAge >= emptyFrontGraceTicks) {
         arrow.emptyFrontTicks = (arrow.emptyFrontTicks || 0) + 1;
-        if (arrow.emptyFrontTicks >= 10) {
+        if (arrow.emptyFrontTicks >= emptyFrontMaxTicks) {
           return "remove";
         }
       }
@@ -1582,7 +1711,12 @@ function processAttackArrowFrontline(
     }
 
     // Stall-based removal for density arrows
-    const densityStallLimit = Math.max(20, arrowMaxStallTicks * 4);
+    const densityStallMult =
+      config?.territorial?.arrowDensityStallMultiplier || 8;
+    const densityStallLimit = Math.max(
+      40,
+      arrowMaxStallTicks * densityStallMult,
+    );
     if (arrow.stalledTicks >= densityStallLimit) {
       return "remove";
     }
@@ -2210,9 +2344,9 @@ function processArrowOrders(
   // Process attack arrows array
   const attacks = nation.arrowOrders.attacks;
   if (!attacks) {
-    console.warn(
-      `[ARROW-DEBUG] nation ${nation.name || nation.owner} has no attacks array after migration!`,
-    );
+    // console.warn(
+    //   `[ARROW-DEBUG] nation ${nation.name || nation.owner} has no attacks array after migration!`,
+    // );
   }
   const toRemove = [];
   for (let i = 0; i < attacks.length; i++) {
@@ -2229,9 +2363,9 @@ function processArrowOrders(
       );
       if (result === "remove") {
         toRemove.push(i);
-        console.log(
-          `[ARROW-DEBUG] Arrow ${i} (id=${arrow.id}) for ${nation.name || nation.owner} marked for removal. Power=${arrow.remainingPower}, status=${arrow.status}, currentIndex=${arrow.currentIndex}/${arrow.path?.length}`,
-        );
+        // console.log(
+        //   `[ARROW-DEBUG] Arrow ${i} (id=${arrow.id}) for ${nation.name || nation.owner} marked for removal. Power=${arrow.remainingPower}, status=${arrow.status}, currentIndex=${arrow.currentIndex}/${arrow.path?.length}`,
+        // );
       }
     } catch (err) {
       console.error(
@@ -2244,18 +2378,18 @@ function processArrowOrders(
     }
   }
   if (process.env.DEBUG_ARROWS === "true") {
-    console.log(
-      `[ARROW-DEBUG] ${nation.name || nation.owner}: ${attacks.length} arrows, removing ${toRemove.length}, indices=${JSON.stringify(toRemove)}`,
-    );
+    // console.log(
+    //   `[ARROW-DEBUG] ${nation.name || nation.owner}: ${attacks.length} arrows, removing ${toRemove.length}, indices=${JSON.stringify(toRemove)}`,
+    // );
   }
   // Splice in reverse order
   for (let i = toRemove.length - 1; i >= 0; i--) {
     attacks.splice(toRemove[i], 1);
   }
   if (process.env.DEBUG_ARROWS === "true") {
-    console.log(
-      `[ARROW-DEBUG] ${nation.name || nation.owner}: after splice, ${attacks.length} arrows remain. nation.arrowOrders.attacks.length=${nation.arrowOrders.attacks.length}`,
-    );
+    // console.log(
+    //   `[ARROW-DEBUG] ${nation.name || nation.owner}: after splice, ${attacks.length} arrows remain. nation.arrowOrders.attacks.length=${nation.arrowOrders.attacks.length}`,
+    // );
   }
 
   // Process defend arrow — unchanged

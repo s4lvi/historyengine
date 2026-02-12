@@ -45,8 +45,8 @@
   ],
   "territorial": {
     "matchLengthMinutes": 15,
-    "tickRateMs": 100,
-    "broadcastIntervalMs": 100,
+    "tickRateMs": 200,
+    "broadcastIntervalMs": 200,
     "dbSaveIntervalTicks": 300,
     "enabled": true,
     "allowRefound": true,
@@ -78,7 +78,7 @@
     "defaultAttackPercent": 0.25,
     "resourceTypes": ["food", "wood", "iron", "stone", "gold"],
     "resourceCaptureTicks": 20,
-    "resourceYieldPerTick": 0.25,
+    "resourceYieldPerTick": 0.025,
     "towerDefenseRadius": 2,
     "towerDefenseBonus": 0.25,
     "riverCrossingCostMult": 1.2,
@@ -123,6 +123,10 @@
     "reinforceMinPercent": 0.05,
     "reinforceMaxPercent": 0.5,
     "retreatReturnRate": 0.1,
+    "arrowEmptyFrontGraceTicks": 50,
+    "arrowEmptyFrontMaxTicks": 20,
+    "arrowDensityStallMultiplier": 8,
+    "arrowFrontDensityScanRadius": 8,
     "terrainSimilarity": {
       "defaults": { "same": 1, "group": 0.8, "near": 0.6, "far": 0.3 },
       "groups": {
@@ -217,7 +221,8 @@
   },
   "troopDensity": {
     "enabled": true,
-    "diffusionRate": 0.18,
+    "diffusionRate": 0.45,
+    "diffusionSubSteps": 5,
     "borderConcentrationBias": 4.0,
     "arrowAttractorStrength": 10.0,
     "arrowAttractorRadius": 12,
@@ -231,5 +236,11 @@
     "seedDensityAtCapital": 5.0,
     "densityDecayOnUnowned": 0.95,
     "troopDefenseScale": 0.8
+  },
+  "troopMaintenance": {
+    "foodCostPerTroop": 0.0001,
+    "goldCostPerTroop": 0.00005,
+    "freeThreshold": 0.25,
+    "autoReduceTarget": 0.15
   }
 }

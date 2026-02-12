@@ -476,27 +476,42 @@ const TroopDensityHeatmap = React.memo(({ densityMap, cellSize, visibleBounds })
         for (let i = 0; i < densityMap.length; i += 3) {
           const x = densityMap[i];
           const y = densityMap[i + 1];
-          const density = densityMap[i + 2]; // 0-255 quantized (coarse: steps of 8)
+          const density = densityMap[i + 2]; // 0-255 quantized
 
           if (x < minX || x > maxX || y < minY || y > maxY) continue;
           if (density <= 0) continue;
 
           const t = Math.min(1, density / 255);
-          // Color gradient: green (low) -> yellow (mid) -> red (high)
+          // Color gradient: blue (low) -> cyan (mid-low) -> green (mid) -> yellow (mid-high) -> red (high)
           let r, gVal, b;
-          if (t < 0.5) {
-            const s = t * 2;
+          if (t < 0.25) {
+            // Blue -> Cyan
+            const s = t * 4;
+            r = 0;
+            gVal = Math.round(s * 200);
+            b = 180 + Math.round(s * 75);
+          } else if (t < 0.5) {
+            // Cyan -> Green
+            const s = (t - 0.25) * 4;
+            r = 0;
+            gVal = 200 + Math.round(s * 55);
+            b = Math.round((1 - s) * 255);
+          } else if (t < 0.75) {
+            // Green -> Yellow
+            const s = (t - 0.5) * 4;
             r = Math.round(s * 255);
             gVal = 255;
             b = 0;
           } else {
-            const s = (t - 0.5) * 2;
+            // Yellow -> Red
+            const s = (t - 0.75) * 4;
             r = 255;
             gVal = Math.round((1 - s) * 255);
             b = 0;
           }
           const color = (r << 16) | (gVal << 8) | b;
-          const alpha = 0.15 + t * 0.35;
+          // Higher alpha so density is always visible: 0.20 (low) to 0.55 (high)
+          const alpha = 0.20 + t * 0.35;
 
           g.beginFill(color, alpha);
           g.drawRect(x * cellSize, y * cellSize, cellSize, cellSize);
@@ -508,6 +523,7 @@ const TroopDensityHeatmap = React.memo(({ densityMap, cellSize, visibleBounds })
 }, (prev, next) => {
   // Custom comparison: skip re-render if densityMap data is identical
   if (prev.cellSize !== next.cellSize) return false;
+  if (prev.visibleBounds !== next.visibleBounds) return false;
   const a = prev.densityMap;
   const b = next.densityMap;
   if (a === b) return true;
@@ -689,25 +705,24 @@ const BorderPressureOverlay = React.memo(({ playerNation, densityMap, cellSize, 
         const avgDensity = Math.max(1, totalDensity / densityCount);
 
         for (const cell of borderCells) {
-          // t: 0 = red (thin), 0.5 = yellow (average), 1 = green (strong)
+          // t: 0 = red (thin/no troops), 0.5 = yellow (average), 1 = green (strong)
           const t = Math.min(1, Math.max(0, cell.density / (avgDensity * 2)));
 
           let r, gVal, b;
           if (t < 0.5) {
             const s = t * 2;
             r = 255;
-            gVal = Math.round(s * 255);
+            gVal = Math.round(s * 200);
             b = 0;
           } else {
             const s = (t - 0.5) * 2;
             r = Math.round((1 - s) * 255);
-            gVal = 255;
+            gVal = 200 + Math.round(s * 55);
             b = 0;
           }
           const color = (r << 16) | (gVal << 8) | b;
-          // Brighter at extremes (notably strong or thin)
-          const dist = Math.abs(t - 0.5) * 2;
-          const alpha = 0.25 + dist * 0.35;
+          // Higher alpha so border defense is clearly visible
+          const alpha = 0.35 + Math.abs(t - 0.5) * 0.3;
 
           g.beginFill(color, alpha);
           g.drawRect(cell.x * cellSize, cell.y * cellSize, cellSize, cellSize);
@@ -719,6 +734,7 @@ const BorderPressureOverlay = React.memo(({ playerNation, densityMap, cellSize, 
 }, (prev, next) => {
   if (prev.cellSize !== next.cellSize) return false;
   if (prev.playerNation !== next.playerNation) return false;
+  if (prev.visibleBounds !== next.visibleBounds) return false;
   const a = prev.densityMap;
   const b = next.densityMap;
   if (a === b) return true;
@@ -1524,6 +1540,8 @@ const GameCanvas = ({
 
   /* ----- Smoother WASD Panning via Animation Frame ----- */
   const keysRef = useRef({ w: false, a: false, s: false, d: false });
+  const panByRef = useRef(panBy);
+  panByRef.current = panBy;
   useEffect(() => {
     const handleKeyDown = (e) => {
       const key = e.key.toLowerCase();
@@ -1555,7 +1573,7 @@ const GameCanvas = ({
       if (keysRef.current.a) dx += panSpeed * deltaTime;
       if (keysRef.current.d) dx -= panSpeed * deltaTime;
       if (dx !== 0 || dy !== 0) {
-        panBy(dx, dy);
+        panByRef.current(dx, dy);
       }
       animationFrameId = requestAnimationFrame(update);
     };
@@ -1565,7 +1583,7 @@ const GameCanvas = ({
       window.removeEventListener("keyup", handleKeyUp);
       cancelAnimationFrame(animationFrameId);
     };
-  }, [panBy]);
+  }, []);
 
   /* ----- Pointer Handlers ----- */
   const handlePointerDown = useCallback(
@@ -1875,7 +1893,7 @@ const GameCanvas = ({
         return;
       }
       if (buildingStructure) {
-        const gridCell = mapGrid.find((c) => c.x === cell.x && c.y === cell.y);
+        const gridCellData = mapGridByRow[cell.y]?.[cell.x];
         const resourceStructureMapping = {
           farm: "food",
           "lumber mill": "wood",
@@ -1883,7 +1901,7 @@ const GameCanvas = ({
           stable: "horses",
         };
         const required = resourceStructureMapping[buildingStructure];
-        const cellResources = gridCell ? gridCell.cell[5] : [];
+        const cellResources = gridCellData ? gridCellData[5] : [];
         let resourceValid = Array.isArray(required)
           ? required.some((r) => cellResources.includes(r))
           : cellResources.includes(required);
@@ -1911,9 +1929,9 @@ const GameCanvas = ({
         return;
       }
       if (uiMode === "idle" && onInspectCell) {
-        const gridCell = mapGrid.find((c) => c.x === cell.x && c.y === cell.y);
-        const info = gridCell
-          ? buildCellInfo(gridCell.cell, cell.x, cell.y)
+        const gridCellData = mapGridByRow[cell.y]?.[cell.x];
+        const info = gridCellData
+          ? buildCellInfo(gridCellData, cell.x, cell.y)
           : null;
         if (info) onInspectCell(info);
       }
@@ -2149,9 +2167,7 @@ const GameCanvas = ({
 
   let buildPreview = null;
   if (buildingStructure && hoveredCell) {
-    const gridCell = mapGrid.find(
-      (c) => c.x === hoveredCell.x && c.y === hoveredCell.y
-    );
+    const gridCellData = mapGridByRow[hoveredCell.y]?.[hoveredCell.x];
     const resourceStructureMapping = {
       farm: "food",
       "lumber mill": "wood",
@@ -2159,7 +2175,7 @@ const GameCanvas = ({
       stable: "horses",
     };
     const required = resourceStructureMapping[buildingStructure];
-    const cellResources = gridCell ? gridCell.cell[5] : [];
+    const cellResources = gridCellData ? gridCellData[5] : [];
     let resourceValid = Array.isArray(required)
       ? required.some((r) => cellResources.includes(r))
       : cellResources.includes(required);

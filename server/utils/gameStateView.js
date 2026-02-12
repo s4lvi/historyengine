@@ -1,5 +1,6 @@
 import { packTerritoryDelta } from "./packedDelta.js";
 import { buildTroopDensityPayload } from "./matrixTroopDensity.js";
+import config from "../config/config.js";
 
 // Strip internal caches from nation object before sending to client
 function stripInternalCaches(nation) {
@@ -81,7 +82,7 @@ export function buildGameStateResponse(gameRoom, userId, full = false, matrix = 
     if (matrix && nation.troopCount != null) {
       const nIdx = matrix.ownerToIndex?.get(nation.owner);
       if (nIdx !== undefined) {
-        const maxDensity = 50; // config.troopDensity.maxDensityPerCell
+        const maxDensity = config?.troopDensity?.maxDensityPerCell || 50;
         const tickCount = gameRoom.tickCount || 0;
         const shouldUpdateMap = tickCount % 5 === 0 || full;
         let densityMap;
@@ -129,9 +130,25 @@ export function buildGameStateResponse(gameRoom, userId, full = false, matrix = 
     };
   };
 
+  // Filter resourceNodeClaims: show completed claims to all, but
+  // strip in-progress capture data (progressOwner, progress) for other nations
+  const rawClaims = gameRoom.gameState?.resourceNodeClaims || {};
+  const filteredClaims = {};
+  for (const [key, claim] of Object.entries(rawClaims)) {
+    if (!claim) continue;
+    if (claim.progressOwner === userId) {
+      // Player's own in-progress claim: show full data
+      filteredClaims[key] = claim;
+    } else {
+      // Other players' claims: only show completed owner + type
+      filteredClaims[key] = { type: claim.type, owner: claim.owner || null };
+    }
+  }
+
   const filteredGameState = {
-    ...gameRoom.gameState,
     nations: (gameRoom.gameState?.nations || []).map(filterNation),
+    settings: gameRoom.gameState?.settings,
+    resourceNodeClaims: filteredClaims,
   };
 
   return {

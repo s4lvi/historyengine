@@ -1,4 +1,6 @@
 // matrixTroopDensity.js — Troop density fluid simulation: mobilization, diffusion, combat
+// Red-Black Gauss-Seidel: in-place iteration, no read buffer copy.
+// Chunk skipping for diffusion; conservation sums use separate full-bbox pass.
 
 import { UNOWNED } from "./TerritoryMatrix.js";
 
@@ -40,9 +42,18 @@ export function tickMobilization(matrix, cfg, nations) {
 
     if (currentTroops < targetTroops) {
       // Mobilize: recruit from free workers
-      const freeWorkerRatio = Math.max(0, (population - currentTroops) / population);
-      const mobilizeAmount = population * (mobilizationBaseRate / 10) * (1 + freeWorkerRatio * mobilizationFreeWorkerScale);
-      nation.troopCount = Math.min(targetTroops, currentTroops + mobilizeAmount);
+      const freeWorkerRatio = Math.max(
+        0,
+        (population - currentTroops) / population,
+      );
+      const mobilizeAmount =
+        population *
+        (mobilizationBaseRate / 10) *
+        (1 + freeWorkerRatio * mobilizationFreeWorkerScale);
+      nation.troopCount = Math.min(
+        targetTroops,
+        currentTroops + mobilizeAmount,
+      );
     } else if (currentTroops > targetTroops) {
       // Demobilize
       const demobAmount = currentTroops * (demobilizationRate / 10);
@@ -54,25 +65,22 @@ export function tickMobilization(matrix, cfg, nations) {
     nation.troopCount = Math.max(0, nation.troopCount);
 
     // Seed density if troopCount > 0 but density is near-zero.
-    // Distribute uniformly across all owned cells so density is immediately
-    // available at borders (instead of taking 50+ ticks to diffuse from capital).
+    // Uses running counters for O(1) aggregate queries.
     if (nation.troopCount > 0) {
-      const offset = nIdx * matrix.size;
-      let totalDensity = 0;
-      for (let i = 0; i < matrix.size; i++) {
-        totalDensity += matrix.troopDensity[offset + i];
-      }
-      if (totalDensity < nation.troopCount * 0.1) {
-        // Count owned cells
-        let ownedCount = 0;
-        for (let i = 0; i < matrix.size; i++) {
-          if (matrix.ownership[i] === nIdx) ownedCount++;
-        }
-        if (ownedCount > 0) {
-          const densityPerCell = nation.troopCount / ownedCount;
-          for (let i = 0; i < matrix.size; i++) {
-            if (matrix.ownership[i] === nIdx) {
-              matrix.troopDensity[offset + i] = densityPerCell;
+      const ownedCount = matrix.ownedCellCount[nIdx];
+      const totalDensity = matrix.troopDensitySum[nIdx];
+      if (totalDensity < nation.troopCount * 0.1 && ownedCount > 0) {
+        const densityPerCell = nation.troopCount / ownedCount;
+        const offset = nIdx * matrix.size;
+        // Only seed within bounding box
+        const bb = matrix.nationBBox[nIdx];
+        if (bb.maxX >= 0) {
+          for (let y = bb.minY; y <= bb.maxY; y++) {
+            for (let x = bb.minX; x <= bb.maxX; x++) {
+              const i = y * matrix.width + x;
+              if (matrix.ownership[i] === nIdx) {
+                matrix.troopDensity[offset + i] = densityPerCell;
+              }
             }
           }
         }
@@ -83,6 +91,7 @@ export function tickMobilization(matrix, cfg, nations) {
 
 /**
  * Tick troop density diffusion.
+ * Red-Black Gauss-Seidel: in-place iteration with chunk-based skipping.
  * Diffuses troops across owned territory with border concentration bias
  * and arrow attractor fields. Enforces conservation: SUM(density) == troopCount.
  *
@@ -93,6 +102,7 @@ export function tickMobilization(matrix, cfg, nations) {
 export function tickTroopDensityDiffusion(matrix, cfg, nations) {
   const {
     diffusionRate = 0.06,
+    diffusionSubSteps = 1,
     borderConcentrationBias = 2.5,
     arrowAttractorStrength = 4.0,
     arrowAttractorRadius = 10,
@@ -100,14 +110,29 @@ export function tickTroopDensityDiffusion(matrix, cfg, nations) {
     densityDecayOnUnowned = 0.95,
   } = cfg || {};
 
-  const { width, height, size, ownership, oceanMask, diffusionResistance } = matrix;
+  const { width, height, size, ownership, oceanMask, diffusionResistance } =
+    matrix;
   const troopDensity = matrix.troopDensity;
-  const readBuffer = matrix.troopDensityReadBuffer;
+  const activeNations = matrix.nextNationSlot;
 
-  // Copy current density to read buffer
-  readBuffer.set(troopDensity);
+  // ── Persistent bounding boxes from setOwnerByIndex + margin ──
+  const BOUNDS_MARGIN = 12;
+  const nationBounds = new Array(activeNations);
+  for (let n = 0; n < activeNations; n++) {
+    const bb = matrix.nationBBox[n];
+    if (bb.maxX < 0) {
+      nationBounds[n] = null;
+      continue;
+    }
+    nationBounds[n] = {
+      minX: Math.max(0, bb.minX - BOUNDS_MARGIN),
+      maxX: Math.min(width - 1, bb.maxX + BOUNDS_MARGIN),
+      minY: Math.max(0, bb.minY - BOUNDS_MARGIN),
+      maxY: Math.min(height - 1, bb.maxY + BOUNDS_MARGIN),
+    };
+  }
 
-  // Pre-compute arrow attractor maps per nation
+  // Pre-compute arrow attractor maps per nation + expand bounds to include arrow heads
   const attractorMaps = new Map(); // nIdx -> [{cellIdx, strength}]
   for (const nation of nations) {
     if (nation.status === "defeated") continue;
@@ -117,6 +142,8 @@ export function tickTroopDensityDiffusion(matrix, cfg, nations) {
     const attacks = nation.arrowOrders?.attacks || [];
     if (attacks.length === 0) continue;
 
+    const b = nationBounds[nIdx];
+    if (!b) continue;
     const fields = [];
     for (const arrow of attacks) {
       if (!arrow.headX && arrow.headX !== 0) continue;
@@ -126,8 +153,15 @@ export function tickTroopDensityDiffusion(matrix, cfg, nations) {
       const r = arrowAttractorRadius;
       const corridorHalf = arrow._corridorHalfWidth || 4;
 
-      // Arrow forward direction: use path segment, not head-to-waypoint
-      let aDirX = 0, aDirY = 1;
+      // Expand bounding box to include arrow head
+      if (hx - r < b.minX) b.minX = Math.max(0, hx - r);
+      if (hx + r > b.maxX) b.maxX = Math.min(width - 1, hx + r);
+      if (hy - r < b.minY) b.minY = Math.max(0, hy - r);
+      if (hy + r > b.maxY) b.maxY = Math.min(height - 1, hy + r);
+
+      // Arrow forward direction
+      let aDirX = 0,
+        aDirY = 1;
       if (arrow.path && arrow.path.length >= 2) {
         const ci = Math.min(arrow.currentIndex || 0, arrow.path.length - 1);
         const fromIdx = Math.max(0, ci - 1);
@@ -137,32 +171,37 @@ export function tickTroopDensityDiffusion(matrix, cfg, nations) {
         aDirX = to.x - from.x;
         aDirY = to.y - from.y;
         const dLen = Math.sqrt(aDirX * aDirX + aDirY * aDirY);
-        if (dLen > 0.001) { aDirX /= dLen; aDirY /= dLen; }
+        if (dLen > 0.001) {
+          aDirX /= dLen;
+          aDirY /= dLen;
+        }
       }
 
-      const minX = Math.max(0, hx - r);
-      const maxX = Math.min(width - 1, hx + r);
-      const minY = Math.max(0, hy - r);
-      const maxY = Math.min(height - 1, hy + r);
+      const aMinX = Math.max(0, hx - r);
+      const aMaxX = Math.min(width - 1, hx + r);
+      const aMinY = Math.max(0, hy - r);
+      const aMaxY = Math.min(height - 1, hy + r);
 
-      for (let cy = minY; cy <= maxY; cy++) {
-        for (let cx = minX; cx <= maxX; cx++) {
+      for (let cy = aMinY; cy <= aMaxY; cy++) {
+        for (let cx = aMinX; cx <= aMaxX; cx++) {
           const dx = cx - hx;
           const dy = cy - hy;
 
-          // Corridor-shaped attractor: perpendicular distance limits width,
-          // along-path distance limits depth. Concentrates density along the path.
           const perpDist = Math.abs(dy * aDirX - dx * aDirY);
-          if (perpDist > corridorHalf * 1.5) continue; // wider than combat for smoother flow
+          if (perpDist > corridorHalf * 1.5) continue;
           const alongDist = dx * aDirX + dy * aDirY;
-          if (alongDist < -r * 0.3) continue; // don't pull from far behind
+          if (alongDist < -r * 0.3) continue;
 
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > r) continue;
           const distFalloff = 1 - dist / r;
-          const corridorFalloff = Math.max(0.1, 1 - perpDist / (corridorHalf * 1.5));
+          const corridorFalloff = Math.max(
+            0.1,
+            1 - perpDist / (corridorHalf * 1.5),
+          );
 
-          const strength = arrowAttractorStrength * distFalloff * corridorFalloff * percent;
+          const strength =
+            arrowAttractorStrength * distFalloff * corridorFalloff * percent;
           if (strength > 0.01) {
             fields.push({ cellIdx: cy * width + cx, strength });
           }
@@ -174,8 +213,7 @@ export function tickTroopDensityDiffusion(matrix, cfg, nations) {
     }
   }
 
-  // Build per-nation running sums for conservation correction
-  const nationSums = new Float64Array(matrix.maxNations);
+  // Build per-nation troop counts for conservation correction
   const nationTroopCounts = new Float64Array(matrix.maxNations);
 
   for (const nation of nations) {
@@ -186,8 +224,7 @@ export function tickTroopDensityDiffusion(matrix, cfg, nations) {
   }
 
   // Build attractor lookup: for each cell, sum attractor strength per nation
-  // (sparse — only cells near arrow heads have values)
-  const attractorByCell = new Map(); // nIdx -> Float32Array(size) — lazy
+  const attractorByCell = new Map();
   for (const [nIdx, fields] of attractorMaps) {
     const arr = new Float32Array(size);
     for (const { cellIdx, strength } of fields) {
@@ -196,95 +233,204 @@ export function tickTroopDensityDiffusion(matrix, cfg, nations) {
     attractorByCell.set(nIdx, arr);
   }
 
-  // Single pass through all cells
-  for (let i = 0; i < size; i++) {
-    if (oceanMask[i] === 1) continue;
+  // ── Red-Black Gauss-Seidel with chunk skipping + sub-stepping ──
+  // Chunk skipping sleeps deep-interior chunks for diffusion performance.
+  // Conservation sums are computed in a separate full-bbox pass for correctness.
+  const { chunksX, chunkDirty, chunkHasBorder, chunkSleepCounter } = matrix;
+  const SLEEP_THRESHOLD = 3;
+  const subSteps = Math.max(1, diffusionSubSteps | 0);
 
-    const x = i % width;
-    const y = (i - x) / width;
-    const cellOwner = ownership[i];
+  for (let nIdx = 0; nIdx < activeNations; nIdx++) {
+    if (matrix.indexToOwner[nIdx] === null) continue;
+    const b = nationBounds[nIdx];
+    if (!b) continue;
 
-    // Process each nation's density at this cell
-    for (let nIdx = 0; nIdx < matrix.nextNationSlot; nIdx++) {
-      if (matrix.indexToOwner[nIdx] === null) continue;
+    const nOffset = nIdx * size;
+    const attractorArr = attractorByCell.get(nIdx) || null;
+    const hasArrows = attractorArr !== null;
 
-      const offset = nIdx * size + i;
-      const current = readBuffer[offset];
+    // Convert bbox to chunk coords
+    const bbMinCX = b.minX >> 4;
+    const bbMaxCX = Math.min(b.maxX >> 4, chunksX - 1);
+    const bbMinCY = b.minY >> 4;
+    const bbMaxCY = Math.min(b.maxY >> 4, matrix.chunksY - 1);
 
-      // Non-owned cells: decay density
-      if (cellOwner !== nIdx) {
-        if (current > 0) {
-          troopDensity[offset] = current * densityDecayOnUnowned;
-          nationSums[nIdx] += troopDensity[offset];
-        }
-        continue;
-      }
+    for (let step = 0; step < subSteps; step++) {
+      const isLastStep = step === subSteps - 1;
 
-      // Owned cell: diffuse
-      let neighborSum = 0;
-      let neighborCount = 0;
-      for (let d = 0; d < 4; d++) {
-        const nx = x + DX[d];
-        const ny = y + DY[d];
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-        const ni = ny * width + nx;
-        if (oceanMask[ni] === 1) continue;
-        // Only diffuse within owned territory
-        if (ownership[ni] !== nIdx) continue;
-        neighborSum += readBuffer[nIdx * size + ni];
-        neighborCount++;
-      }
+      for (let pass = 0; pass < 2; pass++) {
+        for (let ccy = bbMinCY; ccy <= bbMaxCY; ccy++) {
+          for (let ccx = bbMinCX; ccx <= bbMaxCX; ccx++) {
+            const ci = ccy * chunksX + ccx;
+            if (
+              !chunkDirty[ci] &&
+              !chunkHasBorder[ci] &&
+              chunkSleepCounter[ci] > SLEEP_THRESHOLD
+            )
+              continue;
 
-      let target = current;
-      if (neighborCount > 0) {
-        const avgNeighbor = neighborSum / neighborCount;
+            const x0 = ccx << 4;
+            const y0 = ccy << 4;
+            const x1 = Math.min(x0 + 16, width);
+            const y1 = Math.min(y0 + 16, height);
+            const xStart = Math.max(x0, b.minX);
+            const xEnd = Math.min(x1, b.maxX + 1);
+            const yStart = Math.max(y0, b.minY);
+            const yEnd = Math.min(y1, b.maxY + 1);
 
-        // Check if border cell (any non-owned 4-neighbor)
-        let isBorder = false;
-        for (let d = 0; d < 4; d++) {
-          const nx = x + DX[d];
-          const ny = y + DY[d];
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-            isBorder = true;
-            break;
+            for (let y = yStart; y < yEnd; y++) {
+              let x = xStart + ((xStart + y + pass) & 1);
+              for (; x < xEnd; x += 2) {
+                const i = y * width + x;
+                if (oceanMask[i] === 1) continue;
+
+                const offset = nOffset + i;
+                const current = troopDensity[offset];
+                const cellOwner = ownership[i];
+
+                // Non-owned cells: decay density (only on last step to avoid compounding)
+                if (cellOwner !== nIdx) {
+                  if (isLastStep && current > 0) {
+                    troopDensity[offset] = current * densityDecayOnUnowned;
+                  }
+                  continue;
+                }
+
+                // Owned cell: diffuse + detect border using inline neighbor reads
+                let neighborSum = 0;
+                let neighborCount = 0;
+                let isBorder = false;
+
+                if (x > 0) {
+                  const ni = i - 1;
+                  if (oceanMask[ni] !== 1) {
+                    if (ownership[ni] !== nIdx) {
+                      isBorder = true;
+                    } else {
+                      neighborSum += troopDensity[nOffset + ni];
+                      neighborCount++;
+                    }
+                  }
+                } else {
+                  isBorder = true;
+                }
+
+                if (x < width - 1) {
+                  const ni = i + 1;
+                  if (oceanMask[ni] !== 1) {
+                    if (ownership[ni] !== nIdx) {
+                      isBorder = true;
+                    } else {
+                      neighborSum += troopDensity[nOffset + ni];
+                      neighborCount++;
+                    }
+                  }
+                } else {
+                  isBorder = true;
+                }
+
+                if (y > 0) {
+                  const ni = i - width;
+                  if (oceanMask[ni] !== 1) {
+                    if (ownership[ni] !== nIdx) {
+                      isBorder = true;
+                    } else {
+                      neighborSum += troopDensity[nOffset + ni];
+                      neighborCount++;
+                    }
+                  }
+                } else {
+                  isBorder = true;
+                }
+
+                if (y < height - 1) {
+                  const ni = i + width;
+                  if (oceanMask[ni] !== 1) {
+                    if (ownership[ni] !== nIdx) {
+                      isBorder = true;
+                    } else {
+                      neighborSum += troopDensity[nOffset + ni];
+                      neighborCount++;
+                    }
+                  }
+                } else {
+                  isBorder = true;
+                }
+
+                let target = current;
+                if (neighborCount > 0) {
+                  const avgNeighbor = neighborSum / neighborCount;
+                  let attractorBias = 0;
+                  if (attractorArr) {
+                    attractorBias = attractorArr[i];
+                  }
+
+                  // When nation has active arrows, suppress border bias at non-arrow
+                  // border cells so density flows toward arrow positions instead of
+                  // spreading uniformly along all borders.
+                  let borderBias = 0;
+                  if (isBorder) {
+                    if (hasArrows) {
+                      borderBias = attractorBias > 0.01
+                        ? borderConcentrationBias
+                        : borderConcentrationBias * 0.15;
+                    } else {
+                      borderBias = borderConcentrationBias;
+                    }
+                  }
+
+                  target = avgNeighbor + borderBias + attractorBias;
+                }
+
+                const resistance = diffusionResistance[i] || 0;
+                let newVal =
+                  current + (target - current) * diffusionRate * (1 - resistance);
+                if (newVal < 0) newVal = 0;
+                if (newVal > maxDensityPerCell) newVal = maxDensityPerCell;
+                troopDensity[offset] = newVal;
+              }
+            }
           }
-          if (ownership[ny * width + nx] !== nIdx) {
-            isBorder = true;
-            break;
-          }
         }
-
-        const borderBias = isBorder ? borderConcentrationBias : 0;
-
-        // Arrow attractor bias
-        let attractorBias = 0;
-        const attractorArr = attractorByCell.get(nIdx);
-        if (attractorArr) {
-          attractorBias = attractorArr[i];
-        }
-
-        target = avgNeighbor + borderBias + attractorBias;
       }
-
-      const resistance = diffusionResistance[i] || 0;
-      let newVal = current + (target - current) * diffusionRate * (1 - resistance);
-      newVal = Math.max(0, Math.min(maxDensityPerCell, newVal));
-      troopDensity[offset] = newVal;
-      nationSums[nIdx] += newVal;
     }
   }
 
-  // Conservation correction: scale density so SUM == troopCount
-  for (let nIdx = 0; nIdx < matrix.nextNationSlot; nIdx++) {
+  // Conservation correction: compute sums over full bbox (no chunk skipping),
+  // then scale density so SUM == troopCount.
+  const MAX_CONSERVATION_SCALE = 3.0;
+  for (let nIdx = 0; nIdx < activeNations; nIdx++) {
     if (matrix.indexToOwner[nIdx] === null) continue;
     const targetSum = nationTroopCounts[nIdx];
-    const actualSum = nationSums[nIdx];
-    if (actualSum > 0.001 && targetSum > 0) {
-      const scale = targetSum / actualSum;
-      const offset = nIdx * size;
-      for (let i = 0; i < size; i++) {
-        troopDensity[offset + i] *= scale;
+    if (targetSum <= 0) continue;
+    const b = nationBounds[nIdx];
+    if (!b) continue;
+    const nOffset = nIdx * size;
+
+    // First pass: compute actual sum over full bbox (all cells, no skipping)
+    let actualSum = 0;
+    for (let y = b.minY; y <= b.maxY; y++) {
+      const rowStart = y * width;
+      for (let x = b.minX; x <= b.maxX; x++) {
+        actualSum += troopDensity[nOffset + rowStart + x];
       }
+    }
+
+    if (actualSum > 0.001) {
+      const scale = Math.min(MAX_CONSERVATION_SCALE, targetSum / actualSum);
+      // Second pass: scale + compute newSum for running counter
+      let newSum = 0;
+      for (let y = b.minY; y <= b.maxY; y++) {
+        const rowStart = y * width;
+        for (let x = b.minX; x <= b.maxX; x++) {
+          const off = nOffset + rowStart + x;
+          troopDensity[off] *= scale;
+          newSum += troopDensity[off];
+        }
+      }
+      matrix.troopDensitySum[nIdx] = newSum;
+    } else {
+      matrix.troopDensitySum[nIdx] = actualSum;
     }
   }
 }
@@ -307,7 +453,15 @@ export function tickTroopDensityDiffusion(matrix, cfg, nations) {
  * @returns {number} number of cells flipped
  */
 export function resolveDensityCombat(
-  arrow, nation, gameState, mapData, ownershipMap, matrix, cfg, addCell, removeCellFromNation
+  arrow,
+  nation,
+  gameState,
+  mapData,
+  ownershipMap,
+  matrix,
+  cfg,
+  addCell,
+  removeCellFromNation,
 ) {
   const {
     combatExchangeRate = 0.3,
@@ -322,16 +476,20 @@ export function resolveDensityCombat(
   const { width, height, size, ownership, defenseStrength } = matrix;
   const troopDensity = matrix.troopDensity;
 
+  // Pre-build nation lookup by index to avoid gameState.nations.find() per cell flip
+  const nationByIndex = new Array(matrix.nextNationSlot);
+  for (const n of gameState.nations) {
+    const ni = matrix.ownerToIndex.get(n.owner);
+    if (ni !== undefined) nationByIndex[ni] = n;
+  }
+
   const hx = Math.round(arrow.headX ?? 0);
   const hy = Math.round(arrow.headY ?? 0);
 
-  // Corridor half-width: how many cells to each side of the arrow path
-  // Narrow corridor creates focused push instead of parallel border push
   const corridorHalf = arrow._corridorHalfWidth || 4;
 
-  // Arrow forward direction: use the PATH SEGMENT direction, not head-to-waypoint.
-  // This is stable regardless of where the head actually is.
-  let arrowDirX = 0, arrowDirY = 1;
+  let arrowDirX = 0,
+    arrowDirY = 1;
   if (arrow.path && arrow.path.length >= 2) {
     const ci = Math.min(arrow.currentIndex || 0, arrow.path.length - 1);
     const fromIdx = Math.max(0, ci - 1);
@@ -341,10 +499,12 @@ export function resolveDensityCombat(
     arrowDirX = to.x - from.x;
     arrowDirY = to.y - from.y;
     const dirLen = Math.sqrt(arrowDirX * arrowDirX + arrowDirY * arrowDirY);
-    if (dirLen > 0.001) { arrowDirX /= dirLen; arrowDirY /= dirLen; }
+    if (dirLen > 0.001) {
+      arrowDirX /= dirLen;
+      arrowDirY /= dirLen;
+    }
   }
 
-  // Scan a bounding box around the head
   const scanR = arrowAttractorRadius;
   const minX = Math.max(0, hx - scanR);
   const maxX = Math.min(width - 1, hx + scanR);
@@ -358,14 +518,12 @@ export function resolveDensityCombat(
       const dx = cx - hx;
       const dy = cy - hy;
 
-      // Corridor check: perpendicular distance from arrow path line
       const perpDist = Math.abs(dy * arrowDirX - dx * arrowDirY);
       if (perpDist > corridorHalf) continue;
 
-      // Along-path distance: positive = ahead of head, negative = behind
       const alongDist = dx * arrowDirX + dy * arrowDirY;
-      if (alongDist < -2) continue; // skip cells behind the head
-      if (alongDist > scanR) continue; // don't reach too far ahead
+      if (alongDist < -2) continue;
+      if (alongDist > scanR) continue;
 
       const ci = cy * width + cx;
       const cellOwner = ownership[ci];
@@ -373,7 +531,6 @@ export function resolveDensityCombat(
       if (cellOwner === nIdx) continue;
       if (matrix.oceanMask[ci] === 1) continue;
 
-      // Check adjacency to our territory and gather attacker density
       let adjacentToUs = false;
       let attackerDensity = 0;
       let attackerCount = 0;
@@ -391,55 +548,57 @@ export function resolveDensityCombat(
       if (!adjacentToUs) continue;
       if (attackerCount > 0) attackerDensity /= attackerCount;
 
-      // Corridor falloff: full attack at center of corridor, fading at edges
       const corridorFactor = Math.max(0.1, 1 - (perpDist / corridorHalf) * 0.8);
       const effectiveAttack = attackerDensity * corridorFactor;
 
-      // Unowned cells: capture if enough effective attack
       if (cellOwner === UNOWNED) {
         if (effectiveAttack >= combatDensityThreshold) {
           addCell(cx, cy);
-          // Seed density: troops occupy captured cell so front can keep advancing
           troopDensity[nIdx * size + ci] = attackerDensity * 0.3;
           flipped++;
         }
         continue;
       }
 
-      // Enemy cells: density combat
       const defenderDensity = troopDensity[cellOwner * size + ci];
-      // defenseStrength includes population density, troop density, and structures.
-      // We do NOT use it as a multiplier on defenderDensity (that would double-count
-      // troop density). Instead extract a small terrain/structure bonus from it.
-      // Base defenseStrength is ~1.0 + popDens*0.5 + troopDens*0.8 + structures.
-      // Strip out the troop density contribution to avoid double-counting.
       const rawDefense = defenseStrength[ci] || 1.0;
-      // Terrain/structure modifier: defenseStrength minus the troop density component
-      // Clamp to [1.0, 3.0] so structures help but don't make cells invincible
-      const defenderTroopComponent = defenderDensity * (cfg.troopDefenseScale || 0.8);
-      const terrainMod = Math.max(1.0, Math.min(3.0, rawDefense - defenderTroopComponent));
-      const effectiveDefense = defenderDensity * combatDefenderAdvantage * terrainMod;
+      const defenderTroopComponent =
+        defenderDensity * (cfg.troopDefenseScale || 0.8);
+      const terrainMod = Math.max(
+        1.0,
+        Math.min(3.0, rawDefense - defenderTroopComponent),
+      );
+      const effectiveDefense =
+        defenderDensity * combatDefenderAdvantage * terrainMod;
 
-      if (effectiveAttack < combatDensityThreshold && defenderDensity < combatDensityThreshold) {
+      if (
+        effectiveAttack < combatDensityThreshold &&
+        defenderDensity < combatDensityThreshold
+      ) {
         continue;
       }
 
       if (effectiveAttack > effectiveDefense) {
-        // Flip cell
         const defenderLoss = defenderDensity * combatExchangeRate;
         const attackerLoss = defenderDensity * combatExchangeRate * 0.5;
 
-        // Apply losses to defender
-        const defenderOwner = matrix.getOwnerByIndex(cellOwner);
-        const defenderNation = gameState.nations.find(n => n.owner === defenderOwner);
+        const defenderNation = nationByIndex[cellOwner];
         if (defenderNation) {
-          troopDensity[cellOwner * size + ci] = Math.max(0, defenderDensity - defenderLoss);
-          defenderNation.troopCount = Math.max(0, (defenderNation.troopCount || 0) - defenderLoss);
-          defenderNation.population = Math.max(0, (defenderNation.population || 0) - defenderLoss);
+          troopDensity[cellOwner * size + ci] = Math.max(
+            0,
+            defenderDensity - defenderLoss,
+          );
+          defenderNation.troopCount = Math.max(
+            0,
+            (defenderNation.troopCount || 0) - defenderLoss,
+          );
+          defenderNation.population = Math.max(
+            0,
+            (defenderNation.population || 0) - defenderLoss,
+          );
           removeCellFromNation(defenderNation, cx, cy);
         }
 
-        // Apply losses to attacker (spread across adjacent cells)
         if (attackerCount > 0) {
           const lossPerCell = attackerLoss / attackerCount;
           for (let d = 0; d < 4; d++) {
@@ -448,29 +607,44 @@ export function resolveDensityCombat(
             if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
             const ni = ny * width + nx;
             if (ownership[ni] === nIdx) {
-              troopDensity[nIdx * size + ni] = Math.max(0, troopDensity[nIdx * size + ni] - lossPerCell);
+              troopDensity[nIdx * size + ni] = Math.max(
+                0,
+                troopDensity[nIdx * size + ni] - lossPerCell,
+              );
             }
           }
-          nation.troopCount = Math.max(0, (nation.troopCount || 0) - attackerLoss);
-          nation.population = Math.max(0, (nation.population || 0) - attackerLoss);
+          nation.troopCount = Math.max(
+            0,
+            (nation.troopCount || 0) - attackerLoss,
+          );
+          nation.population = Math.max(
+            0,
+            (nation.population || 0) - attackerLoss,
+          );
         }
 
-        // Transfer ownership + seed density so front keeps advancing
         addCell(cx, cy);
         troopDensity[nIdx * size + ci] = attackerDensity * 0.3;
         flipped++;
       } else {
-        // Attrition: both sides lose a small amount
         const minDensity = Math.min(effectiveAttack, defenderDensity);
         const attritionLoss = minDensity * combatExchangeRate * 0.2;
 
         if (attritionLoss > 0.001) {
-          troopDensity[cellOwner * size + ci] = Math.max(0, troopDensity[cellOwner * size + ci] - attritionLoss);
-          const defenderOwner = matrix.getOwnerByIndex(cellOwner);
-          const defenderNation = gameState.nations.find(n => n.owner === defenderOwner);
+          troopDensity[cellOwner * size + ci] = Math.max(
+            0,
+            troopDensity[cellOwner * size + ci] - attritionLoss,
+          );
+          const defenderNation = nationByIndex[cellOwner];
           if (defenderNation) {
-            defenderNation.troopCount = Math.max(0, (defenderNation.troopCount || 0) - attritionLoss);
-            defenderNation.population = Math.max(0, (defenderNation.population || 0) - attritionLoss);
+            defenderNation.troopCount = Math.max(
+              0,
+              (defenderNation.troopCount || 0) - attritionLoss,
+            );
+            defenderNation.population = Math.max(
+              0,
+              (defenderNation.population || 0) - attritionLoss,
+            );
           }
 
           if (attackerCount > 0) {
@@ -481,11 +655,20 @@ export function resolveDensityCombat(
               if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
               const ni = ny * width + nx;
               if (ownership[ni] === nIdx) {
-                troopDensity[nIdx * size + ni] = Math.max(0, troopDensity[nIdx * size + ni] - lossPerCell);
+                troopDensity[nIdx * size + ni] = Math.max(
+                  0,
+                  troopDensity[nIdx * size + ni] - lossPerCell,
+                );
               }
             }
-            nation.troopCount = Math.max(0, (nation.troopCount || 0) - attritionLoss);
-            nation.population = Math.max(0, (nation.population || 0) - attritionLoss);
+            nation.troopCount = Math.max(
+              0,
+              (nation.troopCount || 0) - attritionLoss,
+            );
+            nation.population = Math.max(
+              0,
+              (nation.population || 0) - attritionLoss,
+            );
           }
         }
       }
@@ -493,7 +676,7 @@ export function resolveDensityCombat(
   }
 
   if (process.env.DEBUG_TROOP_DENSITY === "true" || flipped > 0) {
-    console.log(`[DENSITY-COMBAT] ${nation.owner} head=(${hx},${hy}) corridor=${corridorHalf} flipped=${flipped} troopCount=${Math.round(nation.troopCount || 0)}`);
+    //console.log(`[DENSITY-COMBAT] ${nation.owner} head=(${hx},${hy}) corridor=${corridorHalf} flipped=${flipped} troopCount=${Math.round(nation.troopCount || 0)}`);
   }
 
   return flipped;
@@ -510,39 +693,51 @@ export function resolveDensityCombat(
  * @param {number} threshold - minimum density to include (default 0.1)
  * @returns {number[]} flat array of [x, y, quantizedDensity, ...]
  */
-export function buildTroopDensityPayload(matrix, nIdx, maxDensity = 50, threshold = 0.1) {
+export function buildTroopDensityPayload(
+  matrix,
+  nIdx,
+  maxDensity = 50,
+  threshold = 0.1,
+) {
   const { width, size, ownership } = matrix;
   const troopDensity = matrix.troopDensity;
   const offset = nIdx * size;
 
-  // Compute average density. Only show cells significantly above average
-  // to highlight concentration points (borders, arrow heads) rather than
-  // coloring the entire territory uniformly.
-  let totalDensity = 0;
-  let ownedCount = 0;
-  for (let i = 0; i < size; i++) {
-    if (ownership[i] !== nIdx) continue;
-    totalDensity += troopDensity[offset + i];
-    ownedCount++;
+  // Use bounding box to avoid full-grid scan
+  const bb = matrix.nationBBox[nIdx];
+  if (!bb || bb.maxX < 0) return [];
+
+  // Find max density for relative normalization
+  let peakDensity = 0;
+  for (let y = bb.minY; y <= bb.maxY; y++) {
+    for (let x = bb.minX; x <= bb.maxX; x++) {
+      const i = y * width + x;
+      if (ownership[i] !== nIdx) continue;
+      const d = troopDensity[offset + i];
+      if (d > peakDensity) peakDensity = d;
+    }
   }
-  const avgDensity = ownedCount > 0 ? totalDensity / ownedCount : 0;
-  // Require cells to be 2x the average to show up — prevents uniform coloring
-  const effectiveThreshold = Math.max(threshold, avgDensity * 2.0);
-  // Scale range: avgDensity*2 maps to 0, maxDensity maps to 255
-  const rangeBottom = effectiveThreshold;
-  const rangeTop = Math.max(rangeBottom + 1, maxDensity);
+
+  if (peakDensity < threshold) return [];
+
+  // Use low absolute threshold so all cells with any troops show up.
+  // Normalize to [0, rangeTop] where rangeTop is capped to maxDensity.
+  const rangeTop = Math.min(maxDensity, Math.max(peakDensity, 1));
 
   const result = [];
-  for (let i = 0; i < size; i++) {
-    if (ownership[i] !== nIdx) continue;
-    const density = troopDensity[offset + i];
-    if (density < effectiveThreshold) continue;
-    const x = i % width;
-    const y = (i - x) / width;
-    // Coarse quantization (32 levels) to prevent flicker from small oscillations
-    const normalized = (density - rangeBottom) / (rangeTop - rangeBottom);
-    const quantized = Math.min(255, Math.max(1, Math.round(normalized * 32) * 8));
-    result.push(x, y, quantized);
+  for (let y = bb.minY; y <= bb.maxY; y++) {
+    for (let x = bb.minX; x <= bb.maxX; x++) {
+      const i = y * width + x;
+      if (ownership[i] !== nIdx) continue;
+      const density = troopDensity[offset + i];
+      if (density < threshold) continue;
+      const normalized = Math.min(1, density / rangeTop);
+      const quantized = Math.min(
+        255,
+        Math.max(1, Math.round(normalized * 255)),
+      );
+      result.push(x, y, quantized);
+    }
   }
 
   return result;

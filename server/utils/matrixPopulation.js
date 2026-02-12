@@ -1,12 +1,12 @@
 // matrixPopulation.js — Population density diffusion + defense strength computation
+// Red-Black Gauss-Seidel: in-place iteration, no read buffer copy.
+// Chunk-based skipping: sleeps interior chunks with no recent changes.
 
 import { UNOWNED } from "./TerritoryMatrix.js";
 
-const DX = [1, -1, 0, 0];
-const DY = [0, 0, 1, -1];
-
 /**
  * Tick population density diffusion.
+ * Red-Black Gauss-Seidel with chunk-based active cell tracking.
  * Heat-equation diffusion from cities outward with natural decay.
  *
  * @param {TerritoryMatrix} matrix
@@ -22,10 +22,6 @@ export function tickPopulationDensity(matrix, cfg, nations, regionData = null, r
   } = cfg || {};
 
   const { width, height, size, ownership, populationDensity, oceanMask } = matrix;
-
-  // Double buffer
-  const readBuffer = new Float32Array(size);
-  readBuffer.set(populationDensity);
 
   // Pre-compute city positions per nation index
   const cityPositions = [];
@@ -44,7 +40,6 @@ export function tickPopulationDensity(matrix, cfg, nations, regionData = null, r
   }
 
   // Pre-compute region-based city density boost map
-  // Maps "nIdx:regionId" -> true for regions with a city
   let cityRegionSet = null;
   const cityDensityMult = regionCfg?.cityDensityMultiplier || 1.0;
   if (regionData && cityDensityMult > 1.0) {
@@ -58,54 +53,68 @@ export function tickPopulationDensity(matrix, cfg, nations, regionData = null, r
         if (!matrix.inBounds(city.x, city.y)) continue;
         const rId = regionData.assignment[city.y * width + city.x];
         if (rId !== 65535) {
-          cityRegionSet.add(`${nIdx}:${rId}`);
+          cityRegionSet.add((nIdx << 16) | rId);
         }
       }
     }
   }
 
-  for (let i = 0; i < size; i++) {
-    if (oceanMask[i] === 1) continue;
+  const { chunksX, chunkDirty, chunkHasBorder, chunkSleepCounter } = matrix;
+  const SLEEP_THRESHOLD = 3;
 
-    const x = i % width;
-    const y = (i - x) / width;
+  // Red-Black Gauss-Seidel: two sub-passes, in-place, no read buffer
+  for (let pass = 0; pass < 2; pass++) {
+    for (let ccy = 0; ccy < matrix.chunksY; ccy++) {
+      for (let ccx = 0; ccx < chunksX; ccx++) {
+        const ci = ccy * chunksX + ccx;
+        if (!chunkDirty[ci] && !chunkHasBorder[ci] && chunkSleepCounter[ci] > SLEEP_THRESHOLD) continue;
 
-    // Diffusion from neighbors
-    let neighborSum = 0;
-    let neighborCount = 0;
-    for (let d = 0; d < 4; d++) {
-      const nx = x + DX[d];
-      const ny = y + DY[d];
-      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-      const ni = ny * width + nx;
-      if (oceanMask[ni] === 1) continue;
-      neighborSum += readBuffer[ni];
-      neighborCount++;
-    }
+        const x0 = ccx << 4;
+        const y0 = ccy << 4;
+        const x1 = Math.min(x0 + 16, width);
+        const y1 = Math.min(y0 + 16, height);
 
-    let newVal = readBuffer[i];
+        for (let y = y0; y < y1; y++) {
+          let x = x0 + ((x0 + y + pass) & 1);
+          for (; x < x1; x += 2) {
+            const i = y * width + x;
+            if (oceanMask[i] === 1) continue;
 
-    // Diffusion — boosted in regions with cities
-    let effectiveDiffRate = diffusionRate;
-    if (cityRegionSet && cityRegionSet.size > 0) {
-      const ownerIdx = ownership[i];
-      if (ownerIdx !== UNOWNED) {
-        const rId = regionData.assignment[i];
-        if (rId !== 65535 && cityRegionSet.has(`${ownerIdx}:${rId}`)) {
-          effectiveDiffRate *= cityDensityMult;
+            // Diffusion from 4-neighbors (in-place reads — Red-Black safe)
+            let neighborSum = 0;
+            let neighborCount = 0;
+            if (x > 0 && oceanMask[i - 1] !== 1) { neighborSum += populationDensity[i - 1]; neighborCount++; }
+            if (x < width - 1 && oceanMask[i + 1] !== 1) { neighborSum += populationDensity[i + 1]; neighborCount++; }
+            if (y > 0 && oceanMask[i - width] !== 1) { neighborSum += populationDensity[i - width]; neighborCount++; }
+            if (y < height - 1 && oceanMask[i + width] !== 1) { neighborSum += populationDensity[i + width]; neighborCount++; }
+
+            let newVal = populationDensity[i];
+
+            // Diffusion — boosted in regions with cities
+            let effectiveDiffRate = diffusionRate;
+            if (cityRegionSet && cityRegionSet.size > 0) {
+              const ownerIdx = ownership[i];
+              if (ownerIdx !== UNOWNED) {
+                const rId = regionData.assignment[i];
+                if (rId !== 65535 && cityRegionSet.has((ownerIdx << 16) | rId)) {
+                  effectiveDiffRate *= cityDensityMult;
+                }
+              }
+            }
+
+            if (neighborCount > 0) {
+              const avgNeighbor = neighborSum / neighborCount;
+              newVal += (avgNeighbor - newVal) * effectiveDiffRate;
+            }
+
+            // Natural decay
+            newVal -= newVal * decayRate;
+
+            populationDensity[i] = newVal > 0 ? newVal : 0;
+          }
         }
       }
     }
-
-    if (neighborCount > 0) {
-      const avgNeighbor = neighborSum / neighborCount;
-      newVal += (avgNeighbor - newVal) * effectiveDiffRate;
-    }
-
-    // Natural decay
-    newVal -= newVal * decayRate;
-
-    populationDensity[i] = Math.max(0, newVal);
   }
 
   // Apply source terms at city locations
@@ -163,7 +172,7 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
       let radius, bonusMult;
       if (city.type === "tower") {
         radius = towerConfig.defenseRadius || 40;
-        bonusMult = (towerConfig.troopLossMultiplier || 6.0) * 0.1; // Scale down for additive bonus
+        bonusMult = (towerConfig.troopLossMultiplier || 6.0) * 0.1;
       } else if (city.type === "town" || city.type === "capital") {
         radius = townConfig.defenseRadius || 20;
         bonusMult = (townConfig.troopLossMultiplier || 3.0) * 0.1;
@@ -171,7 +180,6 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
         continue;
       }
 
-      // Apply bonus within radius with distance falloff
       const r2 = radius * radius;
       const minX = Math.max(0, city.x - radius);
       const maxX = Math.min(width - 1, city.x + radius);
@@ -188,7 +196,7 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
           const ci = cy * width + cx;
           if (ownership[ci] !== nIdx) continue;
 
-          const falloff = 1 - d2 / r2; // quadratic falloff, avoids sqrt per cell
+          const falloff = 1 - d2 / r2;
           defenseStrength[ci] += bonusMult * falloff;
         }
       }
@@ -197,11 +205,10 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
 
   // Region-based tower defense bonus
   if (regionData && regionCfg?.towerDefenseBonus) {
-    const towerBonusTiers = regionCfg.towerDefenseBonus; // [0.50, 0.25]
+    const towerBonusTiers = regionCfg.towerDefenseBonus;
     const assignment = regionData.assignment;
 
-    // Count towers per nation per region
-    const regionTowerCount = new Map(); // "nIdx:regionId" -> count
+    const regionTowerCount = new Map();
     for (const nation of nations) {
       if (nation.status === "defeated") continue;
       const nIdx = matrix.ownerToIndex.get(nation.owner);
@@ -211,14 +218,12 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
         if (!matrix.inBounds(city.x, city.y)) continue;
         const rId = assignment[city.y * width + city.x];
         if (rId === 65535) continue;
-        const key = `${nIdx}:${rId}`;
+        const key = (nIdx << 16) | rId;
         regionTowerCount.set(key, (regionTowerCount.get(key) || 0) + 1);
       }
     }
 
-    // Apply regional bonus multiplier
     if (regionTowerCount.size > 0) {
-      // Pre-compute bonus per nation:region
       const regionBonus = new Map();
       for (const [key, count] of regionTowerCount) {
         let bonus = 0;
@@ -234,7 +239,7 @@ export function computeDefenseStrength(matrix, nations, structureConfig, density
         if (ownerIdx === UNOWNED) continue;
         const rId = assignment[i];
         if (rId === 65535) continue;
-        const bonus = regionBonus.get(`${ownerIdx}:${rId}`);
+        const bonus = regionBonus.get((ownerIdx << 16) | rId);
         if (bonus) {
           defenseStrength[i] *= (1 + bonus);
         }

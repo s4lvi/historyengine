@@ -718,7 +718,7 @@ const Game = () => {
     };
 
     fetchGameState();
-    const intervalMs = wsConnected ? 250 : 250;
+    const intervalMs = wsConnected ? 2000 : 250;
     const interval = setInterval(fetchGameState, intervalMs);
     return () => clearInterval(interval);
   }, [id, userId, hasJoined, navigate, wsConnected]);
@@ -1298,6 +1298,15 @@ const Game = () => {
   // ----------------------------
   // Helper for determining player (nation) colors.
   // ----------------------------
+  // Stable key that only changes when the nation owner/color list changes
+  const nationColorKey = React.useMemo(() => {
+    return (gameState?.gameState?.nations || [])
+      .filter((n) => n?.owner)
+      .sort((a, b) => (a.owner || "").localeCompare(b.owner || ""))
+      .map((n) => n.owner + "|" + (n.color || ""))
+      .join(",");
+  }, [gameState]);
+
   const nationColors = React.useMemo(() => {
     const palette = [
       "#FF5733",
@@ -1336,6 +1345,14 @@ const Game = () => {
       idx += 1;
     });
     return colorMap;
+  }, [nationColorKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stable key for nation labels — only recompute when owner/name list changes
+  const nationLabelKey = React.useMemo(() => {
+    return (gameState?.gameState?.nations || [])
+      .filter((n) => n?.owner)
+      .map((n) => n.owner + "|" + (n.nationName || n.displayName || ""))
+      .join(",");
   }, [gameState]);
 
   const nationLabels = React.useMemo(() => {
@@ -1347,7 +1364,7 @@ const Game = () => {
       }
     });
     return labels;
-  }, [gameState]);
+  }, [nationLabelKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getNationColor = (nation) => {
     if (!nation?.owner) return "#999999";

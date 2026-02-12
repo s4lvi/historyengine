@@ -76,7 +76,25 @@ export function applyMatrixToNations(matrix, nations, totalClaimable) {
   const allCells = matrix.getAllNationCells();
 
   for (const nation of nations) {
-    if (nation.status === "defeated") continue;
+    if (nation.status === "defeated") {
+      // Generate subtraction deltas for defeated nations so clients see territory disappear
+      const delta = deltas.get(nation.owner);
+      if (delta && delta.sub.x.length > 0) {
+        nation.territoryDeltaForClient = delta;
+      } else if (nation.territory?.x?.length > 0) {
+        // Full subtraction of any remaining territory
+        nation.territoryDeltaForClient = {
+          add: { x: [], y: [] },
+          sub: { x: [...nation.territory.x], y: [...nation.territory.y] },
+        };
+      }
+      nation.territory = { x: [], y: [] };
+      nation.territoryPercentage = 0;
+      nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
+      nation._territorySet = undefined;
+      nation._borderSet = undefined;
+      continue;
+    }
 
     const nIdx = matrix.ownerToIndex.get(nation.owner);
     if (nIdx === undefined) continue;
