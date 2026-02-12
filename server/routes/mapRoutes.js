@@ -5,6 +5,7 @@ import { Worker } from "worker_threads";
 import { assignResourcesToMap } from "../utils/resourceManagement.js";
 import { generateRegions } from "../utils/regionGenerator.js";
 import config from "../config/config.js";
+import { debug, debugWarn } from "../utils/debug.js";
 
 const router = express.Router();
 
@@ -22,6 +23,8 @@ const mapSchema = new mongoose.Schema({
     enum: ["initializing", "generating", "ready", "error"],
     default: "generating",
   },
+  generationProgress: { type: Number, default: 0 },
+  generationStage: { type: String, default: "queued" },
 });
 const Map = mongoose.model("Map", mapSchema);
 
@@ -87,7 +90,7 @@ router.post("/", async (req, res, next) => {
       throw error;
     }
 
-    console.log("Starting map generation with dimensions:", width, height);
+    debug("Starting map generation with dimensions:", width, height);
     if (!erosion_passes) erosion_passes = 4;
     if (!num_blobs) num_blobs = 3;
     const mapSeed = seed !== undefined ? Number(seed) : Math.random();
@@ -101,13 +104,13 @@ router.post("/", async (req, res, next) => {
       seed: mapSeed,
     });
     mapData = assignResourcesToMap(mapData, mapSeed);
-    console.log("Map generated successfully in worker thread");
+    debug("Map generated successfully in worker thread");
 
     // Generate regions if enabled
     let regionData = null;
     if (config?.regions?.enabled !== false) {
       regionData = generateRegions(mapData, width, height, mapSeed, config.regions);
-      console.log(`Generated ${regionData.regionCount} regions`);
+      debug(`Generated ${regionData.regionCount} regions`);
     }
 
     // Save map metadata (without the huge mapData)
@@ -117,9 +120,9 @@ router.post("/", async (req, res, next) => {
       height,
       seed: mapSeed,
     });
-    console.log("Saving new map metadata to database");
+    debug("Saving new map metadata to database");
     await newMap.save();
-    console.log("Map metadata saved successfully");
+    debug("Map metadata saved successfully");
 
     // Define the chunk size (number of rows per chunk)
     const CHUNK_SIZE = 50;
@@ -133,9 +136,9 @@ router.post("/", async (req, res, next) => {
         rows: chunkRows,
       });
     }
-    console.log(`Saving ${chunks.length} chunks to the database`);
+    debug(`Saving ${chunks.length} chunks to the database`);
     await MapChunk.insertMany(chunks);
-    console.log("All chunks saved successfully");
+    debug("All chunks saved successfully");
 
     // Save region data
     if (regionData) {
@@ -147,13 +150,13 @@ router.post("/", async (req, res, next) => {
         seeds: regionData.seeds,
         assignmentBuffer: Buffer.from(regionData.assignment.buffer),
       });
-      console.log("Region data saved successfully");
+      debug("Region data saved successfully");
     }
 
     await Map.findByIdAndUpdate(newMap._id, { status: "ready" });
 
     res.status(201).json(newMap);
-    console.log("Response sent successfully");
+    debug("Response sent successfully");
   } catch (error) {
     console.error("Error in POST /api/maps:", error);
     next(error);
@@ -213,16 +216,16 @@ router.post("/gamemap", async (req, res, next) => {
     });
 
     await newMap.save();
-    console.log("Map metadata saved successfully");
+    debug("Map metadata saved successfully");
 
     // Send response immediately with the map ID
     res.status(201).json(newMap._id);
-    console.log("Response sent successfully");
+    debug("Response sent successfully");
 
     // Continue with map generation asynchronously
     (async () => {
       try {
-        console.log(
+        debug(
           "Starting async map generation with dimensions:",
           width,
           height
@@ -238,7 +241,7 @@ router.post("/gamemap", async (req, res, next) => {
           seed: mapSeed,
         });
         mapData = assignResourcesToMap(mapData, mapSeed);
-        console.log("Map generated successfully in worker thread");
+        debug("Map generated successfully in worker thread");
 
         // Generate regions if enabled
         if (config?.regions?.enabled !== false) {
@@ -251,7 +254,7 @@ router.post("/gamemap", async (req, res, next) => {
             seeds: regionData.seeds,
             assignmentBuffer: Buffer.from(regionData.assignment.buffer),
           });
-          console.log(`Generated and saved ${regionData.regionCount} regions`);
+          debug(`Generated and saved ${regionData.regionCount} regions`);
         }
 
         // Define the chunk size and save chunks
@@ -267,13 +270,13 @@ router.post("/gamemap", async (req, res, next) => {
           });
         }
 
-        console.log(`Saving ${chunks.length} chunks to the database`);
+        debug(`Saving ${chunks.length} chunks to the database`);
         await MapChunk.insertMany(chunks);
-        console.log("All chunks saved successfully");
+        debug("All chunks saved successfully");
 
         // Update map status to ready after chunks are saved
         await Map.findByIdAndUpdate(newMap._id, { status: "ready" });
-        console.log("Map status updated to ready");
+        debug("Map status updated to ready");
       } catch (error) {
         console.error("Error in async map generation:", error);
         // Update map status to error if anything fails

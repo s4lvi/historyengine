@@ -2,6 +2,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { debug } from "../utils/debug.js";
 
 // Convert import.meta.url to __dirname equivalent
 const __filename = fileURLToPath(import.meta.url);
@@ -15,7 +16,7 @@ let config = {};
 try {
   const fileContents = fs.readFileSync(configPath, "utf8");
   config = JSON.parse(fileContents);
-  console.log("Game configuration loaded successfully.", config);
+  debug("Game configuration loaded successfully.", config);
 } catch (e) {
   console.error("Failed to load game configuration:", e);
 }

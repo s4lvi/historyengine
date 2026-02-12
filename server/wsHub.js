@@ -2,6 +2,7 @@ import { WebSocketServer } from "ws";
 import GameRoom from "./models/GameRoom.js";
 import { buildGameStateResponse } from "./utils/gameStateView.js";
 import { getSessionUserIdFromRequest } from "./utils/auth.js";
+import { debug, debugWarn } from "./utils/debug.js";
 
 const rooms = new Map(); // roomId -> Set<ws>
 let wss = null;
@@ -49,7 +50,7 @@ export function initWebSocket(server, getLiveRoom, getMatrix) {
   wss = new WebSocketServer({ server, path: "/ws" });
 
   wss.on("connection", (ws, req) => {
-    console.log(`[WS] Connection from ${req.socket.remoteAddress}`);
+    debug(`[WS] Connection from ${req.socket.remoteAddress}`);
     ws.isAlive = true;
     ws.sessionUserId = getSessionUserIdFromRequest(req);
 
@@ -69,7 +70,7 @@ export function initWebSocket(server, getLiveRoom, getMatrix) {
       if (msg.type === "subscribe") {
         const { roomId, full } = msg;
         const userId = ws.sessionUserId;
-        console.log(`[WS] Subscribe attempt room=${roomId} user=${userId}`);
+        debug(`[WS] Subscribe attempt room=${roomId} user=${userId}`);
         if (!roomId || !userId) {
           safeSend(ws, {
             type: "error",
@@ -84,14 +85,14 @@ export function initWebSocket(server, getLiveRoom, getMatrix) {
           gameRoom = await GameRoom.findById(roomId).lean();
         }
         if (!gameRoom) {
-          console.warn(`[WS] Subscribe failed: room not found ${roomId}`);
+          debugWarn(`[WS] Subscribe failed: room not found ${roomId}`);
           safeSend(ws, { type: "error", message: "Game room not found" });
           return;
         }
 
         const player = gameRoom.players?.find((p) => p.userId === userId);
         if (!player) {
-          console.warn(`[WS] Subscribe failed: invalid credentials for ${userId}`);
+          debugWarn(`[WS] Subscribe failed: invalid credentials for ${userId}`);
           safeSend(ws, { type: "error", message: "Invalid credentials" });
           return;
         }
@@ -121,13 +122,13 @@ export function initWebSocket(server, getLiveRoom, getMatrix) {
     });
 
     ws.on("close", (code, reason) => {
-      console.log(
+      debug(
         `[WS] Closed ${ws.roomId || "unsubscribed"} code=${code} reason=${reason?.toString?.() || ""}`
       );
       removeFromRoom(ws);
     });
     ws.on("error", (err) => {
-      console.warn(`[WS] Error: ${err?.message || err}`);
+      debugWarn(`[WS] Error: ${err?.message || err}`);
       removeFromRoom(ws);
     });
   });

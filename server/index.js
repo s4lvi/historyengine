@@ -18,6 +18,7 @@ import {
   getLastActivity,
   touchRoom,
 } from "./wsHub.js";
+import { debug, debugWarn } from "./utils/debug.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,7 +62,7 @@ mongoose
     useUnifiedTopology: true,
   })
   .then(() => {
-    console.log("Connected to MongoDB");
+    debug("Connected to MongoDB");
     // Resume game loops for active game rooms
     resumeActiveGameLoops();
   })
@@ -78,7 +79,7 @@ if (process.env.RESET_DB === "true") {
     await mongoose.connection.collection("gamerooms").drop();
     await mongoose.connection.collection("mapchunks").drop();
     await mongoose.connection.collection("maps").drop();
-    console.warn("RESET_DB enabled: dropped gamerooms, mapchunks, maps");
+    debugWarn("RESET_DB enabled: dropped gamerooms, mapchunks, maps");
   } catch (err) {
     console.error("RESET_DB enabled but failed to drop collections:", err);
   }
@@ -96,7 +97,7 @@ async function clearAllRooms() {
       .lean();
 
     if (rooms.length === 0) {
-      console.log("[CLEAR] No open rooms to clear.");
+      debug("[CLEAR] No open rooms to clear.");
       return;
     }
 
@@ -111,7 +112,7 @@ async function clearAllRooms() {
       await GameRoom.findByIdAndDelete(room._id);
     }
 
-    console.log(`[CLEAR] Removed ${rooms.length} room(s) and their map data.`);
+    debug(`[CLEAR] Removed ${rooms.length} room(s) and their map data.`);
   } catch (error) {
     console.error("[CLEAR] Error clearing rooms:", error);
   }
@@ -132,7 +133,7 @@ async function resumeActiveGameLoops() {
       gameLoop.startRoom(room._id.toString());
       touchRoom(room._id.toString());
     });
-    console.log(
+    debug(
       `Resumed game loops for ${openRooms.length} active game room(s).`
     );
   } catch (error) {
@@ -165,7 +166,7 @@ async function cleanupEmptyRooms() {
       await MapChunk.deleteMany({ map: room.map });
       await MapModel.findByIdAndDelete(room.map);
       await GameRoom.findByIdAndDelete(room._id);
-      console.log(`Closed inactive room ${roomId}`);
+      debug(`Closed inactive room ${roomId}`);
     }
   } catch (error) {
     console.error("Error cleaning up empty rooms:", error);
@@ -216,21 +217,21 @@ initWebSocket(
 );
 setInterval(cleanupEmptyRooms, EMPTY_ROOM_CLEANUP_INTERVAL_MS);
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  debug(`Server running on port ${PORT}`);
 });
 
 // Graceful shutdown
 async function gracefulShutdown(signal) {
-  console.log(`\n[SHUTDOWN] Received ${signal}, saving all rooms...`);
+  debug(`\n[SHUTDOWN] Received ${signal}, saving all rooms...`);
   try {
     await gameLoop.stopAllRooms();
   } catch (err) {
     console.error("[SHUTDOWN] Error stopping rooms:", err.message);
   }
   server.close(() => {
-    console.log("[SHUTDOWN] HTTP server closed");
+    debug("[SHUTDOWN] HTTP server closed");
     mongoose.disconnect().then(() => {
-      console.log("[SHUTDOWN] MongoDB disconnected");
+      debug("[SHUTDOWN] MongoDB disconnected");
       process.exit(0);
     });
   });

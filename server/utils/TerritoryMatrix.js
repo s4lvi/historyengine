@@ -1,6 +1,8 @@
 // TerritoryMatrix.js — Core matrix class for the territory system
 // Row-major typed arrays replacing per-nation parallel x[]/y[] arrays
 
+import { debugWarn } from "./debug.js";
+
 const UNOWNED = -1;
 
 // ─── Noise functions for diffusion resistance ──────────────────────────
@@ -207,7 +209,7 @@ export class TerritoryMatrix {
     if (reuseIdx >= 0) {
       idx = reuseIdx;
     } else if (this.nextNationSlot >= this.maxNations) {
-      console.warn(
+      debugWarn(
         `[MATRIX] Max nations (${this.maxNations}) reached, cannot allocate for ${owner}`,
       );
       return UNOWNED;

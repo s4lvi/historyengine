@@ -17,6 +17,7 @@ import { tickMobilization, tickTroopDensityDiffusion } from "../utils/matrixTroo
 import { deriveOwnershipFromLoyalty } from "../utils/matrixKernels.js";
 import { serializeMatrix, deserializeMatrix } from "../utils/matrixSerializer.js";
 import { generateRegions } from "../utils/regionGenerator.js";
+import { debug, debugWarn } from "../utils/debug.js";
 
 const loyaltyEnabled = config?.loyalty?.enabled !== false;
 const popDensityEnabled = config?.populationDensity?.enabled !== false;
@@ -49,11 +50,11 @@ function handleStructureCaptureMatrix(gameState, matrix) {
 
         if (city.type === "tower") {
           citiesToRemove.push(i);
-          console.log(`[STRUCTURE] Tower "${city.name}" at (${city.x},${city.y}) destroyed - territory lost by ${nation.owner}`);
+          debug(`[STRUCTURE] Tower "${city.name}" at (${city.x},${city.y}) destroyed - territory lost by ${nation.owner}`);
         } else if (city.type === "town" || city.type === "capital") {
           if (tileOwnerStr) {
             citiesToTransfer.push({ cityIndex: i, newOwner: tileOwnerStr });
-            console.log(`[STRUCTURE] City "${city.name}" at (${city.x},${city.y}) captured by ${tileOwnerStr} from ${nation.owner}`);
+            debug(`[STRUCTURE] City "${city.name}" at (${city.x},${city.y}) captured by ${tileOwnerStr} from ${nation.owner}`);
           } else {
             citiesToRemove.push(i);
           }
@@ -198,7 +199,7 @@ function updateEncircledTerritoryMatrix(gameState, matrix) {
         matrix.loyalty[ownerIdx * matrix.size + ci] *= 0.15;
         matrix.loyalty[encirclerIdx * matrix.size + ci] = 1.0;
       }
-      console.log(`[ENCIRCLE] Captured ${cells.length} enemy cells without capital`);
+      debug(`[ENCIRCLE] Captured ${cells.length} enemy cells without capital`);
     }
   }
 
@@ -394,11 +395,11 @@ class GameLoop {
               }
             }
             this.cachedMatrix.set(roomKey, matrix);
-            console.log(`[MATRIX] Restored ${matrix.width}x${matrix.height} matrix for room ${roomKey} from DB (${matrix.nextNationSlot} nations)`);
+            debug(`[MATRIX] Restored ${matrix.width}x${matrix.height} matrix for room ${roomKey} from DB (${matrix.nextNationSlot} nations)`);
             return matrix;
           }
         } catch (err) {
-          console.warn(`[MATRIX] Failed to deserialize matrix for room ${roomKey}, building from scratch:`, err.message);
+          debugWarn(`[MATRIX] Failed to deserialize matrix for room ${roomKey}, building from scratch:`, err.message);
         }
       }
 
@@ -409,7 +410,7 @@ class GameLoop {
       matrix.initFromMapData(mapData, config?.matrix);
       matrix.populateFromNations(nations);
       this.cachedMatrix.set(roomKey, matrix);
-      console.log(`[MATRIX] Created ${width}x${height} matrix for room ${roomKey} (${matrix.nextNationSlot} nations)`);
+      debug(`[MATRIX] Created ${width}x${height} matrix for room ${roomKey} (${matrix.nextNationSlot} nations)`);
     } else {
       // Ensure any new nations are registered
       for (const nation of nations) {
@@ -465,7 +466,7 @@ class GameLoop {
 
   async initializeMapData(roomId) {
     const roomKey = roomId?.toString();
-    console.log(`Initializing map data for room ${roomKey}`);
+    debug(`Initializing map data for room ${roomKey}`);
     try {
       const GameRoom = mongoose.model("GameRoom");
       const MapModel = mongoose.model("Map");
@@ -512,7 +513,7 @@ class GameLoop {
 
       mapData = mapData.map((row) => {
         if (!Array.isArray(row)) {
-          console.warn("Converting non-array row to array");
+          debugWarn("Converting non-array row to array");
           return Object.keys(row)
             .filter((key) => !isNaN(key))
             .sort((a, b) => parseInt(a) - parseInt(b))
@@ -546,9 +547,9 @@ class GameLoop {
             }
           }
         }
-        console.log(`[RESOURCES] init room=${roomKey} counts`, resourceCounts);
-        console.log(`[RESOURCES] init room=${roomKey} sample`, sampleCell);
-        console.log(`[RESOURCES] init room=${roomKey} biomeCounts`, biomeCounts);
+        debug(`[RESOURCES] init room=${roomKey} counts`, resourceCounts);
+        debug(`[RESOURCES] init room=${roomKey} sample`, sampleCell);
+        debug(`[RESOURCES] init room=${roomKey} biomeCounts`, biomeCounts);
       }
       for (let y = 0; y < mapData.length; y++) {
         for (let x = 0; x < mapData[0].length; x++) {
@@ -557,7 +558,7 @@ class GameLoop {
         }
       }
       this.cachedMapStats.set(roomKey, { totalClaimable });
-      console.log(
+      debug(
         `Map data cached successfully for room ${roomKey}. Dimensions: ${mapData.length}x${mapData[0].length}`
       );
 
@@ -567,7 +568,7 @@ class GameLoop {
           const MapRegion = mongoose.model("MapRegion");
           let regionDoc = await MapRegion.findOne({ map: gameMap._id }).lean();
           if (!regionDoc) {
-            console.log(`[REGIONS] Generating regions for map ${gameMap._id}`);
+            debug(`[REGIONS] Generating regions for map ${gameMap._id}`);
             const regionData = generateRegions(mapData, gameMap.width, gameMap.height, gameMap.seed || 0, config.regions);
             regionDoc = await MapRegion.create({
               map: gameMap._id,
@@ -577,7 +578,7 @@ class GameLoop {
               seeds: regionData.seeds,
               assignmentBuffer: Buffer.from(regionData.assignment.buffer),
             });
-            console.log(`[REGIONS] Generated ${regionData.regionCount} regions for map ${gameMap._id}`);
+            debug(`[REGIONS] Generated ${regionData.regionCount} regions for map ${gameMap._id}`);
           }
           // Cache the assignment as Uint16Array
           const assignment = new Uint16Array(
@@ -609,7 +610,7 @@ class GameLoop {
     const roomKey = roomId?.toString();
     let mapData = this.cachedMapData.get(roomKey);
     if (!mapData) {
-      console.log(`Cache miss for room ${roomKey}, initializing map data`);
+      debug(`Cache miss for room ${roomKey}, initializing map data`);
       mapData = await this.initializeMapData(roomKey);
     }
     return mapData;
@@ -710,7 +711,7 @@ class GameLoop {
             if (loser.territory.x[j] === x && loser.territory.y[j] === y) {
               loser.territory.x.splice(j, 1);
               loser.territory.y.splice(j, 1);
-              console.log(`[CLEANUP] Removed duplicate tile (${x},${y}) from ${loser.owner} (kept by ${winner.owner})`);
+              debug(`[CLEANUP] Removed duplicate tile (${x},${y}) from ${loser.owner} (kept by ${winner.owner})`);
               break;
             }
           }
@@ -770,7 +771,7 @@ class GameLoop {
     }
 
     if (this.processingRooms.has(roomKey)) {
-      console.warn(`[LOCK] Skipping room ${roomKey} - already being processed`);
+      debugWarn(`[LOCK] Skipping room ${roomKey} - already being processed`);
       return 0;
     }
     this.processingRooms.add(roomKey);
@@ -802,6 +803,10 @@ class GameLoop {
 
       const matrix = this.getMatrix(roomKey, mapData, gameRoom.gameState.nations, gameRoom.matrixState);
 
+      // ── Tick profiling ──
+      const _perf = {};
+      let _t = performance.now();
+
       // 1. Snapshot ownership for delta derivation at end of tick
       matrix.snapshotOwnership();
 
@@ -812,12 +817,14 @@ class GameLoop {
         gameRoom.gameState?.resourceUpgrades || null,
         gameRoom.gameState?.resourceNodeClaims || null
       );
+      _perf.bonuses = performance.now() - _t; _t = performance.now();
 
       // 3. Loyalty diffusion + derive ownership from loyalty
       if (loyaltyEnabled) {
         tickLoyaltyDiffusion(matrix, config.loyalty, gameRoom.gameState.nations);
         deriveOwnershipFromLoyalty(matrix, config.loyalty?.ownershipThreshold || 0.6);
       }
+      _perf.loyalty = performance.now() - _t; _t = performance.now();
 
       // 4. Population density diffusion (every 2 ticks — diffusion doesn't need per-tick resolution)
       const regionData = this.cachedRegionData.get(roomKey) || null;
@@ -825,12 +832,15 @@ class GameLoop {
       if (popDensityEnabled && runDiffusion) {
         tickPopulationDensity(matrix, config.populationDensity, gameRoom.gameState.nations, regionData, config.regions);
       }
+      _perf.popDensity = performance.now() - _t; _t = performance.now();
 
       // 4.5 Troop density: mobilization + diffusion every tick (sub-steps handle speed)
       if (troopDensityEnabled) {
         tickMobilization(matrix, config.troopDensity, gameRoom.gameState.nations);
+        _perf.mobilization = performance.now() - _t; _t = performance.now();
         tickTroopDensityDiffusion(matrix, config.troopDensity, gameRoom.gameState.nations);
       }
+      _perf.troopDensity = performance.now() - _t; _t = performance.now();
 
       // 4.6 Defense strength (every 2 ticks — recompute after diffusion ticks)
       if (popDensityEnabled && runDiffusion) {
@@ -844,6 +854,7 @@ class GameLoop {
           config.regions
         );
       }
+      _perf.defense = performance.now() - _t; _t = performance.now();
 
       // 4.7 Chunk maintenance: rebuild border flags periodically, tick sleep counters
       if (currentTick % 5 === 0) {
@@ -860,7 +871,7 @@ class GameLoop {
 
       const logInterval = process.env.DEBUG_TICKS === "true" ? 10 : 50;
       if (currentTick % logInterval === 0) {
-        console.log(`[TICK ${currentTick}] Nations: ${nationOrder.length}, Bots: ${botCount}, BotArrows: ${botArrows}, PlayerArrows: ${activeArrows - botArrows}`);
+        debug(`[TICK ${currentTick}] Nations: ${nationOrder.length}, Bots: ${botCount}, BotArrows: ${botArrows}, PlayerArrows: ${activeArrows - botArrows}`);
       }
 
       // ═══ HYPOTHESIS DIAGNOSTICS (every 10 ticks, gated) ═══
@@ -871,14 +882,14 @@ class GameLoop {
           const hasLegacySingular = !!ao?.attack;
           const hasDefend = !!ao?.defend;
           if (attacksLen > 0 || hasLegacySingular || hasDefend) {
-            console.log(`[H-DIAG ${currentTick}] ${n.isBot ? 'BOT' : 'PLAYER'} "${n.name || n.owner}": attacks[]=${attacksLen}, attack(singular)=${hasLegacySingular}, defend=${hasDefend}${hasLegacySingular ? ' *** LEGACY FIELD PRESENT ***' : ''}`);
+            debug(`[H-DIAG ${currentTick}] ${n.isBot ? 'BOT' : 'PLAYER'} "${n.name || n.owner}": attacks[]=${attacksLen}, attack(singular)=${hasLegacySingular}, defend=${hasDefend}${hasLegacySingular ? ' *** LEGACY FIELD PRESENT ***' : ''}`);
             if (attacksLen > 0) {
               ao.attacks.forEach((a, i) => {
-                console.log(`  arrow[${i}] id=${a.id} power=${a.remainingPower?.toFixed(0)} status=${a.status} idx=${a.currentIndex}/${a.path?.length} age=${a.createdAt ? Date.now() - new Date(a.createdAt).getTime() : '?'}ms`);
+                debug(`  arrow[${i}] id=${a.id} power=${a.remainingPower?.toFixed(0)} status=${a.status} idx=${a.currentIndex}/${a.path?.length} age=${a.createdAt ? Date.now() - new Date(a.createdAt).getTime() : '?'}ms`);
               });
             }
             if (hasLegacySingular) {
-              console.log(`  *** LEGACY attack(singular): id=${ao.attack?.id} power=${ao.attack?.remainingPower?.toFixed(0)} path=${ao.attack?.path?.length}`);
+              debug(`  *** LEGACY attack(singular): id=${ao.attack?.id} power=${ao.attack?.remainingPower?.toFixed(0)} path=${ao.attack?.path?.length}`);
             }
           }
         }
@@ -888,6 +899,8 @@ class GameLoop {
         const j = Math.floor(Math.random() * (i + 1));
         [nationOrder[i], nationOrder[j]] = [nationOrder[j], nationOrder[i]];
       }
+
+      _perf.ownershipMap = performance.now() - _t; _t = performance.now();
 
       // 6. Update nations (arrows write to both matrix and ownershipMap via gameLogic.js)
       const updatedNations = nationOrder.map((nation) =>
@@ -903,6 +916,7 @@ class GameLoop {
           regionData
         )
       );
+      _perf.updateNations = performance.now() - _t; _t = performance.now();
 
       // 7. Sync string-key caches from gameLogic.js changes (territory deltas)
       this.updateOwnershipMapFromDeltas(ownershipMap, updatedNations);
@@ -917,9 +931,9 @@ class GameLoop {
           .map(n => `${n.isBot ? 'BOT' : 'PLAYER'}:${n.owner?.substring(0,8)}(+${n.territoryDelta.add.x.length})`)
           .join(', ');
         if (changeDetails) {
-          console.log(`[TICK ${currentTick}] Territory changes: ${changeDetails}`);
+          debug(`[TICK ${currentTick}] Territory changes: ${changeDetails}`);
         } else {
-          console.log(`[TICK ${currentTick}] No territory changes`);
+          debug(`[TICK ${currentTick}] No territory changes`);
         }
       }
 
@@ -932,6 +946,7 @@ class GameLoop {
         const concavityMaxPasses = config?.loyalty?.concavityFillMaxPasses ?? 3;
         passiveConcavityFill(matrix, updatedNations, concavityMinNeighbors, concavityMaxPasses);
       }
+      _perf.concavity = performance.now() - _t; _t = performance.now();
 
       gameRoom.gameState.nations = updatedNations;
 
@@ -943,11 +958,12 @@ class GameLoop {
       if (currentTick % encirclementInterval === 0) {
         updateEncircledTerritoryMatrix(gameRoom.gameState, matrix);
       }
+      _perf.encirclement = performance.now() - _t; _t = performance.now();
 
-      // 9.5 Sync ownershipMap after matrix-only mutations (concavity, auto-expansion, encirclement)
-      // These steps modify the matrix directly without updating the string-key cache.
-      // Force rebuild so next tick's arrow processing sees correct ownership.
-      this.getOwnershipMap(roomKey, gameRoom.gameState.nations, true);
+      // 9.5 ownershipMap no longer force-rebuilt every tick.
+      // Matrix typed-array lookups replaced all hot-path ownershipMap reads in gameLogic.js.
+      // The cached ownershipMap is still kept for cold paths (legacy fallback, buildCellInfo, etc.)
+      // and updated via delta sync at step 7.
 
       // 10. Structure capture (after encirclement so encircled structures are correctly handled)
       handleStructureCaptureMatrix(gameRoom.gameState, matrix);
@@ -955,10 +971,12 @@ class GameLoop {
       // 11. Resource claims
       updateResourceNodeClaimsMatrix(gameRoom.gameState, mapData, matrix, roomKey);
       applyResourceNodeIncome(gameRoom.gameState, mapData);
+      _perf.resources = performance.now() - _t; _t = performance.now();
 
       // 12. Derive client-compatible deltas from matrix snapshot diff
       const stats = this.cachedMapStats.get(roomKey);
       applyMatrixToNations(matrix, updatedNations, stats?.totalClaimable || 0);
+      _perf.matrixSync = performance.now() - _t; _t = performance.now();
 
       gameRoom.markModified("gameState.resourceNodeClaims");
       gameRoom.markModified("gameState.encirclementClaims");
@@ -966,7 +984,7 @@ class GameLoop {
 
       if (process.env.DEBUG_BOTS === "true") {
         const bc = (gameRoom.gameState.nations || []).filter((n) => n.isBot).length;
-        console.log(`[BOTS] tick room=${roomKey} nations=${gameRoom.gameState.nations.length} bots=${bc}`);
+        debug(`[BOTS] tick room=${roomKey} nations=${gameRoom.gameState.nations.length} bots=${bc}`);
       }
 
       const winCheckInterval = config?.territorial?.winConditionCheckIntervalTicks ?? 5;
@@ -996,7 +1014,7 @@ class GameLoop {
         gameRoom.save()
           .then(() => {
             this.savingRooms.delete(roomKey);
-            console.log(`[DB] Saved room ${roomKey} at tick ${nextTick}`);
+            debug(`[DB] Saved room ${roomKey} at tick ${nextTick}`);
           })
           .catch((err) => {
             this.savingRooms.delete(roomKey);
@@ -1006,7 +1024,7 @@ class GameLoop {
               // independent of Mongoose versioning — preserve it.
               this.cachedGameRoom.delete(roomKey);
               this.cachedOwnershipMap.delete(roomKey);
-              console.log(`[DB] Version conflict for room ${roomKey}, gameRoom cache invalidated (matrix preserved)`);
+              debug(`[DB] Version conflict for room ${roomKey}, gameRoom cache invalidated (matrix preserved)`);
             } else {
               console.error(`[DB] Error saving room ${roomKey}:`, err.message);
               // Reset lastSaveTick so we retry on the next interval instead of waiting
@@ -1028,23 +1046,38 @@ class GameLoop {
             const legacyAtk = !!ao?.attack;
             const defend = !!ao?.defend;
             if (atkCount > 0 || legacyAtk || defend) {
-              console.log(`[H1-BROADCAST] PLAYER "${n.name || n.owner}": broadcasting attacks[]=${atkCount} attack(singular)=${legacyAtk} defend=${defend}`);
+              debug(`[H1-BROADCAST] PLAYER "${n.name || n.owner}": broadcasting attacks[]=${atkCount} attack(singular)=${legacyAtk} defend=${defend}`);
             }
           }
         }
         broadcastRoomUpdate(roomKey, gameRoom, troopDensityEnabled ? matrix : null);
       }
+      _perf.broadcast = performance.now() - _t;
 
       const elapsed = process.hrtime(startTime);
       const elapsedMs = elapsed[0] * 1000 + elapsed[1] / 1e6;
+
+      // ── Tick profiling summary ──
+      const perfThreshold = Number(process.env.PERF_THRESHOLD_MS) || 50;
+      const perfInterval = Number(process.env.PERF_LOG_INTERVAL) || 50;
+      if (elapsedMs > perfThreshold || currentTick % perfInterval === 0) {
+        const parts = Object.entries(_perf)
+          .filter(([, ms]) => ms >= 0.1)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, ms]) => `${k}=${ms.toFixed(1)}`)
+          .join(' ');
+        const nCount = gameRoom.gameState.nations?.length || 0;
+        debug(`[PERF tick=${currentTick}] ${elapsedMs.toFixed(1)}ms | nations=${nCount} | ${parts}`);
+      }
+
       if (process.env.DEBUG_TICKS === "true") {
-        console.log(`Room ${roomId} processed in ${elapsedMs.toFixed(2)} ms`);
+        debug(`Room ${roomId} processed in ${elapsedMs.toFixed(2)} ms`);
       }
 
       return elapsedMs;
     } catch (error) {
       if (error.name === "VersionError") {
-        console.warn(
+        debugWarn(
           `Tick update skipped for room ${roomKey} due to manual update conflict: ${error.message}`
         );
       } else {
@@ -1058,18 +1091,18 @@ class GameLoop {
 
   async startRoom(roomId) {
     const roomKey = roomId?.toString();
-    console.log(`[LOOP] startRoom called for ${roomKey}`);
+    debug(`[LOOP] startRoom called for ${roomKey}`);
 
     if (this.timers.has(roomKey) || this.loopIds.has(roomKey)) {
-      console.log(`[LOOP] Room ${roomKey} already has a running loop, skipping`);
+      debug(`[LOOP] Room ${roomKey} already has a running loop, skipping`);
       return;
     }
     if (this.pendingRooms.has(roomKey)) {
-      console.log(`[LOOP] Room ${roomKey} is already being initialized, skipping`);
+      debug(`[LOOP] Room ${roomKey} is already being initialized, skipping`);
       return;
     }
     this.pendingRooms.add(roomKey);
-    console.log(`[LOOP] Initializing map data for room ${roomKey}`);
+    debug(`[LOOP] Initializing map data for room ${roomKey}`);
 
     const mapData = await this.initializeMapData(roomKey);
     if (!mapData) {
@@ -1079,7 +1112,7 @@ class GameLoop {
     }
 
     if (this.timers.has(roomKey)) {
-      console.log(`[LOOP] Room ${roomKey} timer was created while initializing, skipping`);
+      debug(`[LOOP] Room ${roomKey} timer was created while initializing, skipping`);
       this.pendingRooms.delete(roomKey);
       return;
     }
@@ -1095,7 +1128,7 @@ class GameLoop {
 
     const tick = async () => {
       if (this.loopIds.get(roomKey) !== loopId) {
-        console.log(`[LOOP] Old loop detected for ${roomKey}, stopping`);
+        debug(`[LOOP] Old loop detected for ${roomKey}, stopping`);
         return;
       }
       if (!this.timers.has(roomKey)) return;
@@ -1114,7 +1147,7 @@ class GameLoop {
       const remainingTime = Math.max(0, this.targetTickRate - elapsedTime);
 
       if (elapsedTime > this.targetTickRate) {
-        console.warn(`Room ${roomKey} tick processing took ${elapsedTime}ms, exceeding target tick rate of ${this.targetTickRate}ms`);
+        debugWarn(`Room ${roomKey} tick processing took ${elapsedTime}ms, exceeding target tick rate of ${this.targetTickRate}ms`);
       }
 
       const timer = setTimeout(tick, remainingTime);
@@ -1124,7 +1157,7 @@ class GameLoop {
     const timer = setTimeout(tick, 0);
     this.timers.set(roomKey, timer);
     this.pendingRooms.delete(roomKey);
-    console.log(`[LOOP] Started room ${roomKey} (loopId: ${loopId.toFixed(0)}) [MATRIX]`);
+    debug(`[LOOP] Started room ${roomKey} (loopId: ${loopId.toFixed(0)}) [MATRIX]`);
   }
 
   async refreshRoomCache(roomId) {
@@ -1137,7 +1170,7 @@ class GameLoop {
         this.cachedOwnershipMap.delete(roomKey);
         // Invalidate matrix cache so it gets rebuilt with new nation data
         this.cachedMatrix.delete(roomKey);
-        console.log(`[LOOP] Cache refreshed for room ${roomKey}`);
+        debug(`[LOOP] Cache refreshed for room ${roomKey}`);
       }
     } catch (err) {
       console.error(`[LOOP] Failed to refresh cache for room ${roomKey}:`, err.message);
@@ -1166,14 +1199,14 @@ class GameLoop {
       this.lastSaveTick.delete(roomKey);
       this.lastBroadcast.delete(roomKey);
       cachedResourceNodes.delete(roomKey);
-      console.log(`[LOOP] Stopped room ${roomKey}`);
+      debug(`[LOOP] Stopped room ${roomKey}`);
     }
   }
 
   /** Graceful shutdown: save all active rooms to DB, then stop loops */
   async stopAllRooms() {
     const roomKeys = [...this.timers.keys()];
-    console.log(`[LOOP] stopAllRooms: saving ${roomKeys.length} active room(s)...`);
+    debug(`[LOOP] stopAllRooms: saving ${roomKeys.length} active room(s)...`);
 
     // Stop all tick timers FIRST to prevent races during serialization
     for (const roomKey of roomKeys) {
@@ -1197,7 +1230,7 @@ class GameLoop {
           }
           gameRoom.markModified("gameState.nations");
           await gameRoom.save();
-          console.log(`[LOOP] Saved room ${roomKey} during shutdown`);
+          debug(`[LOOP] Saved room ${roomKey} during shutdown`);
         }
       } catch (err) {
         console.error(`[LOOP] Error saving room ${roomKey} during shutdown:`, err.message);
@@ -1216,9 +1249,9 @@ class GameLoop {
       this.loopIds.delete(roomKey);
       this.roomTickCount.delete(roomKey);
       cachedResourceNodes.delete(roomKey);
-      console.log(`[LOOP] Stopped room ${roomKey}`);
+      debug(`[LOOP] Stopped room ${roomKey}`);
     }
-    console.log(`[LOOP] All rooms stopped`);
+    debug(`[LOOP] All rooms stopped`);
   }
 }
 

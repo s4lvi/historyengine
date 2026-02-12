@@ -16,6 +16,7 @@ import {
   generateTowerName,
   generateUniqueName,
 } from "./nameGenerator.js";
+import { debug, debugWarn } from "./debug.js";
 
 export function checkWinCondition(gameState, mapData, totalClaimableOverride) {
   const totalClaimable =
@@ -70,14 +71,14 @@ export function getTerritorySet(territory) {
   const set = new Set();
   if (!territory || !territory.x || !territory.y) return set;
   for (let i = 0; i < territory.x.length; i++) {
-    set.add(`${territory.x[i]},${territory.y[i]}`);
+    set.add((territory.y[i] << 16) | territory.x[i]);
   }
   return set;
 }
 
 export function isCellInTerritory(territory, x, y, territorySet = null) {
-  const key = `${x},${y}`;
-  if (territorySet) return territorySet.has(key);
+  const numKey = (y << 16) | x;
+  if (territorySet) return territorySet.has(numKey);
   let found = false;
   forEachTerritoryCell(territory, (tx, ty) => {
     if (tx === x && ty === y) found = true;
@@ -119,7 +120,7 @@ function updateNationTerritorial(
   regionData = null,
 ) {
   if (!Array.isArray(mapData) || !Array.isArray(mapData[0])) {
-    console.warn("Invalid map data structure in updateNationTerritorial");
+    debugWarn("Invalid map data structure in updateNationTerritorial");
     return nation;
   }
 
@@ -146,7 +147,7 @@ function updateNationTerritorial(
       }
     }
     addTerritoryCell(updatedNation, x, y);
-    ownershipMap?.set(`${x},${y}`, updatedNation);
+    if (!useMatrix) ownershipMap?.set(`${x},${y}`, updatedNation);
   };
 
   const _removeCell = (x, y) => {
@@ -156,7 +157,7 @@ function updateNationTerritorial(
       }
     }
     removeTerritoryCell(updatedNation, x, y);
-    ownershipMap?.delete(`${x},${y}`);
+    if (!useMatrix) ownershipMap?.delete(`${x},${y}`);
   };
 
   const _removeCellFromNation = (targetNation, x, y) => {
@@ -213,7 +214,7 @@ function updateNationTerritorial(
       if (towns.length > 0) {
         // Promote the first town to capital
         towns[0].type = "capital";
-        console.log(
+        debug(
           `[NATION] ${updatedNation.owner}: Town "${towns[0].name}" promoted to capital`,
         );
       } else {
@@ -261,7 +262,7 @@ function updateNationTerritorial(
             if (capitalIndex !== -1) {
               updatedNation.cities.splice(capitalIndex, 1);
             }
-            console.log(
+            debug(
               `[NATION] ${updatedNation.owner}: Capital lost, town "${nearestTown.name}" promoted to capital`,
             );
           } else {
@@ -334,8 +335,16 @@ function updateNationTerritorial(
         (updatedNation.resources.gold || 0) + bonuses.goldIncome * goldScale;
     }
 
-    // Troop maintenance costs — scales with mobilization ratio
+    // Population-based food production — free workers produce food
     const maintCfg = config?.troopMaintenance;
+    if (maintCfg?.foodProductionPerPop && currentPop > 0) {
+      const foodWorkers = troopDensityEnabled ? freePop : currentPop;
+      updatedNation.resources.food =
+        (updatedNation.resources.food || 0) +
+        foodWorkers * maintCfg.foodProductionPerPop * bonuses.production;
+    }
+
+    // Troop maintenance costs — scales with mobilization ratio
     if (
       maintCfg &&
       troopDensityEnabled &&
@@ -456,27 +465,24 @@ function updateNationTerritorial(
         if (removed > 0) {
           // Sync legacy territory arrays from matrix
           const cells = matrix.getCellsForNation(nIdx);
+          // Build set of new cells for fast lookup
+          const newCellSet = new Set();
+          for (let i = 0; i < cells.x.length; i++) {
+            newCellSet.add((cells.y[i] << 16) | cells.x[i]);
+          }
           // Derive removals for delta
-          const prevSet = new Set();
           const tx = updatedNation.territory?.x || [];
           const ty = updatedNation.territory?.y || [];
-          for (let i = 0; i < tx.length; i++) {
-            prevSet.add(`${tx[i]},${ty[i]}`);
-          }
-          const newSet = new Set();
-          for (let i = 0; i < cells.x.length; i++) {
-            newSet.add(`${cells.x[i]},${cells.y[i]}`);
-          }
           // Track disconnected cells so arrows don't immediately recapture them this tick
           if (!updatedNation._disconnectedCells)
             updatedNation._disconnectedCells = new Set();
-          for (const key of prevSet) {
-            if (!newSet.has(key)) {
-              const [xStr, yStr] = key.split(",");
-              updatedNation.territoryDelta.sub.x.push(Number(xStr));
-              updatedNation.territoryDelta.sub.y.push(Number(yStr));
-              ownershipMap?.delete(key);
-              updatedNation._disconnectedCells.add(key);
+          for (let i = 0; i < tx.length; i++) {
+            const numKey = (ty[i] << 16) | tx[i];
+            if (!newCellSet.has(numKey)) {
+              updatedNation.territoryDelta.sub.x.push(tx[i]);
+              updatedNation.territoryDelta.sub.y.push(ty[i]);
+              ownershipMap?.delete(`${tx[i]},${ty[i]}`);
+              updatedNation._disconnectedCells.add(numKey);
             }
           }
           updatedNation.territory = cells;
@@ -491,10 +497,9 @@ function updateNationTerritorial(
           const tx = [...(updatedNation.territory?.x || [])];
           const ty = [...(updatedNation.territory?.y || [])];
           for (let i = 0; i < tx.length; i++) {
-            const key = `${tx[i]},${ty[i]}`;
-            if (!connected.has(key)) {
+            if (!connected.has((ty[i] << 16) | tx[i])) {
               removeTerritoryCell(updatedNation, tx[i], ty[i]);
-              ownershipMap?.delete(key);
+              ownershipMap?.delete(`${tx[i]},${ty[i]}`);
             }
           }
         }
@@ -522,10 +527,10 @@ function computeConnectedTerritorySet(nation, mapData) {
   while (queueIndex < queue.length) {
     const [x, y] = queue[queueIndex];
     queueIndex += 1;
-    const key = `${x},${y}`;
-    if (connected.has(key)) continue;
-    if (!territorySet.has(key)) continue;
-    connected.add(key);
+    const numKey = (y << 16) | x;
+    if (connected.has(numKey)) continue;
+    if (!territorySet.has(numKey)) continue;
+    connected.add(numKey);
     const neighbors = [
       [1, 0],
       [-1, 0],
@@ -536,7 +541,7 @@ function computeConnectedTerritorySet(nation, mapData) {
       const nx = x + dx;
       const ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-      const nKey = `${nx},${ny}`;
+      const nKey = (ny << 16) | nx;
       if (!connected.has(nKey) && territorySet.has(nKey)) {
         queue.push([nx, ny]);
       }
@@ -733,7 +738,7 @@ function maybeEnqueueBotBuild(
     // Invalidate loyalty city bonus cache
     if (matrix) matrix._cityBonusVersion = (matrix._cityBonusVersion || 0) + 1;
 
-    console.log(
+    debug(
       `[BOTS] ${nation.name || nation.owner} built ${buildType} "${structureName}" at (${bestCell.x},${bestCell.y})`,
     );
 
@@ -808,7 +813,7 @@ function maybeEnqueueBotArrow(
 
   if (!ownershipMap) {
     if (process.env.DEBUG_BOTS === "true") {
-      console.log(`[BOTS] skip ${nation.owner} no ownershipMap`);
+      debug(`[BOTS] skip ${nation.owner} no ownershipMap`);
     }
     return;
   }
@@ -850,7 +855,7 @@ function maybeEnqueueBotArrow(
   // Check if bot already has max arrows
   if (attacks.length >= botMaxArrows) {
     if (tickCount % 20 === 0) {
-      console.log(
+      debug(
         `[BOTS] ${nation.name || nation.owner} has ${attacks.length} active arrows`,
       );
     }
@@ -861,7 +866,7 @@ function maybeEnqueueBotArrow(
   const lastTick = nation.lastBotOrderTick ?? -Infinity;
   if (tickCount - lastTick < orderInterval) {
     if (tickCount % 50 === 0 && process.env.DEBUG_BOTS === "true") {
-      console.log(
+      debug(
         `[BOTS] ${nation.name || nation.owner} waiting (interval=${tickCount - lastTick}/${orderInterval})`,
       );
     }
@@ -871,7 +876,7 @@ function maybeEnqueueBotArrow(
   const anchor = getNationAnchor(nation);
   if (!anchor) {
     if (process.env.DEBUG_BOTS === "true") {
-      console.log(`[BOTS] skip ${nation.owner} no anchor`);
+      debug(`[BOTS] skip ${nation.owner} no anchor`);
     }
     return;
   }
@@ -899,7 +904,7 @@ function maybeEnqueueBotArrow(
     );
   }
   if (!candidate) {
-    console.log(
+    debug(
       `[BOTS] ${nation.name || nation.owner} has no expansion candidates (territory: ${nation.territory?.x?.length || 0} cells)`,
     );
     return;
@@ -927,7 +932,7 @@ function maybeEnqueueBotArrow(
   const available = nation.population || 0;
   const power = available * clampedPercent;
   if (power <= 0) {
-    console.log(
+    debug(
       `[BOTS] ${nation.name || nation.owner} has no population (${available.toFixed(1)})`,
     );
     return;
@@ -1362,7 +1367,7 @@ function processAttackArrowFrontline(
       (p) => p && typeof p.x === "number" && typeof p.y === "number",
     );
   if (!validPath) {
-    console.log(
+    debug(
       `[ARROW] Removing invalid attack arrow for ${nation.name || nation.owner}`,
     );
     return "remove";
@@ -1432,20 +1437,20 @@ function processAttackArrowFrontline(
       }
     }
     if (allWaypointsOwned) {
-      // console.log(
+      // debug(
       //   `${arrowLabel} FAIL-SAFE REMOVE: all waypoints owned in matrix, power=${remaining}, pathLen=${arrow.path.length}, curIdx=${arrow.currentIndex}`,
       // );
       nation.population = (nation.population || 0) + Math.max(0, remaining);
       return "remove";
     } else if (shouldLog) {
-      console.log(
-        `${arrowLabel} fail-safe: NOT all owned — wp[${firstUnownedWp}]=(${firstUnownedCoord?.x},${firstUnownedCoord?.y}) matrixOwner=${firstUnownedOwner} nIdx=${nIdx}, power=${remaining}, curIdx=${arrow.currentIndex}/${arrow.path.length}, status=${arrow.status}, stalled=${arrow.stalledTicks || 0}`,
-      );
+      // debug(
+      //   `${arrowLabel} fail-safe: NOT all owned — wp[${firstUnownedWp}]=(${firstUnownedCoord?.x},${firstUnownedCoord?.y}) matrixOwner=${firstUnownedOwner} nIdx=${nIdx}, power=${remaining}, curIdx=${arrow.currentIndex}/${arrow.path.length}, status=${arrow.status}, stalled=${arrow.stalledTicks || 0}`,
+      // );
     }
   } else if (shouldLog) {
-    console.log(
-      `${arrowLabel} fail-safe SKIPPED: useMatrix=${useMatrix} nIdx=${nIdx}, power=${remaining}`,
-    );
+    // debug(
+    //   `${arrowLabel} fail-safe SKIPPED: useMatrix=${useMatrix} nIdx=${nIdx}, power=${remaining}`,
+    // );
   }
 
   // ─── Troop-density-based combat path ───
@@ -1472,9 +1477,9 @@ function processAttackArrowFrontline(
     let currentIndex = arrow.currentIndex || 1;
     while (currentIndex < arrow.path.length) {
       const wp = arrow.path[currentIndex];
-      const inTerritory = territorySet.has(
-        `${Math.round(wp.x)},${Math.round(wp.y)}`,
-      );
+      const rwx = Math.round(wp.x);
+      const rwy = Math.round(wp.y);
+      const inTerritory = territorySet.has((rwy << 16) | rwx);
       const matrixOwned = matrix.isOwnedBy(
         Math.round(wp.x),
         Math.round(wp.y),
@@ -1560,7 +1565,6 @@ function processAttackArrowFrontline(
         const loyaltyEnabled2 = config?.loyalty?.enabled !== false;
         if (loyaltyEnabled2) matrix.setLoyalty(cx, cy, nIdx, 1.0);
         addTerritoryCell(nation, cx, cy);
-        ownershipMap?.set(`${cx},${cy}`, nation);
       };
       const _removeCellFromNationForCombat = (targetNation, cx, cy) => {
         if (useMatrix) {
@@ -1570,7 +1574,6 @@ function processAttackArrowFrontline(
           }
         }
         removeTerritoryCell(targetNation, cx, cy);
-        ownershipMap?.delete(`${cx},${cy}`);
       };
 
       const flipped = resolveDensityCombat(
@@ -1615,14 +1618,11 @@ function processAttackArrowFrontline(
       let ci = arrow.currentIndex;
       while (ci < arrow.path.length) {
         const wp = arrow.path[ci];
-        const wpKey = `${Math.round(wp.x)},${Math.round(wp.y)}`;
+        const rwx2 = Math.round(wp.x);
+        const rwy2 = Math.round(wp.y);
         const isLastWaypoint = ci === arrow.path.length - 1;
-        const inTerritory2 = updatedTerritorySet.has(wpKey);
-        const matrixOwned2 = matrix.isOwnedBy(
-          Math.round(wp.x),
-          Math.round(wp.y),
-          nIdx,
-        );
+        const inTerritory2 = updatedTerritorySet.has((rwy2 << 16) | rwx2);
+        const matrixOwned2 = matrix.isOwnedBy(rwx2, rwy2, nIdx);
         if (isLastWaypoint) {
           if (inTerritory2 || matrixOwned2) ci++;
           else break;
@@ -1644,14 +1644,10 @@ function processAttackArrowFrontline(
     // If all waypoints reached, remove
     if (arrow.currentIndex >= arrow.path.length - 1) {
       const fwp = arrow.path[arrow.path.length - 1];
-      const inSet = getTerritorySetCached(nation).has(
-        `${Math.round(fwp.x)},${Math.round(fwp.y)}`,
-      );
-      const matOwned = matrix.isOwnedBy(
-        Math.round(fwp.x),
-        Math.round(fwp.y),
-        nIdx,
-      );
+      const rfx = Math.round(fwp.x);
+      const rfy = Math.round(fwp.y);
+      const inSet = getTerritorySetCached(nation).has((rfy << 16) | rfx);
+      const matOwned = matrix.isOwnedBy(rfx, rfy, nIdx);
       if (inSet || matOwned) return "remove";
     }
 
@@ -1666,23 +1662,28 @@ function processAttackArrowFrontline(
       const omMaxX = Math.min((matrix?.width || 200) - 1, ahx + opScanR);
       const omMinY = Math.max(0, ahy - opScanR);
       const omMaxY = Math.min((matrix?.height || 200) - 1, ahy + opScanR);
+      // Build nationByIdx for opposition lookup
+      const _nationByIdx = matrix.indexToOwner.map(ownerId =>
+        ownerId ? gameState.nations.find(n => n.owner === ownerId) : null
+      );
       for (let cy = omMinY; cy <= omMaxY; cy++) {
         for (let cx = omMinX; cx <= omMaxX; cx++) {
           const odx = cx - ahx;
           const ody = cy - ahy;
           if (odx * odx + ody * ody > opScanR2) continue;
-          const owner = ownershipMap?.get(`${cx},${cy}`);
-          if (owner && owner.owner !== nation.owner) {
-            const entry = opMap.get(owner.owner) || {
-              nationOwner: owner.owner,
-              nationName: owner.name || owner.owner,
-              estimatedStrength: 0,
-              contactWidth: 0,
-            };
-            entry.contactWidth++;
-            entry.estimatedStrength = owner.population || 0;
-            opMap.set(owner.owner, entry);
-          }
+          const ownerIdx = matrix.getOwner(cx, cy);
+          if (ownerIdx === UNOWNED || ownerIdx === nIdx) continue;
+          const ownerNation = _nationByIdx[ownerIdx];
+          if (!ownerNation) continue;
+          const entry = opMap.get(ownerNation.owner) || {
+            nationOwner: ownerNation.owner,
+            nationName: ownerNation.name || ownerNation.owner,
+            estimatedStrength: 0,
+            contactWidth: 0,
+          };
+          entry.contactWidth++;
+          entry.estimatedStrength = ownerNation.population || 0;
+          opMap.set(ownerNation.owner, entry);
         }
       }
       arrow.opposingForces = Array.from(opMap.values());
@@ -1777,11 +1778,12 @@ function processAttackArrowFrontline(
   const startIndex = currentIndex;
   while (currentIndex < arrow.path.length) {
     const wp = arrow.path[currentIndex];
-    const wpKey = `${Math.round(wp.x)},${Math.round(wp.y)}`;
-    const inTerritory = territorySet.has(wpKey);
+    const rwpx = Math.round(wp.x);
+    const rwpy = Math.round(wp.y);
+    const inTerritory = territorySet.has((rwpy << 16) | rwpx);
     const matrixOwned =
       useMatrix && nIdx !== undefined
-        ? matrix.isOwnedBy(Math.round(wp.x), Math.round(wp.y), nIdx)
+        ? matrix.isOwnedBy(rwpx, rwpy, nIdx)
         : false;
     const isLastWaypoint = currentIndex === arrow.path.length - 1;
 
@@ -1792,8 +1794,8 @@ function processAttackArrowFrontline(
       } else {
         if (shouldLog) {
           const dist = getMinDistanceToTerritory(nation, wp.x, wp.y, 5);
-          console.log(
-            `${arrowLabel} auto-skip STOPPED at FINAL wp[${currentIndex}/${arrow.path.length}]: key=${wpKey} inSet=${inTerritory} matrixOwned=${matrixOwned} dist=${dist}`,
+          debug(
+            `${arrowLabel} auto-skip STOPPED at FINAL wp[${currentIndex}/${arrow.path.length}]: (${rwpx},${rwpy}) inSet=${inTerritory} matrixOwned=${matrixOwned} dist=${dist}`,
           );
         }
         break;
@@ -1805,8 +1807,8 @@ function processAttackArrowFrontline(
         currentIndex++;
       } else {
         if (shouldLog) {
-          console.log(
-            `${arrowLabel} auto-skip STOPPED at wp[${currentIndex}/${arrow.path.length}]: key=${wpKey} inSet=${inTerritory} matrixOwned=${matrixOwned} dist=${dist}`,
+          debug(
+            `${arrowLabel} auto-skip STOPPED at wp[${currentIndex}/${arrow.path.length}]: (${rwpx},${rwpy}) inSet=${inTerritory} matrixOwned=${matrixOwned} dist=${dist}`,
           );
         }
         break;
@@ -1817,14 +1819,14 @@ function processAttackArrowFrontline(
 
   // If the arrow has advanced through all waypoints, it's done
   if (currentIndex >= arrow.path.length) {
-    console.log(
+    debug(
       `${arrowLabel} AUTO-SKIP REMOVE: all ${arrow.path.length} waypoints reached. Returning ${remaining} troops.`,
     );
     nation.population = (nation.population || 0) + remaining;
     return "remove";
   }
   if (currentIndex > startIndex && shouldLog) {
-    console.log(
+    debug(
       `${arrowLabel} auto-skipped from ${startIndex} to ${currentIndex}/${arrow.path.length}`,
     );
   }
@@ -1838,8 +1840,7 @@ function processAttackArrowFrontline(
   if (arrow.status === "advancing" || arrow.status === "stalled") {
     // Build frontier candidates within the front width band
     const candidates = [];
-    const territorySet = getTerritorySetCached(nation);
-    const frontierChecked = new Set();
+    const frontierChecked = useMatrix ? new Set() : new Set();
     const tx = nation.territory?.x || [];
     const ty = nation.territory?.y || [];
 
@@ -1849,14 +1850,19 @@ function processAttackArrowFrontline(
         const ny = ty[i] + dy;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
 
-        const key = `${nx},${ny}`;
-        if (frontierChecked.has(key)) continue;
-        frontierChecked.add(key);
+        const numKey = (ny << 16) | nx;
+        if (frontierChecked.has(numKey)) continue;
+        frontierChecked.add(numKey);
 
-        if (territorySet.has(key)) continue;
-        if (ownershipMap.get(key)?.owner === nation.owner) continue;
+        if (useMatrix) {
+          if (matrix.isOwnedBy(nx, ny, nIdx)) continue;
+        } else {
+          const territorySet = getTerritorySetCached(nation);
+          if (territorySet.has((ny << 16) | nx)) continue;
+          if (ownershipMap.get(`${nx},${ny}`)?.owner === nation.owner) continue;
+        }
         // Skip cells recently removed by connectivity check (prevents flash cycle)
-        if (nation._disconnectedCells?.has(key)) continue;
+        if (nation._disconnectedCells?.has(numKey)) continue;
 
         const cell = mapData[ny]?.[nx];
         if (!cell || cell.biome === "OCEAN") continue;
@@ -1867,10 +1873,10 @@ function processAttackArrowFrontline(
         for (const [ddx, ddy] of neighbors) {
           const sx = nx + ddx;
           const sy = ny + ddy;
-          if (
-            territorySet.has(`${sx},${sy}`) ||
+          if (useMatrix ? matrix.isOwnedBy(sx, sy, nIdx) : (
+            getTerritorySetCached(nation).has((sy << 16) | sx) ||
             ownershipMap.get(`${sx},${sy}`)?.owner === nation.owner
-          ) {
+          )) {
             ownedNeighborCount++;
             if (!sourceCell) sourceCell = mapData[sy]?.[sx];
           }
@@ -1953,6 +1959,11 @@ function processAttackArrowFrontline(
       return b.score - a.score;
     });
 
+    // Build nationByIdx lookup once for capture path
+    const nationByIdx = useMatrix ? matrix.indexToOwner.map(ownerId =>
+      ownerId ? gameState.nations.find(n => n.owner === ownerId) : null
+    ) : null;
+
     // Capture within budget
     for (const candidate of candidates) {
       if (spent >= budget || attempts >= attemptsPerTick) break;
@@ -1966,19 +1977,39 @@ function processAttackArrowFrontline(
         distToTarget,
         ownedNeighborCount,
       } = candidate;
-      const key = `${x},${y}`;
-      const currentOwner = ownershipMap.get(key);
 
-      if (currentOwner?.owner === nation.owner) {
-        attempts++;
-        continue;
+      // Get current owner via matrix (O(1) typed-array read) or ownershipMap fallback
+      let currentOwnerNation = null;
+      if (useMatrix) {
+        const cellOwnerIdx = matrix.getOwner(x, y);
+        if (cellOwnerIdx === nIdx) {
+          attempts++;
+          continue;
+        }
+        if (cellOwnerIdx !== UNOWNED) {
+          currentOwnerNation = nationByIdx[cellOwnerIdx] || null;
+        }
+      } else {
+        const key = `${x},${y}`;
+        const currentOwner = ownershipMap.get(key);
+        if (currentOwner?.owner === nation.owner) {
+          attempts++;
+          continue;
+        }
+        currentOwnerNation = currentOwner || null;
       }
 
       // Recheck live owned neighbors (may have changed during this tick)
       let liveOwned = 0;
-      for (const [ddx, ddy] of neighbors) {
-        if (ownershipMap.get(`${x + ddx},${y + ddy}`)?.owner === nation.owner)
-          liveOwned++;
+      if (useMatrix) {
+        for (const [ddx, ddy] of neighbors) {
+          if (matrix.isOwnedBy(x + ddx, y + ddy, nIdx)) liveOwned++;
+        }
+      } else {
+        for (const [ddx, ddy] of neighbors) {
+          if (ownershipMap.get(`${x + ddx},${y + ddy}`)?.owner === nation.owner)
+            liveOwned++;
+        }
       }
       // Require at least 2 owned neighbors unless at path center (prevents thin tendrils)
       if (liveOwned < 2 && minDistToPath > 1.5) {
@@ -2003,7 +2034,7 @@ function processAttackArrowFrontline(
       const distanceMult = 1 + distancePenaltyPerTile * clampedDistance;
 
       let cost;
-      if (!currentOwner) {
+      if (!currentOwnerNation) {
         const expansionPower =
           bonusesByOwner?.[nation.owner]?.expansionPower || 1;
         cost =
@@ -2016,20 +2047,20 @@ function processAttackArrowFrontline(
       } else {
         const attackerPower = bonusesByOwner?.[nation.owner]?.attackPower || 1;
         const defenderPower =
-          bonusesByOwner?.[currentOwner.owner]?.defensePower || 1;
+          bonusesByOwner?.[currentOwnerNation.owner]?.defensePower || 1;
         let defense = baseDefense * defenderPower * contestedDefenseMult;
         defense *= terrainDefenseMultByBiome[cell?.biome] || 1;
 
         const structureDefense = getStructureDefenseBoost(
           x,
           y,
-          currentOwner,
+          currentOwnerNation,
           structureConfig,
         );
         defense *= structureDefense.troopLossMultiplier;
         const structureSpeedMult = structureDefense.speedMultiplier;
 
-        const encirclementBonus = currentOwner.isEncircled ? 0.2 : 1;
+        const encirclementBonus = currentOwnerNation.isEncircled ? 0.2 : 1;
         defense *= encirclementBonus;
 
         cost =
@@ -2043,29 +2074,23 @@ function processAttackArrowFrontline(
       }
 
       if (budget - spent >= cost) {
-        if (currentOwner && currentOwner.owner !== nation.owner) {
-          const targetNation = gameState.nations.find(
-            (n) => n.owner === currentOwner.owner,
-          );
-          if (targetNation) {
-            if (useMatrix) {
-              const targetIdx = matrix.ownerToIndex.get(targetNation.owner);
-              if (
-                targetIdx !== undefined &&
-                matrix.isOwnedBy(x, y, targetIdx)
-              ) {
-                matrix.setOwner(x, y, UNOWNED);
-              }
+        if (currentOwnerNation && currentOwnerNation.owner !== nation.owner) {
+          if (useMatrix) {
+            const targetIdx = matrix.ownerToIndex.get(currentOwnerNation.owner);
+            if (
+              targetIdx !== undefined &&
+              matrix.isOwnedBy(x, y, targetIdx)
+            ) {
+              matrix.setOwner(x, y, UNOWNED);
             }
-            removeTerritoryCell(targetNation, x, y);
           }
+          removeTerritoryCell(currentOwnerNation, x, y);
         }
         if (useMatrix && nIdx !== undefined) {
           matrix.setOwner(x, y, nIdx);
           if (loyaltyEnabled) matrix.setLoyalty(x, y, nIdx, 1.0);
         }
         addTerritoryCell(nation, x, y);
-        ownershipMap.set(key, nation);
         spent += cost;
       } else if (loyaltyEnabled && useMatrix && nIdx !== undefined) {
         applyArrowLoyaltyPressure(matrix, nIdx, x, y, arrowLoyaltyGain);
@@ -2076,7 +2101,6 @@ function processAttackArrowFrontline(
 
   // Fill behind front: unowned cells behind advance head with 3+ owned neighbors
   {
-    const territorySet = getTerritorySetCached(nation);
     const tx = nation.territory?.x || [];
     const ty = nation.territory?.y || [];
     const fillBudget = Math.max(4, Math.min(12, Math.floor(tx.length * 0.005)));
@@ -2088,15 +2112,24 @@ function processAttackArrowFrontline(
         const nx = tx[i] + dx;
         const ny = ty[i] + dy;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-        const key = `${nx},${ny}`;
-        if (fillChecked.has(key)) continue;
-        fillChecked.add(key);
-        if (territorySet.has(key)) continue;
-        if (nation._disconnectedCells?.has(key)) continue;
-        const currentOwner = ownershipMap.get(key);
-        if (currentOwner?.owner === nation.owner) continue;
-        if (currentOwner?.owner && currentOwner.owner !== nation.owner)
-          continue;
+        const numKey = (ny << 16) | nx;
+        if (fillChecked.has(numKey)) continue;
+        fillChecked.add(numKey);
+        if (useMatrix) {
+          // Skip if owned by us
+          if (matrix.isOwnedBy(nx, ny, nIdx)) continue;
+          // Skip if owned by someone else (only fill unowned gaps)
+          const fillOwnerIdx = matrix.getOwner(nx, ny);
+          if (fillOwnerIdx !== UNOWNED) continue;
+        } else {
+          const territorySet = getTerritorySetCached(nation);
+          if (territorySet.has((ny << 16) | nx)) continue;
+          const currentOwner = ownershipMap.get(`${nx},${ny}`);
+          if (currentOwner?.owner === nation.owner) continue;
+          if (currentOwner?.owner && currentOwner.owner !== nation.owner)
+            continue;
+        }
+        if (nation._disconnectedCells?.has(numKey)) continue;
         const cell = mapData[ny]?.[nx];
         if (!cell || cell.biome === "OCEAN") continue;
 
@@ -2108,14 +2141,20 @@ function processAttackArrowFrontline(
         if (dtp > halfWidthAtProgress(fillProgress)) continue;
 
         let ownedCount = 0;
-        for (const [ddx, ddy] of neighbors) {
-          if (
-            ownershipMap.get(`${nx + ddx},${ny + ddy}`)?.owner === nation.owner
-          )
-            ownedCount++;
+        if (useMatrix) {
+          for (const [ddx, ddy] of neighbors) {
+            if (matrix.isOwnedBy(nx + ddx, ny + ddy, nIdx)) ownedCount++;
+          }
+        } else {
+          for (const [ddx, ddy] of neighbors) {
+            if (
+              ownershipMap.get(`${nx + ddx},${ny + ddy}`)?.owner === nation.owner
+            )
+              ownedCount++;
+          }
         }
         if (ownedCount >= 3) {
-          fills.push({ x: nx, y: ny, key });
+          fills.push({ x: nx, y: ny });
         }
       }
     }
@@ -2125,7 +2164,6 @@ function processAttackArrowFrontline(
         if (loyaltyEnabled) matrix.setLoyalty(fill.x, fill.y, nIdx, 1.0);
       }
       addTerritoryCell(nation, fill.x, fill.y);
-      ownershipMap.set(fill.key, nation);
     }
   }
 
@@ -2136,6 +2174,10 @@ function processAttackArrowFrontline(
     const ty = nation.territory?.y || [];
     const scanned = new Set();
     const step = tx.length > 300 ? Math.ceil(tx.length / 300) : 1;
+    // Build nationByIdx for opposition (reuse if already built above)
+    const _opNationByIdx = nationByIdx || (useMatrix ? matrix.indexToOwner.map(ownerId =>
+      ownerId ? gameState.nations.find(n => n.owner === ownerId) : null
+    ) : null);
 
     for (let i = 0; i < tx.length; i += step) {
       const { dist: dtp } = distanceToPath(tx[i], ty[i], arrow.path);
@@ -2144,20 +2186,36 @@ function processAttackArrowFrontline(
       for (const [dx, dy] of neighbors) {
         const nx = tx[i] + dx;
         const ny = ty[i] + dy;
-        const key = `${nx},${ny}`;
-        if (scanned.has(key)) continue;
-        scanned.add(key);
-        const owner = ownershipMap.get(key);
-        if (owner && owner.owner !== nation.owner) {
-          const entry = opMap.get(owner.owner) || {
-            nationOwner: owner.owner,
-            nationName: owner.name || owner.owner,
+        const numKey = (ny << 16) | nx;
+        if (scanned.has(numKey)) continue;
+        scanned.add(numKey);
+        if (useMatrix) {
+          const ownerIdx = matrix.getOwner(nx, ny);
+          if (ownerIdx === UNOWNED || ownerIdx === nIdx) continue;
+          const ownerNation = _opNationByIdx[ownerIdx];
+          if (!ownerNation) continue;
+          const entry = opMap.get(ownerNation.owner) || {
+            nationOwner: ownerNation.owner,
+            nationName: ownerNation.name || ownerNation.owner,
             estimatedStrength: 0,
             contactWidth: 0,
           };
           entry.contactWidth++;
-          entry.estimatedStrength = owner.population || 0;
-          opMap.set(owner.owner, entry);
+          entry.estimatedStrength = ownerNation.population || 0;
+          opMap.set(ownerNation.owner, entry);
+        } else {
+          const owner = ownershipMap.get(`${nx},${ny}`);
+          if (owner && owner.owner !== nation.owner) {
+            const entry = opMap.get(owner.owner) || {
+              nationOwner: owner.owner,
+              nationName: owner.name || owner.owner,
+              estimatedStrength: 0,
+              contactWidth: 0,
+            };
+            entry.contactWidth++;
+            entry.estimatedStrength = owner.population || 0;
+            opMap.set(owner.owner, entry);
+          }
         }
       }
     }
@@ -2195,13 +2253,14 @@ function processAttackArrowFrontline(
     const ciStart = ci;
     while (ci < arrow.path.length) {
       const wp = arrow.path[ci];
-      const wpKey = `${Math.round(wp.x)},${Math.round(wp.y)}`;
+      const ewpx = Math.round(wp.x);
+      const ewpy = Math.round(wp.y);
       const isLastWaypoint = ci === arrow.path.length - 1;
-      const inTerritory = updatedTerritorySet.has(wpKey);
+      const inTerritory = updatedTerritorySet.has((ewpy << 16) | ewpx);
       // Also check matrix for ground truth
       const matrixOwned =
         useMatrix && nIdx !== undefined
-          ? matrix.isOwnedBy(Math.round(wp.x), Math.round(wp.y), nIdx)
+          ? matrix.isOwnedBy(ewpx, ewpy, nIdx)
           : false;
 
       if (isLastWaypoint) {
@@ -2211,8 +2270,8 @@ function processAttackArrowFrontline(
         } else {
           if (shouldLog) {
             const distToWp = getMinDistanceToTerritory(nation, wp.x, wp.y, 3);
-            console.log(
-              `${arrowLabel} end-wp-check STOPPED at FINAL wp[${ci}/${arrow.path.length}]: key=${wpKey} inSet=${inTerritory} matrixOwned=${matrixOwned} dist=${distToWp}`,
+            debug(
+              `${arrowLabel} end-wp-check STOPPED at FINAL wp[${ci}/${arrow.path.length}]: (${ewpx},${ewpy}) inSet=${inTerritory} matrixOwned=${matrixOwned} dist=${distToWp}`,
             );
           }
           break;
@@ -2224,8 +2283,8 @@ function processAttackArrowFrontline(
           ci++;
         } else {
           if (shouldLog) {
-            console.log(
-              `${arrowLabel} end-wp-check STOPPED at wp[${ci}/${arrow.path.length}]: key=${wpKey} inSet=${inTerritory} dist=${distToWp} matrixOwned=${matrixOwned}`,
+            debug(
+              `${arrowLabel} end-wp-check STOPPED at wp[${ci}/${arrow.path.length}]: (${ewpx},${ewpy}) inSet=${inTerritory} dist=${distToWp} matrixOwned=${matrixOwned}`,
             );
           }
           break;
@@ -2241,7 +2300,7 @@ function processAttackArrowFrontline(
         arrow.status = "consolidating";
       }
       if (shouldLog)
-        console.log(
+        debug(
           `${arrowLabel} end-wp-check advanced ${advanced} waypoints (${ciStart}->${ci}), consolidation=${ci < arrow.path.length}`,
         );
     }
@@ -2251,17 +2310,18 @@ function processAttackArrowFrontline(
   if (arrow.currentIndex >= arrow.path.length - 1) {
     const updatedTerritorySet = getTerritorySetCached(nation);
     const fwp = arrow.path[arrow.path.length - 1];
-    const fwpKey = `${Math.round(fwp.x)},${Math.round(fwp.y)}`;
-    const inSet = updatedTerritorySet.has(fwpKey);
+    const fwpx = Math.round(fwp.x);
+    const fwpy = Math.round(fwp.y);
+    const inSet = updatedTerritorySet.has((fwpy << 16) | fwpx);
     const matrixOwned =
       useMatrix && nIdx !== undefined
-        ? matrix.isOwnedBy(Math.round(fwp.x), Math.round(fwp.y), nIdx)
+        ? matrix.isOwnedBy(fwpx, fwpy, nIdx)
         : false;
     // Final waypoint must actually be IN territory, not just near it
     if (inSet || matrixOwned) {
       remaining = Math.max(0, remaining - spent);
       arrow.remainingPower = remaining;
-      console.log(
+      debug(
         `${arrowLabel} FINAL-WP REMOVE: power=${remaining}, spent=${spent}`,
       );
       if (remaining > 0)
@@ -2269,7 +2329,7 @@ function processAttackArrowFrontline(
       return "remove";
     } else if (shouldLog) {
       const distToFinal = getMinDistanceToTerritory(nation, fwp.x, fwp.y, 5);
-      console.log(
+      debug(
         `${arrowLabel} at final wp but NOT removing: key=${fwpKey} inSet=${inSet} matrixOwned=${matrixOwned} dist=${distToFinal}`,
       );
     }
@@ -2287,7 +2347,7 @@ function processAttackArrowFrontline(
   }
 
   if (shouldLog) {
-    console.log(
+    debug(
       `${arrowLabel} END-OF-TICK: power=${remaining}, spent=${spent}, status=${arrow.status}, stalledTicks=${arrow.stalledTicks}, curIdx=${arrow.currentIndex}/${arrow.path.length}, consolidationLeft=${arrow.phaseConsolidationRemaining || 0}, arrowAge=${arrowAge}ms/${maxDurationMs}ms`,
     );
   }
@@ -2298,7 +2358,7 @@ function processAttackArrowFrontline(
     (spent === 0 && remaining < 10) ||
     arrow.stalledTicks >= arrowMaxStallTicks
   ) {
-    console.log(
+    debug(
       `${arrowLabel} STALL/DEPLETED REMOVE: power=${remaining}, spent=${spent}, stalledTicks=${arrow.stalledTicks}/${arrowMaxStallTicks}`,
     );
     if (remaining > 0) {
@@ -2344,7 +2404,7 @@ function processArrowOrders(
   // Process attack arrows array
   const attacks = nation.arrowOrders.attacks;
   if (!attacks) {
-    // console.warn(
+    // debugWarn(
     //   `[ARROW-DEBUG] nation ${nation.name || nation.owner} has no attacks array after migration!`,
     // );
   }
@@ -2363,7 +2423,7 @@ function processArrowOrders(
       );
       if (result === "remove") {
         toRemove.push(i);
-        // console.log(
+        // debug(
         //   `[ARROW-DEBUG] Arrow ${i} (id=${arrow.id}) for ${nation.name || nation.owner} marked for removal. Power=${arrow.remainingPower}, status=${arrow.status}, currentIndex=${arrow.currentIndex}/${arrow.path?.length}`,
         // );
       }
@@ -2378,7 +2438,7 @@ function processArrowOrders(
     }
   }
   if (process.env.DEBUG_ARROWS === "true") {
-    // console.log(
+    // debug(
     //   `[ARROW-DEBUG] ${nation.name || nation.owner}: ${attacks.length} arrows, removing ${toRemove.length}, indices=${JSON.stringify(toRemove)}`,
     // );
   }
@@ -2387,7 +2447,7 @@ function processArrowOrders(
     attacks.splice(toRemove[i], 1);
   }
   if (process.env.DEBUG_ARROWS === "true") {
-    // console.log(
+    // debug(
     //   `[ARROW-DEBUG] ${nation.name || nation.owner}: after splice, ${attacks.length} arrows remain. nation.arrowOrders.attacks.length=${nation.arrowOrders.attacks.length}`,
     // );
   }
@@ -2455,7 +2515,7 @@ function processArrowOrders(
     }
   }
 
-  // Hole-filling pass — unchanged
+  // Hole-filling pass
   if (nation.territory?.x?.length > 0) {
     const holesToFill = [];
     const checked = new Set();
@@ -2475,29 +2535,41 @@ function processArrowOrders(
         for (const [dx, dy] of neighbors) {
           const nx = tx[i] + dx;
           const ny = ty[i] + dy;
-          const key = `${nx},${ny}`;
-          if (checked.has(key)) continue;
-          checked.add(key);
+          const numKey = (ny << 16) | nx;
+          if (checked.has(numKey)) continue;
+          checked.add(numKey);
 
           if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          const currentOwner = ownershipMap.get(key);
-          if (currentOwner?.owner === nation.owner) continue;
-          if (currentOwner?.owner && currentOwner.owner !== nation.owner)
-            continue;
+          if (useMatrix) {
+            const cellOwnerIdx = matrix.getOwner(nx, ny);
+            if (cellOwnerIdx === nIdx) continue; // already ours
+            if (cellOwnerIdx !== UNOWNED) continue; // owned by someone else
+          } else {
+            const currentOwner = ownershipMap.get(`${nx},${ny}`);
+            if (currentOwner?.owner === nation.owner) continue;
+            if (currentOwner?.owner && currentOwner.owner !== nation.owner)
+              continue;
+          }
 
           const cell = mapData[ny]?.[nx];
           if (!cell || cell.biome === "OCEAN") continue;
 
           let ownedCount = 0;
-          for (const [ddx, ddy] of neighbors) {
-            if (
-              ownershipMap.get(`${nx + ddx},${ny + ddy}`)?.owner ===
-              nation.owner
-            )
-              ownedCount++;
+          if (useMatrix) {
+            for (const [ddx, ddy] of neighbors) {
+              if (matrix.isOwnedBy(nx + ddx, ny + ddy, nIdx)) ownedCount++;
+            }
+          } else {
+            for (const [ddx, ddy] of neighbors) {
+              if (
+                ownershipMap.get(`${nx + ddx},${ny + ddy}`)?.owner ===
+                nation.owner
+              )
+                ownedCount++;
+            }
           }
           if (ownedCount >= requiredOwnedNeighbors) {
-            holesToFill.push({ x: nx, y: ny, key, ownedCount });
+            holesToFill.push({ x: nx, y: ny, ownedCount });
           }
         }
       }
@@ -2515,7 +2587,6 @@ function processArrowOrders(
         if (loyaltyEnabled) matrix.setLoyalty(hole.x, hole.y, nIdx, 1.0);
       }
       addTerritoryCell(nation, hole.x, hole.y);
-      ownershipMap.set(hole.key, nation);
     }
   }
 }
@@ -2615,6 +2686,7 @@ function getMinDistanceToTerritory(nation, x, y, maxDistance = Infinity) {
 }
 
 // Lazy-initialize and return the cached territory Set for O(1) lookups
+// Uses numeric keys: (y << 16) | x — eliminates string allocation
 // Also deduplicates the territory arrays if duplicates are detected
 function getTerritorySetCached(nation) {
   // Check if _territorySet exists AND is actually a Set (not a plain object from MongoDB)
@@ -2625,21 +2697,20 @@ function getTerritorySetCached(nation) {
       // Build set and detect duplicates
       for (let i = 0; i < nation.territory.x.length; i++) {
         nation._territorySet.add(
-          `${nation.territory.x[i]},${nation.territory.y[i]}`,
+          (nation.territory.y[i] << 16) | nation.territory.x[i],
         );
       }
       // If set size differs from array length, we have duplicates - rebuild arrays
       if (nation._territorySet.size !== originalLength) {
         const newX = [];
         const newY = [];
-        for (const key of nation._territorySet) {
-          const [xStr, yStr] = key.split(",");
-          newX.push(Number(xStr));
-          newY.push(Number(yStr));
+        for (const numKey of nation._territorySet) {
+          newX.push(numKey & 0xFFFF);
+          newY.push(numKey >> 16);
         }
         nation.territory.x = newX;
         nation.territory.y = newY;
-        console.log(
+        debug(
           `[DEDUPE] ${nation.name || nation.owner} had ${originalLength - nation._territorySet.size} duplicate tiles removed`,
         );
       }
@@ -2657,24 +2728,25 @@ const NEIGHBORS_4 = [
 ];
 
 // Update border set when a cell is added - only the new cell and its neighbors might change border status
+// Uses numeric keys: (y << 16) | x
 function updateBorderOnAdd(nation, x, y, territorySet) {
   // Ensure _borderSet is a proper Set (might be plain object from MongoDB)
   if (!(nation._borderSet instanceof Set)) {
     nation._borderSet = new Set();
   }
-  const key = `${x},${y}`;
+  const key = (y << 16) | x;
 
   // Check if the new cell is a border cell (has non-owned neighbor)
   let isBorder = false;
   for (const [dx, dy] of NEIGHBORS_4) {
-    const nKey = `${x + dx},${y + dy}`;
+    const nKey = ((y + dy) << 16) | (x + dx);
     if (!territorySet.has(nKey)) {
       isBorder = true;
     } else {
       // This neighbor was potentially a border cell, recheck it
       let neighborStillBorder = false;
       for (const [ddx, ddy] of NEIGHBORS_4) {
-        if (!territorySet.has(`${x + dx + ddx},${y + dy + ddy}`)) {
+        if (!territorySet.has(((y + dy + ddy) << 16) | (x + dx + ddx))) {
           neighborStillBorder = true;
           break;
         }
@@ -2690,18 +2762,19 @@ function updateBorderOnAdd(nation, x, y, territorySet) {
 }
 
 // Update border set when a cell is removed
+// Uses numeric keys: (y << 16) | x
 function updateBorderOnRemove(nation, x, y, territorySet) {
   // Ensure _borderSet is a proper Set (might be plain object from MongoDB)
   if (!(nation._borderSet instanceof Set)) {
     nation._borderSet = new Set();
     return; // If it wasn't a Set, just return - it will be rebuilt when needed
   }
-  const key = `${x},${y}`;
+  const key = (y << 16) | x;
   nation._borderSet.delete(key);
 
   // Neighbors of removed cell become border cells if they're still in territory
   for (const [dx, dy] of NEIGHBORS_4) {
-    const nKey = `${x + dx},${y + dy}`;
+    const nKey = ((y + dy) << 16) | (x + dx);
     if (territorySet.has(nKey)) {
       nation._borderSet.add(nKey);
     }
@@ -2709,6 +2782,7 @@ function updateBorderOnRemove(nation, x, y, territorySet) {
 }
 
 // Get cached border set for efficient border operations
+// Uses numeric keys: (y << 16) | x
 function getBorderSetCached(nation) {
   if (!(nation._borderSet instanceof Set)) {
     nation._borderSet = new Set();
@@ -2719,8 +2793,8 @@ function getBorderSetCached(nation) {
         const y = nation.territory.y[i];
         // Cell is border if any neighbor is not in territory
         for (const [dx, dy] of NEIGHBORS_4) {
-          if (!territorySet.has(`${x + dx},${y + dy}`)) {
-            nation._borderSet.add(`${x},${y}`);
+          if (!territorySet.has(((y + dy) << 16) | (x + dx))) {
+            nation._borderSet.add((y << 16) | x);
             break;
           }
         }
@@ -2737,15 +2811,15 @@ function addTerritoryCell(nation, x, y) {
   if (!nation.territoryDelta) {
     nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
   }
-  const key = `${x},${y}`;
+  const numKey = (y << 16) | x;
   const territorySet = getTerritorySetCached(nation);
   // O(1) check
-  if (territorySet.has(key)) {
+  if (territorySet.has(numKey)) {
     return;
   }
   nation.territory.x.push(x);
   nation.territory.y.push(y);
-  territorySet.add(key);
+  territorySet.add(numKey);
   nation.territoryDelta?.add.x.push(x);
   nation.territoryDelta?.add.y.push(y);
   updateBorderOnAdd(nation, x, y, territorySet);
@@ -2756,10 +2830,10 @@ function removeTerritoryCell(nation, x, y) {
   if (!nation.territoryDelta) {
     nation.territoryDelta = { add: { x: [], y: [] }, sub: { x: [], y: [] } };
   }
-  const key = `${x},${y}`;
+  const numKey = (y << 16) | x;
   const territorySet = getTerritorySetCached(nation);
   // O(1) check
-  if (!territorySet.has(key)) {
+  if (!territorySet.has(numKey)) {
     return;
   }
   // O(n) to find index, then swap-and-pop for O(1) removal
@@ -2772,7 +2846,7 @@ function removeTerritoryCell(nation, x, y) {
       }
       nation.territory.x.pop();
       nation.territory.y.pop();
-      territorySet.delete(key);
+      territorySet.delete(numKey);
       nation.territoryDelta?.sub.x.push(x);
       nation.territoryDelta?.sub.y.push(y);
       updateBorderOnRemove(nation, x, y, territorySet);

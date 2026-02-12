@@ -11,6 +11,7 @@ import { generateCityName, generateTowerName, generateUniqueName } from "../util
 import { computePathLength, computeMaxArrowRange } from "../utils/gameLogic.js";
 import { getSessionUser } from "../utils/auth.js";
 import { getRegionForCell } from "../utils/regionGenerator.js";
+import { debug, debugWarn } from "../utils/debug.js";
 
 const router = express.Router();
 
@@ -419,15 +420,15 @@ function buildBotNation(botId, x, y, mapData, existingNations) {
 async function spawnBotsForRoom(roomId, mapData, desiredCount) {
   const count = Math.max(0, Number(desiredCount || 0));
   if (!count) return;
-  console.log(`[BOTS] spawnBotsForRoom room=${roomId} desired=${count}`);
+  debug(`[BOTS] spawnBotsForRoom room=${roomId} desired=${count}`);
 
   const gameRoom = await getAuthoritativeRoom(roomId);
   if (!gameRoom) {
-    console.warn(`[BOTS] room not found ${roomId}`);
+    debugWarn(`[BOTS] room not found ${roomId}`);
     return;
   }
   if ((gameRoom.gameState?.nations || []).length === 0) {
-    console.log(`[BOTS] deferring spawn; no players have founded yet`);
+    debug(`[BOTS] deferring spawn; no players have founded yet`);
     return;
   }
 
@@ -435,7 +436,7 @@ async function spawnBotsForRoom(roomId, mapData, desiredCount) {
   const existingBots = nations.filter((n) => n.isBot);
   const toAdd = Math.max(0, count - existingBots.length);
   if (!toAdd) {
-    console.log(
+    debug(
       `[BOTS] no bots to add (existing=${existingBots.length}) room=${roomId}`
     );
     return;
@@ -453,12 +454,12 @@ async function spawnBotsForRoom(roomId, mapData, desiredCount) {
     const allExistingNations = nations.concat(created);
     const start = findBotStartCell(mapData, allExistingNations);
     if (!start) {
-      console.warn(`[BOTS] no valid start found for ${botId}`);
+      debugWarn(`[BOTS] no valid start found for ${botId}`);
       break;
     }
     existingNames.add(botId);
     created.push(buildBotNation(botId, start.x, start.y, mapData, allExistingNations));
-    console.log(
+    debug(
       `[BOTS] queued ${botId} at (${start.x},${start.y}) room=${roomId}`
     );
   }
@@ -470,7 +471,7 @@ async function spawnBotsForRoom(roomId, mapData, desiredCount) {
     // Sync matrix with newly added bot territories
     gameLoop.syncMatrixFromNations(roomId.toString(), gameRoom.gameState.nations);
 
-    console.log(
+    debug(
       `[BOTS] spawned ${created.length} bots room=${roomId} totalNations=${gameRoom.gameState.nations.length}`
     );
     broadcastRoomUpdate(roomId.toString(), gameRoom);
@@ -516,7 +517,7 @@ router.post("/init", async (req, res, next) => {
       botCount,
       allowRefound,
     } = req.body;
-    console.log(`[BOTS] init botCount=${botCount}`);
+    debug(`[BOTS] init botCount=${botCount}`);
 
     const sessionActor = getSessionActor(req);
     const creatorId = sessionActor?.userId || creatorName;
@@ -549,7 +550,9 @@ router.post("/init", async (req, res, next) => {
       width: w,
       height: h,
       seed: mapSeed,
-      status: "generating",
+      status: "initializing",
+      generationProgress: 5,
+      generationStage: "queued",
     });
     await newMap.save();
 
@@ -609,10 +612,17 @@ router.post("/init", async (req, res, next) => {
     // Run map generation asynchronously
     (async () => {
       try {
-        console.log(
+        debug(
           "Starting asynchronous map generation for game room:",
           gameRoom._id
         );
+
+        await Map.findByIdAndUpdate(newMap._id, {
+          status: "generating",
+          generationProgress: 15,
+          generationStage: "generating_terrain",
+        });
+
         let mapData = await runMapGenerationWorker({
           width: w,
           height: h,
@@ -620,8 +630,15 @@ router.post("/init", async (req, res, next) => {
           num_blobs: numBlobs,
           seed: mapSeed,
         });
+
+        await Map.findByIdAndUpdate(newMap._id, {
+          status: "generating",
+          generationProgress: 60,
+          generationStage: "placing_resources",
+        });
+
         mapData = assignResourcesToMap(mapData, mapSeed);
-        console.log("Map generation completed for game room:", gameRoom._id);
+        debug("Map generation completed for game room:", gameRoom._id);
 
         // Save map chunks
         const MapChunk = mongoose.model("MapChunk");
@@ -636,31 +653,50 @@ router.post("/init", async (req, res, next) => {
             rows: chunkRows,
           });
         }
-        console.log(
+        debug(
           `Saving ${chunks.length} map chunks for game room:`,
           gameRoom._id
         );
+
+        await Map.findByIdAndUpdate(newMap._id, {
+          status: "generating",
+          generationProgress: 78,
+          generationStage: "saving_chunks",
+        });
+
         await MapChunk.insertMany(chunks);
-        console.log("Map chunks saved for game room:", gameRoom._id);
+        debug("Map chunks saved for game room:", gameRoom._id);
 
-        // Update map status to "ready"
-        await Map.findByIdAndUpdate(newMap._id, { status: "ready" });
-        console.log(
-          "Map status updated to 'ready' for game room:",
-          gameRoom._id
-        );
+        await Map.findByIdAndUpdate(newMap._id, {
+          status: "generating",
+          generationProgress: 90,
+          generationStage: "finalizing_room",
+        });
 
-        // Update game room status to "open"
-        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
-        // Refresh in-memory cache so the loop doesn't see stale status
-        await gameLoop.refreshRoomCache(gameRoom._id);
-        console.log("Game room status updated to 'open':", gameRoom._id);
+        await Map.findByIdAndUpdate(newMap._id, {
+          status: "generating",
+          generationProgress: 95,
+          generationStage: "spawning_bots",
+        });
 
         await spawnBotsForRoom(gameRoom._id, mapData, botCount);
 
+        // Update game room status to "open" before starting the loop
+        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
+        // Refresh in-memory cache so the loop doesn't see stale status
+        await gameLoop.refreshRoomCache(gameRoom._id);
+        debug("Game room status updated to 'open':", gameRoom._id);
+
         // Start the game loop for the room
         await gameLoop.startRoom(gameRoom._id);
-        console.log("Game loop started for room:", gameRoom._id);
+        debug("Game loop started for room:", gameRoom._id);
+
+        // Mark generation complete only after room is open and loop is started
+        await Map.findByIdAndUpdate(newMap._id, {
+          status: "ready",
+          generationProgress: 100,
+          generationStage: "complete",
+        });
       } catch (err) {
         console.error(
           "Error in asynchronous map generation for game room:",
@@ -668,7 +704,11 @@ router.post("/init", async (req, res, next) => {
           err
         );
         const Map = mongoose.model("Map");
-        await Map.findByIdAndUpdate(newMap._id, { status: "error" });
+        await Map.findByIdAndUpdate(newMap._id, {
+          status: "error",
+          generationProgress: 100,
+          generationStage: "error",
+        });
         await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "error" });
       }
     })();
@@ -687,17 +727,39 @@ router.get("/:id/status", async (req, res, next) => {
     }
     const Map = mongoose.model("Map");
     const map = await Map.findById(gameRoom.map)
-      .select("status width height")
+      .select("status width height generationProgress generationStage")
       .lean();
     if (!map) {
       return res.status(404).json({ error: "Associated map not found" });
     }
+    const progressRaw =
+      typeof map.generationProgress === "number" ? map.generationProgress : null;
+    const fallbackProgress =
+      map.status === "ready"
+        ? 100
+        : map.status === "error"
+        ? 100
+        : gameRoom.status === "open"
+        ? 98
+        : gameRoom.status === "initializing"
+        ? 20
+        : 0;
+    const progress = Math.max(
+      0,
+      Math.min(
+        100,
+        Number.isFinite(progressRaw) ? progressRaw : fallbackProgress
+      )
+    );
+
     res.json({
       gameRoomStatus: gameRoom.status,
       mapStatus: map.status,
       width: map.width,
       height: map.height,
-      ready: map.status === "ready",
+      progress,
+      stage: map.generationStage || null,
+      ready: map.status === "ready" && gameRoom.status === "open",
     });
   } catch (error) {
     next(error);
@@ -716,7 +778,7 @@ router.post("/", async (req, res, next) => {
       botCount,
       allowRefound,
     } = req.body;
-    console.log(`[BOTS] create botCount=${botCount}`);
+    debug(`[BOTS] create botCount=${botCount}`);
     if (!mapId) return res.status(400).json({ error: "mapId is required" });
     const sessionActor = getSessionActor(req);
     const creatorId = sessionActor?.userId;
@@ -813,7 +875,7 @@ router.get("/", async (req, res, next) => {
 });
 
 router.get("/:id/metadata", async (req, res, next) => {
-  console.log("[ROUTE] Game room metadata request:", req.params.id);
+  debug("[ROUTE] Game room metadata request:", req.params.id);
   try {
     const gameRoom = await GameRoom.findById(req.params.id).populate(
       "map",
@@ -838,7 +900,7 @@ router.get("/:id/data", async (req, res, next) => {
     const start = parseInt(startRow, 10) || 0;
     const end = parseInt(endRow, 10) || start + 50;
 
-    console.log(`Fetching map data for room: ${req.params.id}`);
+    debug(`Fetching map data for room: ${req.params.id}`);
 
     // Get the cached mapData
     const mapData = await gameLoop.getMapData(req.params.id);
@@ -949,7 +1011,7 @@ router.get("/:id/data", async (req, res, next) => {
           }
         : undefined;
 
-    console.log(
+    debug(
       `Successfully prepared map data chunk for room ${
         req.params.id
       }: rows ${start}-${Math.min(end, mapData.length)}`
@@ -966,7 +1028,7 @@ router.get("/:id/data", async (req, res, next) => {
           });
         }
       }
-      console.log(`[RESOURCES] room=${req.params.id} counts`, counts);
+      debug(`[RESOURCES] room=${req.params.id} counts`, counts);
     }
 
     res.json({
@@ -1270,7 +1332,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
       return res.status(400).json({ error: "Invalid founding coordinates" });
     }
 
-    console.log("[FOUND] Attempt:", { userId, x, y });
+    debug("[FOUND] Attempt:", { userId, x, y });
 
     // 1. Load current state
     const gameRoom = await getAuthoritativeRoom(req.params.id);
@@ -1493,7 +1555,7 @@ router.post("/:id/foundNation", async (req, res, next) => {
 // Supports: town, tower, and resource structures (farm, mine, etc.)
 // -------------------------------------------------------------------
 router.post("/:id/buildCity", async (req, res, next) => {
-  console.log("[ROUTE] Build structure request:", req.body);
+  debug("[ROUTE] Build structure request:", req.body);
   try {
     const { userId: legacyUserId, password, x: rawX, y: rawY, cityType, cityName } = req.body;
     const sessionActor = getSessionActor(req);
@@ -1720,7 +1782,7 @@ router.post("/:id/buildCity", async (req, res, next) => {
         generatedName = cityName || `${cityType.charAt(0).toUpperCase() + cityType.slice(1)} ${lockedNation.cities.length + 1}`;
       }
 
-      console.log(`[BUILD] ${cityType} "${generatedName}" at (${x},${y}) for ${userId}`);
+      debug(`[BUILD] ${cityType} "${generatedName}" at (${x},${y}) for ${userId}`);
 
       const city = {
         name: generatedName,
@@ -2017,7 +2079,7 @@ router.post("/:id/arrow", async (req, res, next) => {
       }
 
       if (process.env.DEBUG_ARROWS === "true") {
-        console.log(
+        debug(
           `[ARROW-CREATED] PLAYER ${userId} ${type}: id=${arrowId} power=${power.toFixed(0)} pathLen=${sanitizedPath.length} target=(${sanitizedPath[sanitizedPath.length-1]?.x},${sanitizedPath[sanitizedPath.length-1]?.y}) attacks[]=${lockedNation.arrowOrders.attacks?.length || 0}`
         );
       }

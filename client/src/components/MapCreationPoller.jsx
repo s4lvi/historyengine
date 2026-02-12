@@ -7,8 +7,10 @@ const MapCreationPoller = ({
   formData,
   pollingInterval = 5000,
 }) => {
-  const [attempts, setAttempts] = useState(0);
+  const [, setAttempts] = useState(0);
   const [status, setStatus] = useState("generating");
+  const [stage, setStage] = useState("queued");
+  const [progress, setProgress] = useState(5);
   const maxAttempts = 24; // 2 minutes maximum waiting time
   const onMapReadyRef = useRef(onMapReady);
   const hasCompletedRef = useRef(false);
@@ -36,7 +38,13 @@ const MapCreationPoller = ({
         }
 
         const data = await response.json();
-        setStatus(data.mapStatus);
+        setStatus(data.mapStatus || "generating");
+        setStage(data.stage || null);
+
+        const nextProgress = Number(data.progress);
+        if (Number.isFinite(nextProgress)) {
+          setProgress(Math.max(0, Math.min(100, nextProgress)));
+        }
 
         if (data.mapStatus === "error") {
           onError(new Error("Map generation failed"));
@@ -59,6 +67,7 @@ const MapCreationPoller = ({
 
         if (data.ready && !hasCompletedRef.current) {
           hasCompletedRef.current = true;
+          setProgress(100);
           onMapReadyRef.current(data);
           return;
         }
@@ -81,8 +90,23 @@ const MapCreationPoller = ({
 
   const getStatusMessage = () => {
     switch (status) {
+      case "initializing":
+        return "Initializing map generation...";
       case "generating":
-        return "Generating map...";
+        switch (stage) {
+          case "generating_terrain":
+            return "Generating terrain...";
+          case "placing_resources":
+            return "Placing resources...";
+          case "saving_chunks":
+            return "Saving map chunks...";
+          case "finalizing_room":
+            return "Finalizing room...";
+          case "spawning_bots":
+            return "Spawning nations...";
+          default:
+            return "Generating map...";
+        }
       case "error":
         return "Error generating map";
       case "ready":
@@ -102,9 +126,7 @@ const MapCreationPoller = ({
         <div className="mb-6">
           <div className="flex justify-between mb-2 text-gray-300">
             <span>Generating map for {formData.roomName}...</span>
-            <span>
-              {Math.min(Math.round((attempts / maxAttempts) * 100), 100)}%
-            </span>
+            <span>{Math.round(progress)}%</span>
           </div>
           <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
             <div
@@ -116,7 +138,7 @@ const MapCreationPoller = ({
                   : "bg-blue-600"
               }`}
               style={{
-                width: `${Math.min((attempts / maxAttempts) * 100, 100)}%`,
+                width: `${Math.min(Math.max(progress, 0), 100)}%`,
               }}
             />
           </div>

@@ -98,9 +98,9 @@ const renderResourceCaptureOverlays = (
   const overlays = [];
   mapGrid.forEach(({ cell, x, y }) => {
     if (!cell || !Array.isArray(cell[5]) || cell[5].length === 0) return;
-    const key = `${x},${y}`;
-    const owner = ownershipMap.get(key);
+    const owner = ownershipMap.get((y << 16) | x);
     if (!owner) return;
+    const key = `${x},${y}`;
     const claim = resourceNodeClaims?.[key];
     if (!claim) return;
     const isCaptured = claim.owner === owner;
@@ -185,6 +185,70 @@ const ARROW_STATUS_HEX = {
   consolidating: "#cccc44",
   stalled: "#cc8844",
   retreating: "#cc4444",
+};
+
+const lerpNumber = (from, to, t) => from + (to - from) * t;
+
+const toFiniteNumber = (value, fallback = 0) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+const cloneAttackArrow = (arrow) => ({
+  ...arrow,
+  path: Array.isArray(arrow?.path)
+    ? arrow.path.map((p) => ({
+        x: toFiniteNumber(p?.x, 0),
+        y: toFiniteNumber(p?.y, 0),
+      }))
+    : [],
+  opposingForces: Array.isArray(arrow?.opposingForces)
+    ? arrow.opposingForces.map((f) => ({ ...f }))
+    : [],
+});
+
+const getAttackArrowKey = (arrow, idx) => arrow?.id || `idx-${idx}`;
+
+const canInterpolateAttackArrows = (fromArrow, toArrow) => {
+  if (!fromArrow || !toArrow) return false;
+  if (!Array.isArray(fromArrow.path) || !Array.isArray(toArrow.path)) return false;
+  if (fromArrow.path.length !== toArrow.path.length) return false;
+  for (let i = 0; i < toArrow.path.length; i++) {
+    const fromPoint = fromArrow.path[i];
+    const toPoint = toArrow.path[i];
+    if (!fromPoint || !toPoint) return false;
+    if (fromPoint.x !== toPoint.x || fromPoint.y !== toPoint.y) return false;
+  }
+  return true;
+};
+
+const interpolateAttackArrow = (fromArrow, toArrow, t) => {
+  if (!canInterpolateAttackArrows(fromArrow, toArrow)) return toArrow;
+
+  const fallbackX = toFiniteNumber(toArrow.path?.[0]?.x, 0);
+  const fallbackY = toFiniteNumber(toArrow.path?.[0]?.y, 0);
+  const fromHeadX = toFiniteNumber(fromArrow.headX, fallbackX);
+  const fromHeadY = toFiniteNumber(fromArrow.headY, fallbackY);
+  const toHeadX = toFiniteNumber(toArrow.headX, fallbackX);
+  const toHeadY = toFiniteNumber(toArrow.headY, fallbackY);
+  const fromIdx = toFiniteNumber(fromArrow.currentIndex, 1);
+  const toIdx = toFiniteNumber(toArrow.currentIndex, 1);
+  const fromFrontWidth = toFiniteNumber(fromArrow.frontWidth, 0);
+  const toFrontWidth = toFiniteNumber(toArrow.frontWidth, 0);
+  const fromDensity = toFiniteNumber(fromArrow.effectiveDensityAtFront, 0);
+  const toDensity = toFiniteNumber(toArrow.effectiveDensityAtFront, 0);
+  const fromPower = toFiniteNumber(fromArrow.remainingPower, 0);
+  const toPower = toFiniteNumber(toArrow.remainingPower, 0);
+
+  return {
+    ...toArrow,
+    headX: lerpNumber(fromHeadX, toHeadX, t),
+    headY: lerpNumber(fromHeadY, toHeadY, t),
+    currentIndex: lerpNumber(fromIdx, toIdx, t),
+    frontWidth: lerpNumber(fromFrontWidth, toFrontWidth, t),
+    effectiveDensityAtFront: lerpNumber(fromDensity, toDensity, t),
+    remainingPower: lerpNumber(fromPower, toPower, t),
+  };
 };
 
 // Simple thin-line arrow for drawing-in-progress and defend arrows
@@ -663,13 +727,13 @@ const BorderPressureOverlay = React.memo(({ playerNation, densityMap, cellSize, 
         // Build density lookup from flat [x,y,density,...] array
         const densityLookup = new Map();
         for (let i = 0; i < densityMap.length; i += 3) {
-          densityLookup.set(`${densityMap[i]},${densityMap[i + 1]}`, densityMap[i + 2]);
+          densityLookup.set((densityMap[i + 1] << 16) | densityMap[i], densityMap[i + 2]);
         }
 
         // Build territory set
         const terrSet = new Set();
         for (let i = 0; i < territory.x.length; i++) {
-          terrSet.add(`${territory.x[i]},${territory.y[i]}`);
+          terrSet.add((territory.y[i] << 16) | territory.x[i]);
         }
 
         // Find border cells and compute average density
@@ -689,13 +753,13 @@ const BorderPressureOverlay = React.memo(({ playerNation, densityMap, cellSize, 
 
           // Check if border cell (has non-owned neighbor)
           const isBorder =
-            !terrSet.has(`${x},${y - 1}`) ||
-            !terrSet.has(`${x + 1},${y}`) ||
-            !terrSet.has(`${x},${y + 1}`) ||
-            !terrSet.has(`${x - 1},${y}`);
+            !terrSet.has(((y - 1) << 16) | x) ||
+            !terrSet.has((y << 16) | (x + 1)) ||
+            !terrSet.has(((y + 1) << 16) | x) ||
+            !terrSet.has((y << 16) | (x - 1));
           if (!isBorder) continue;
 
-          const d = densityLookup.get(`${x},${y}`) || 0;
+          const d = densityLookup.get((y << 16) | x) || 0;
           borderCells.push({ x, y, density: d });
           totalDensity += d;
           densityCount++;
@@ -988,15 +1052,15 @@ const getMergedTerritory = (nation) => {
     };
   }
   if (nation.territoryDeltaForClient && nation.territoryDeltaForClient.sub) {
-    const subSet = new Set(
-      nation.territoryDeltaForClient.sub.x.map(
-        (x, i) => `${x},${nation.territoryDeltaForClient.sub.y[i]}`
-      )
-    );
+    const subSet = new Set();
+    const subX = nation.territoryDeltaForClient.sub.x;
+    const subY = nation.territoryDeltaForClient.sub.y;
+    for (let i = 0; i < subX.length; i++) {
+      subSet.add((subY[i] << 16) | subX[i]);
+    }
     const merged = { x: [], y: [] };
     for (let i = 0; i < territory.x.length; i++) {
-      const key = `${territory.x[i]},${territory.y[i]}`;
-      if (!subSet.has(key)) {
+      if (!subSet.has((territory.y[i] << 16) | territory.x[i])) {
         merged.x.push(territory.x[i]);
         merged.y.push(territory.y[i]);
       }
@@ -1050,7 +1114,7 @@ const NationLabel = ({ text, x, y, fontSize, alpha, scale }) => {
   );
 };
 
-const NationOverlay = ({
+const NationOverlay = React.memo(({
   nation,
   nationIndex,
   cellSize,
@@ -1083,7 +1147,7 @@ const NationOverlay = ({
   const territorySet = useMemo(() => {
     const set = new Set();
     for (let i = 0; i < territory.x.length; i++) {
-      set.add(`${territory.x[i]},${territory.y[i]}`);
+      set.add((territory.y[i] << 16) | territory.x[i]);
     }
     return set;
   }, [territory]);
@@ -1159,11 +1223,11 @@ const NationOverlay = ({
       const x = territory.x[i];
       const y = territory.y[i];
       const hasNonOwned =
-        !territorySet.has(`${x},${y - 1}`) ||
-        !territorySet.has(`${x + 1},${y}`) ||
-        !territorySet.has(`${x},${y + 1}`) ||
-        !territorySet.has(`${x - 1},${y}`);
-      if (hasNonOwned) bSet.add(`${x},${y}`);
+        !territorySet.has(((y - 1) << 16) | x) ||
+        !territorySet.has((y << 16) | (x + 1)) ||
+        !territorySet.has(((y + 1) << 16) | x) ||
+        !territorySet.has((y << 16) | (x - 1));
+      if (hasNonOwned) bSet.add((y << 16) | x);
     }
     return bSet;
   }, [territory, territorySet, scale]);
@@ -1187,9 +1251,9 @@ const NationOverlay = ({
             } else {
               // Split run into edge vs interior segments
               let segStart = run.start;
-              let segIsEdge = borderTileSet.has(`${run.start},${run.y}`);
+              let segIsEdge = borderTileSet.has((run.y << 16) | run.start);
               for (let x = run.start + 1; x <= run.end; x++) {
-                const isEdge = borderTileSet.has(`${x},${run.y}`);
+                const isEdge = borderTileSet.has((run.y << 16) | x);
                 if (isEdge !== segIsEdge) {
                   const width = (x - segStart) * cellSize;
                   g.beginFill(baseColor, segIsEdge ? 1.0 : 0.5);
@@ -1256,7 +1320,7 @@ const NationOverlay = ({
         })}
     </>
   );
-};
+});
 
 /* -------------------------------------------------------------------------- */
 /*                              Main Component                              */
@@ -1320,13 +1384,20 @@ const GameCanvas = ({
   const [captureEffectTime, setCaptureEffectTime] = useState(0);
   const captureInitRef = useRef(false);
   const lastClaimOwnersRef = useRef({});
+  const [attackInterpAlpha, setAttackInterpAlpha] = useState(1);
+  const attackInterpRef = useRef({
+    from: [],
+    to: (activeAttackArrows || []).map(cloneAttackArrow),
+    startMs: performance.now(),
+    durationMs: Math.max(120, config?.territorial?.tickRateMs || 200),
+  });
   const ownershipMap = useMemo(() => {
     const map = new Map();
     nations.forEach((nation) => {
       const tx = nation?.territory?.x || [];
       const ty = nation?.territory?.y || [];
       for (let i = 0; i < tx.length; i++) {
-        map.set(`${tx[i]},${ty[i]}`, nation.owner);
+        map.set((ty[i] << 16) | tx[i], nation.owner);
       }
     });
     return map;
@@ -1364,11 +1435,60 @@ const GameCanvas = ({
     lastClaimOwnersRef.current = currentOwners;
     if (newEffects.length) {
       setCaptureEffects((prev) => {
-        const next = [...prev, ...newEffects];
-        return next.slice(-CAPTURE_EFFECT_MAX);
+        if (prev.length === 0) return newEffects.slice(-CAPTURE_EFFECT_MAX);
+        const combined = prev.concat(newEffects);
+        return combined.length <= CAPTURE_EFFECT_MAX ? combined : combined.slice(-CAPTURE_EFFECT_MAX);
       });
     }
   }, [resourceNodeClaims, userId]);
+
+  useEffect(() => {
+    const nextTo = (activeAttackArrows || []).map(cloneAttackArrow);
+    attackInterpRef.current = {
+      from: attackInterpRef.current.to,
+      to: nextTo,
+      startMs: performance.now(),
+      durationMs: Math.max(120, config?.territorial?.tickRateMs || 200),
+    };
+    setAttackInterpAlpha(0);
+  }, [activeAttackArrows, config?.territorial?.tickRateMs]);
+
+  useEffect(() => {
+    let rafId;
+    const animate = () => {
+      const interp = attackInterpRef.current;
+      const elapsed = performance.now() - interp.startMs;
+      const nextAlpha = Math.min(1, elapsed / Math.max(1, interp.durationMs));
+      setAttackInterpAlpha((prev) => {
+        if (Math.abs(prev - nextAlpha) < 0.01) return prev;
+        return nextAlpha;
+      });
+      if (nextAlpha < 1) {
+        rafId = requestAnimationFrame(animate);
+      }
+    };
+
+    rafId = requestAnimationFrame(animate);
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [activeAttackArrows, config?.territorial?.tickRateMs]);
+
+  const smoothedAttackArrows = useMemo(() => {
+    const { from, to } = attackInterpRef.current;
+    if (!to.length || attackInterpAlpha >= 0.999) return to;
+
+    const fromByKey = new Map();
+    for (let i = 0; i < from.length; i++) {
+      fromByKey.set(getAttackArrowKey(from[i], i), from[i]);
+    }
+
+    return to.map((arrow, idx) => {
+      const key = getAttackArrowKey(arrow, idx);
+      const previous = fromByKey.get(key);
+      return interpolateAttackArrow(previous, arrow, attackInterpAlpha);
+    });
+  }, [attackInterpAlpha]);
 
   const buildCellInfo = useCallback(
     (cell, x, y) => {
@@ -1379,15 +1499,14 @@ const GameCanvas = ({
       const resources = rawResources.map((r) =>
         typeof r === "string" ? r : mappings?.resources?.[r] ?? r
       );
-      const key = `${x},${y}`;
-      const owner = ownershipMap.get(key) || null;
+      const owner = ownershipMap.get((y << 16) | x) || null;
       const ownerNation = owner
         ? nations.find((n) => n.owner === owner)
         : null;
       const structure = ownerNation?.cities?.find(
         (c) => c.x === x && c.y === y
       );
-      const claim = resourceNodeClaims?.[key] || null;
+      const claim = resourceNodeClaims?.[`${x},${y}`] || null;
       return {
         x,
         y,
@@ -2496,13 +2615,13 @@ const GameCanvas = ({
       >
         {sceneChildren}
         {/* Attack arrows rendered outside useMemo so they always reflect latest state */}
-        {activeAttackArrows?.map((arrow, i) =>
+        {smoothedAttackArrows?.map((arrow, i) =>
           arrow?.path
             ? renderArrowV2(arrow, cellSize, `active-attack-${arrow.id || i}`, scale)
             : null
         )}
         {/* Animated troop flow dots along arrow paths */}
-        {scale > 0.5 && activeAttackArrows?.map((arrow, i) =>
+        {scale > 0.5 && smoothedAttackArrows?.map((arrow, i) =>
           arrow?.path ? (
             <ArrowTroopFlow
               key={`troop-flow-${arrow.id || i}`}

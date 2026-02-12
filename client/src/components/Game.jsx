@@ -58,8 +58,6 @@ const Game = () => {
     profile,
     loading: authLoading,
     loginWithGoogle,
-    updateProfile,
-    logout,
   } = useAuth();
   const userId = user?.id || null;
   const roomKey = `gameRoom-${id}-userId`;
@@ -227,32 +225,34 @@ const Game = () => {
     }
   };
 
+  // Numeric key encoding: (y << 16) | x — avoids string allocation/split
   const mergeTerritory = (existing, delta) => {
     const next = new Set();
     if (existing && existing.x && existing.y) {
       for (let i = 0; i < existing.x.length; i++) {
-        next.add(`${existing.x[i]},${existing.y[i]}`);
+        next.add((existing.y[i] << 16) | existing.x[i]);
       }
     }
 
     if (delta?.sub?.x?.length) {
       for (let i = 0; i < delta.sub.x.length; i++) {
-        next.delete(`${delta.sub.x[i]},${delta.sub.y[i]}`);
+        next.delete((delta.sub.y[i] << 16) | delta.sub.x[i]);
       }
     }
 
     if (delta?.add?.x?.length) {
       for (let i = 0; i < delta.add.x.length; i++) {
-        next.add(`${delta.add.x[i]},${delta.add.y[i]}`);
+        next.add((delta.add.y[i] << 16) | delta.add.x[i]);
       }
     }
 
-    const x = [];
-    const y = [];
+    const x = new Array(next.size);
+    const y = new Array(next.size);
+    let idx = 0;
     next.forEach((key) => {
-      const [sx, sy] = key.split(",");
-      x.push(Number(sx));
-      y.push(Number(sy));
+      x[idx] = key & 0xFFFF;
+      y[idx] = (key >> 16) & 0xFFFF;
+      idx++;
     });
     return { x, y };
   };
@@ -375,7 +375,13 @@ const Game = () => {
           }
         });
         if (newFlashes.length > 0) {
-          setCombatFlashes((prev) => [...prev, ...newFlashes].slice(-100));
+          setCombatFlashes((prev) => {
+            if (prev.length === 0) return newFlashes.slice(-100);
+            const combined = prev.length + newFlashes.length <= 100
+              ? prev.concat(newFlashes)
+              : prev.concat(newFlashes).slice(-100);
+            return combined;
+          });
         }
       }
 
@@ -1386,10 +1392,6 @@ const Game = () => {
         gameState={gameState}
         userId={userId}
         profile={profile}
-        onLogin={() => loginWithGoogle(`/rooms/${id}`)}
-        onLogout={logout}
-        onUpdateProfile={updateProfile}
-        isAuthenticated={!!userId}
         paused={paused}
         onPause={handlePauseGame}
         onUnpause={handleUnPauseGame}

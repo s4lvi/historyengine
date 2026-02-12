@@ -1,7 +1,7 @@
 { "winConditionPercentage": 75,
   "buildCosts": {
     "structures": {
-      "town": { "wood": 400, "stone": 200, "food": 1000 },
+      "town": { "wood": 500, "stone": 200 },
       "tower": { "stone": 500, "wood": 200 },
       "fort": { "stone": 2000, "wood": 500, "food": 300 },
       "workshop": { "wood": 300, "stone": 300, "bronze": 100 },
@@ -241,6 +241,7 @@
     "foodCostPerTroop": 0.0001,
     "goldCostPerTroop": 0.00005,
     "freeThreshold": 0.25,
-    "autoReduceTarget": 0.15
+    "autoReduceTarget": 0.15,
+    "foodProductionPerPop": 0.00003
   }
 }

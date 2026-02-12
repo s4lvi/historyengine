@@ -121,7 +121,7 @@ const ProfileMenu = () => {
   }
 
   return (
-    <div className="relative">
+    <div className="relative z-50">
       <button
         onClick={() => setOpen((prev) => !prev)}
         className="flex items-center gap-2 rounded-md bg-gray-900 px-3 py-2 text-sm text-white hover:bg-gray-800"
@@ -134,7 +134,7 @@ const ProfileMenu = () => {
       </button>
       {open && (
         <div
-          className="absolute right-0 mt-2 w-56 rounded-lg bg-gray-900 p-3 shadow-lg"
+          className="absolute right-0 z-50 mt-2 w-56 rounded-lg bg-gray-900 p-3 shadow-lg"
           style={panelSurfaceStyle}
         >
           <div className="text-xs text-gray-400">Signed in as</div>
@@ -180,7 +180,7 @@ const AppShell = ({ children }) => {
         style={overlayTintStyle}
       />
       <header
-        className="relative z-10 overflow-visible bg-gray-900"
+        className="relative z-30 overflow-visible bg-gray-900"
         style={chromeSurfaceStyle}
       >
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-3 px-4 py-3 sm:px-6">
