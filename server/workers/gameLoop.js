@@ -5,7 +5,6 @@ import {
   computeBonusesByOwner,
   getNodeMultiplier,
 } from "../utils/territorialUtils.js";
-import { assignResourcesToMap } from "../utils/resourceManagement.js";
 import { broadcastRoomUpdate } from "../wsHub.js";
 import config from "../config/config.js";
 import { TerritoryMatrix, UNOWNED } from "../utils/TerritoryMatrix.js";
@@ -340,6 +339,25 @@ function updateResourceNodeClaimsMatrix(gameState, mapData, matrix, mapKey) {
   gameState.resourceNodeClaims = claims;
 }
 
+function normalizeRuntimeCell(cell) {
+  if (!cell || typeof cell !== "object") return null;
+
+  const nodeType = cell.resourceNode?.type || null;
+  const nodeLevel = Number(cell.resourceNode?.level) || 0;
+
+  return {
+    biome: cell.biome || "OCEAN",
+    elevation: Number(cell.elevation) || 0,
+    moisture: Number(cell.moisture) || 0,
+    temperature: Number(cell.temperature) || 0,
+    isRiver: !!cell.isRiver,
+    ...(Array.isArray(cell.resources) && cell.resources.length > 0
+      ? { resources: cell.resources.filter(Boolean) }
+      : {}),
+    ...(nodeType ? { resourceNode: { type: nodeType, level: nodeLevel } } : {}),
+  };
+}
+
 class GameLoop {
   constructor() {
     this.timers = new Map();
@@ -405,7 +423,16 @@ class GameLoop {
 
       const height = mapData.length;
       const width = mapData[0]?.length || 0;
-      const maxNations = config?.matrix?.maxNations || 64;
+      const configuredMaxNations = Math.max(
+        1,
+        Number(config?.matrix?.maxNations) || 64
+      );
+      const activeNationCount = Math.max(
+        1,
+        (nations || []).filter((n) => n?.status !== "defeated").length
+      );
+      const desiredNationSlots = Math.max(16, activeNationCount + 8);
+      const maxNations = Math.min(configuredMaxNations, desiredNationSlots);
       matrix = new TerritoryMatrix(width, height, maxNations);
       matrix.initFromMapData(mapData, config?.matrix);
       matrix.populateFromNations(nations);
@@ -501,15 +528,12 @@ class GameLoop {
                   .sort((a, b) => parseInt(a) - parseInt(b))
                   .map((key) => row[key]);
 
-            mapData[startRow + rowIndex] = processedRow.map((cell) => ({
-              ...cell,
-              resources: Array.isArray(cell.resources) ? cell.resources : [],
-            }));
+            mapData[startRow + rowIndex] = processedRow.map((cell) =>
+              normalizeRuntimeCell(cell)
+            );
           }
         });
       });
-
-      mapData = assignResourcesToMap(mapData, gameMap.seed || gameMap._id.toString());
 
       mapData = mapData.map((row) => {
         if (!Array.isArray(row)) {
@@ -863,7 +887,9 @@ class GameLoop {
       matrix.tickChunkSleep();
 
       // 5. Build ownershipMap for gameLogic.js compatibility
-      const ownershipMap = this.getOwnershipMap(roomKey, gameRoom.gameState.nations);
+      const ownershipMap = matrix
+        ? null
+        : this.getOwnershipMap(roomKey, gameRoom.gameState.nations);
       const nationOrder = [...gameRoom.gameState.nations];
       const botCount = nationOrder.filter(n => n.isBot && n.status !== 'defeated').length;
       const activeArrows = nationOrder.filter(n => n.arrowOrders?.attacks?.length > 0 || n.arrowOrders?.attack || n.arrowOrders?.defend).length;
@@ -919,7 +945,9 @@ class GameLoop {
       _perf.updateNations = performance.now() - _t; _t = performance.now();
 
       // 7. Sync string-key caches from gameLogic.js changes (territory deltas)
-      this.updateOwnershipMapFromDeltas(ownershipMap, updatedNations);
+      if (ownershipMap) {
+        this.updateOwnershipMapFromDeltas(ownershipMap, updatedNations);
+      }
       const hasChanges = updatedNations.some(n =>
         (n.territoryDelta?.add?.x?.length || 0) > 0 ||
         (n.territoryDelta?.sub?.x?.length || 0) > 0

@@ -30,6 +30,10 @@ function safeBufferCopy(typedArray) {
 export function serializeMatrix(matrix) {
   const usedSlots = matrix.nextNationSlot || 0;
   const size = matrix.size;
+  const serializedMaxNations = Math.max(
+    16,
+    Math.min(matrix.maxNations || 64, usedSlots + 8)
+  );
 
   // Quantize loyalty from Float32 [0,1] to Uint8 [0,255] — 4x size reduction
   const loyaltyLen = size * usedSlots;
@@ -41,7 +45,7 @@ export function serializeMatrix(matrix) {
   return {
     width: matrix.width,
     height: matrix.height,
-    maxNations: matrix.maxNations,
+    maxNations: serializedMaxNations,
     nextNationSlot: usedSlots,
     // Track how many slots are serialized for deserializer
     serializedNationSlots: usedSlots,

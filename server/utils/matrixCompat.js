@@ -61,6 +61,67 @@ export function getFullTerritory(matrix, owner) {
   return matrix.getCellsForNation(nIdx);
 }
 
+function applyDeltaToTerritoryInPlace(territory, delta) {
+  const xArr = Array.isArray(territory?.x) ? territory.x : [];
+  const yArr = Array.isArray(territory?.y) ? territory.y : [];
+  const idxByKey = new Map();
+
+  for (let i = 0; i < xArr.length; i++) {
+    idxByKey.set((yArr[i] << 16) | xArr[i], i);
+  }
+
+  const subX = delta?.sub?.x || [];
+  const subY = delta?.sub?.y || [];
+  for (let i = 0; i < subX.length; i++) {
+    const key = (subY[i] << 16) | subX[i];
+    const idx = idxByKey.get(key);
+    if (idx === undefined) continue;
+
+    const last = xArr.length - 1;
+    if (idx !== last) {
+      const lastX = xArr[last];
+      const lastY = yArr[last];
+      xArr[idx] = lastX;
+      yArr[idx] = lastY;
+      idxByKey.set((lastY << 16) | lastX, idx);
+    }
+
+    xArr.pop();
+    yArr.pop();
+    idxByKey.delete(key);
+  }
+
+  const addX = delta?.add?.x || [];
+  const addY = delta?.add?.y || [];
+  for (let i = 0; i < addX.length; i++) {
+    const x = addX[i];
+    const y = addY[i];
+    const key = (y << 16) | x;
+    if (idxByKey.has(key)) continue;
+    idxByKey.set(key, xArr.length);
+    xArr.push(x);
+    yArr.push(y);
+  }
+
+  return { x: xArr, y: yArr };
+}
+
+function syncTerritorySetCache(nation, delta) {
+  if (!(nation?._territorySet instanceof Set)) return;
+
+  const subX = delta?.sub?.x || [];
+  const subY = delta?.sub?.y || [];
+  for (let i = 0; i < subX.length; i++) {
+    nation._territorySet.delete((subY[i] << 16) | subX[i]);
+  }
+
+  const addX = delta?.add?.x || [];
+  const addY = delta?.add?.y || [];
+  for (let i = 0; i < addX.length; i++) {
+    nation._territorySet.add((addY[i] << 16) | addX[i]);
+  }
+}
+
 /**
  * Populate nation.territory, nation.territoryDeltaForClient, nation.territoryPercentage
  * from matrix state. Called once at end of each tick.
@@ -71,9 +132,6 @@ export function getFullTerritory(matrix, owner) {
  */
 export function applyMatrixToNations(matrix, nations, totalClaimable) {
   const deltas = deriveNationDeltas(matrix);
-
-  // Single O(size) pass to extract all nation cells simultaneously
-  const allCells = matrix.getAllNationCells();
 
   for (const nation of nations) {
     if (nation.status === "defeated") {
@@ -99,21 +157,38 @@ export function applyMatrixToNations(matrix, nations, totalClaimable) {
     const nIdx = matrix.ownerToIndex.get(nation.owner);
     if (nIdx === undefined) continue;
 
-    // Look up cells from the pre-computed map instead of per-nation scan
-    const cells = allCells.get(nIdx) || { x: [], y: [] };
-    nation.territory = cells;
-    nation._territorySet = undefined;
-    nation._borderSet = undefined;
+    const delta = deltas.get(nation.owner) || {
+      add: { x: [], y: [] },
+      sub: { x: [], y: [] },
+    };
+    const hasDelta =
+      (delta.add?.x?.length || 0) > 0 || (delta.sub?.x?.length || 0) > 0;
+
+    if (!nation.territory || !Array.isArray(nation.territory.x) || !Array.isArray(nation.territory.y)) {
+      nation.territory = { x: [], y: [] };
+      nation._territorySet = undefined;
+      nation._borderSet = undefined;
+    }
+
+    if (hasDelta) {
+      nation.territory = applyDeltaToTerritoryInPlace(nation.territory, delta);
+      syncTerritorySetCache(nation, delta);
+      nation._borderSet = undefined;
+    }
 
     // Update territory percentage
-    const count = cells.x.length;
+    const count = matrix.countTerritory(nIdx);
+    if (nation.territory.x.length !== count) {
+      nation.territory = matrix.getCellsForNation(nIdx);
+      nation._territorySet = undefined;
+      nation._borderSet = undefined;
+    }
     if (totalClaimable > 0) {
       nation.territoryPercentage = Math.round((count / totalClaimable) * 10000) / 100;
     }
 
     // Set client delta from matrix diff
-    const delta = deltas.get(nation.owner);
-    if (delta && (delta.add.x.length > 0 || delta.sub.x.length > 0)) {
+    if (hasDelta) {
       nation.territoryDeltaForClient = delta;
     } else {
       nation.territoryDeltaForClient = {

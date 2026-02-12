@@ -14,11 +14,16 @@ import MobileActionDock from "./MobileActionDock";
 import ContextPanel from "./ContextPanel";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch, getWsUrl } from "../utils/api";
+import { isDiscordActivity, getDiscordToken } from "../utils/discord";
 
-const Game = () => {
-  // Get game room ID from URL params.
-  const { id } = useParams();
-  const navigate = useNavigate();
+const Game = ({ discordRoomId }) => {
+  // Get game room ID from URL params or Discord prop.
+  const { id: paramId } = useParams();
+  const id = discordRoomId || paramId;
+  const isDiscord = isDiscordActivity();
+
+  const routerNavigate = useNavigate();
+  const navigate = isDiscord ? () => {} : routerNavigate;
 
   // ----------------------------
   // API–fetched data and map info
@@ -602,7 +607,7 @@ const Game = () => {
     if (!id || !userId || !hasJoined) return;
     let isActive = true;
 
-    const wsUrl = getWsUrl();
+    const wsUrl = getWsUrl(isDiscord ? getDiscordToken() : undefined);
 
     const scheduleReconnect = () => {
       if (!isActive) return;

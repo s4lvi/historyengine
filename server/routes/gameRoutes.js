@@ -502,6 +502,132 @@ async function requireCreator(req, res) {
   return { gameRoom };
 }
 
+// -------------------------------------------------------------------
+// POST /api/gamerooms/discord-instance — Get or create a room for a Discord Activity instance
+// -------------------------------------------------------------------
+router.post("/discord-instance", async (req, res, next) => {
+  try {
+    const sessionActor = getSessionActor(req);
+    if (!sessionActor) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const { instanceId, mapWidth, mapHeight, botCount } = req.body || {};
+    if (!instanceId) {
+      return res.status(400).json({ error: "instanceId is required" });
+    }
+
+    // Look up existing open room with this Discord instance
+    const existing = await GameRoom.findOne({
+      discordInstanceId: instanceId,
+      status: { $in: ["open", "initializing"] },
+    });
+
+    if (existing) {
+      // Add player if not already present
+      const alreadyIn = existing.players?.some((p) => p.userId === sessionActor.userId);
+      if (!alreadyIn) {
+        existing.players.push({
+          userId: sessionActor.userId,
+          password: null,
+          profile: sessionActor.profile || {},
+          userState: {},
+        });
+        existing.markModified("players");
+        await existing.save();
+      }
+      touchRoom(existing._id.toString());
+      return res.json({ gameRoomId: existing._id, joinCode: existing.joinCode });
+    }
+
+    // No existing room — create a new one via the init flow
+    const w = Number(mapWidth) || 500;
+    const h = Number(mapHeight) || 500;
+    const generatedJoinCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const mapSeed = Math.random();
+
+    const Map = mongoose.model("Map");
+    const newMap = new Map({
+      name: `Discord-${instanceId.slice(0, 8)}`,
+      width: w,
+      height: h,
+      seed: mapSeed,
+      status: "initializing",
+      generationProgress: 5,
+      generationStage: "queued",
+    });
+    await newMap.save();
+
+    const gameRoom = new GameRoom({
+      map: newMap._id,
+      roomName: "Discord Game",
+      joinCode: generatedJoinCode,
+      status: "initializing",
+      discordInstanceId: instanceId,
+      creator: { userId: sessionActor.userId, password: null, profile: sessionActor.profile || {} },
+      players: [
+        { userId: sessionActor.userId, password: null, profile: sessionActor.profile || {}, userState: {} },
+      ],
+      gameState: {
+        nations: [],
+        resourceUpgrades: {},
+        resourceNodeClaims: {},
+        bots: { count: botCount || 0 },
+        settings: { allowRefound: DEFAULT_ALLOW_REFOUND },
+      },
+      tickCount: 0,
+    });
+    await gameRoom.save();
+    touchRoom(gameRoom._id.toString());
+
+    res.status(201).json({ gameRoomId: gameRoom._id, joinCode: generatedJoinCode });
+
+    // Run map generation asynchronously (same pattern as /init)
+    (async () => {
+      try {
+        await Map.findByIdAndUpdate(newMap._id, { status: "generating", generationProgress: 15, generationStage: "generating_terrain" });
+
+        const mapData = await new Promise((resolve, reject) => {
+          const worker = new Worker(
+            new URL("../workers/mapWorker.js", import.meta.url),
+            { workerData: { width: w, height: h, erosion_passes: 4, num_blobs: 3, seed: mapSeed } }
+          );
+          worker.on("message", resolve);
+          worker.on("error", reject);
+          worker.on("exit", (code) => { if (code !== 0) reject(new Error(`Worker stopped with exit code ${code}`)); });
+        });
+
+        await Map.findByIdAndUpdate(newMap._id, { status: "generating", generationProgress: 60, generationStage: "placing_resources" });
+        const finalMapData = assignResourcesToMap(mapData, mapSeed);
+
+        const MapChunk = mongoose.model("MapChunk");
+        const CHUNK_SIZE = 50;
+        const chunks = [];
+        for (let i = 0; i < finalMapData.length; i += CHUNK_SIZE) {
+          const chunkRows = finalMapData.slice(i, i + CHUNK_SIZE);
+          chunks.push({ map: newMap._id, startRow: i, endRow: i + chunkRows.length - 1, rows: chunkRows });
+        }
+        await Map.findByIdAndUpdate(newMap._id, { status: "generating", generationProgress: 78, generationStage: "saving_chunks" });
+        await MapChunk.insertMany(chunks);
+
+        await Map.findByIdAndUpdate(newMap._id, { status: "generating", generationProgress: 95, generationStage: "spawning_bots" });
+        await spawnBotsForRoom(gameRoom._id, finalMapData, botCount || 0);
+
+        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
+        await gameLoop.refreshRoomCache(gameRoom._id);
+        await gameLoop.startRoom(gameRoom._id);
+
+        await Map.findByIdAndUpdate(newMap._id, { status: "ready", generationProgress: 100, generationStage: "complete" });
+      } catch (err) {
+        console.error("[DISCORD] Map generation error:", err);
+        await Map.findByIdAndUpdate(newMap._id, { status: "error", generationProgress: 100, generationStage: "error" });
+        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "error" });
+      }
+    })();
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/init", async (req, res, next) => {
   try {
     const {
@@ -1707,18 +1833,24 @@ router.post("/:id/buildCity", async (req, res, next) => {
       }
 
       const required = resourceStructureMapping[cityType];
+      const cellResources =
+        Array.isArray(cell.resources) && cell.resources.length > 0
+          ? cell.resources
+          : cell.resourceNode?.type
+          ? [cell.resourceNode.type]
+          : [];
       let validResource = false;
       if (Array.isArray(required)) {
-        validResource = cell.resources.some((r) => required.includes(r));
+        validResource = cellResources.some((r) => required.includes(r));
       } else {
-        validResource = cell.resources.includes(required);
+        validResource = cellResources.includes(required);
       }
       if (!validResource) {
         return res.status(400).json({
           error: `Cannot build ${cityType} on this tile. Required resource not found.`,
         });
       }
-      producedResource = cell.resources[0];
+      producedResource = cellResources[0];
     }
 
     // Get build cost from config.

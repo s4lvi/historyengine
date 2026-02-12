@@ -209,6 +209,103 @@ router.post("/profile", async (req, res) => {
   res.json({ profile: user.profile });
 });
 
+// -------------------------------------------------------------------
+// POST /api/auth/discord/token — Exchange Discord OAuth code for JWT
+// Used by the Discord Activity (embedded iframe) auth flow
+// -------------------------------------------------------------------
+router.post("/discord/token", async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    if (!code) {
+      return res.status(400).json({ error: "Missing authorization code" });
+    }
+
+    const discordClientId = process.env.DISCORD_CLIENT_ID;
+    const discordClientSecret = process.env.DISCORD_CLIENT_SECRET;
+    if (!discordClientId || !discordClientSecret) {
+      return res.status(500).json({ error: "Discord OAuth not configured" });
+    }
+
+    // Exchange the authorization code for an access token
+    const tokenResponse = await fetch("https://discord.com/api/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: discordClientId,
+        client_secret: discordClientSecret,
+        grant_type: "authorization_code",
+        code,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorBody = await tokenResponse.text();
+      return res.status(401).json({ error: "Failed to exchange Discord token", details: errorBody });
+    }
+
+    const tokenData = await tokenResponse.json();
+    const accessToken = tokenData.access_token;
+    if (!accessToken) {
+      return res.status(401).json({ error: "Missing access_token from Discord" });
+    }
+
+    // Fetch Discord user profile
+    const userResponse = await fetch("https://discord.com/api/users/@me", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: "Failed to fetch Discord user profile" });
+    }
+    const discordUser = await userResponse.json();
+    if (!discordUser.id) {
+      return res.status(401).json({ error: "Invalid Discord user profile" });
+    }
+
+    // Find or create User document via providers.discord.sub
+    let user = await User.findOne({ "providers.discord.sub": discordUser.id });
+    const discordName = discordUser.global_name || discordUser.username || "Player";
+    const discordAvatar = discordUser.avatar
+      ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png`
+      : null;
+
+    if (!user) {
+      const baseProfile = normalizeProfile({}, discordName);
+      user = new User({
+        providers: {
+          discord: {
+            sub: discordUser.id,
+            email: discordUser.email || null,
+            name: discordName,
+            picture: discordAvatar,
+          },
+        },
+        profile: baseProfile,
+      });
+    } else {
+      user.providers = user.providers || {};
+      user.providers.discord = {
+        sub: discordUser.id,
+        email: discordUser.email || null,
+        name: discordName,
+        picture: discordAvatar,
+      };
+      user.profile = normalizeProfile(user.profile || {}, discordName);
+    }
+    await user.save();
+
+    const sessionToken = signSessionToken(user._id.toString());
+    res.json({
+      token: sessionToken,
+      user: { id: user._id.toString() },
+      profile: user.profile || {},
+      access_token: accessToken,
+    });
+  } catch (err) {
+    console.error("[DISCORD] Token exchange error:", err);
+    res.status(500).json({ error: "Discord token exchange failed", details: err.message });
+  }
+});
+
 router.post("/logout", (req, res) => {
   clearSessionCookie(res);
   res.json({ ok: true });

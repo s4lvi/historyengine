@@ -25,9 +25,12 @@ const gameRoomSchema = new mongoose.Schema({
   ],
   gameState: { type: mongoose.Schema.Types.Mixed, default: {} },
   matrixState: { type: mongoose.Schema.Types.Mixed, default: null },
+  discordInstanceId: { type: String, default: null, sparse: true },
   tickCount: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
 });
+
+gameRoomSchema.index({ discordInstanceId: 1 }, { sparse: true });
 
 // Register and export the model.
 export default mongoose.model("GameRoom", gameRoomSchema);

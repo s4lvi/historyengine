@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@discord/embedded-app-sdk": "^2.4.0",
     "@pixi/constants": "^7.4.2",
     "@pixi/events": "^7.4.2",
     "@pixi/filter-outline": "^5.2.0",

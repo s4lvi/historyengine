@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { apiFetch, buildApiUrl } from "../utils/api";
+import { isDiscordActivity, initDiscord } from "../utils/discord";
 
 const AuthContext = createContext(null);
 
@@ -7,6 +8,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isDiscord, setIsDiscord] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -29,23 +31,45 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
-    refresh();
+    if (isDiscordActivity()) {
+      // Discord Activity mode: initialize SDK and exchange token
+      setIsDiscord(true);
+      (async () => {
+        try {
+          setLoading(true);
+          const result = await initDiscord();
+          setUser(result.user || null);
+          setProfile(result.profile || null);
+        } catch (err) {
+          console.error("[DISCORD] Auth initialization failed:", err);
+          setUser(null);
+          setProfile(null);
+        } finally {
+          setLoading(false);
+        }
+      })();
+    } else {
+      // Standard web app mode: refresh from cookie-based session
+      refresh();
+    }
   }, [refresh]);
 
   const loginWithGoogle = useCallback((redirectPath) => {
+    if (isDiscord) return; // No Google login in Discord mode
     const redirect = redirectPath || window.location.pathname;
     const url = buildApiUrl(`api/auth/google/start?redirect=${encodeURIComponent(redirect)}`);
     window.location.assign(url);
-  }, []);
+  }, [isDiscord]);
 
   const logout = useCallback(async () => {
+    if (isDiscord) return; // No logout in Discord mode
     try {
       await apiFetch("api/auth/logout", { method: "POST" });
     } finally {
       setUser(null);
       setProfile(null);
     }
-  }, []);
+  }, [isDiscord]);
 
   const updateProfile = useCallback(async (updates) => {
     const response = await apiFetch("api/auth/profile", {
@@ -67,12 +91,13 @@ export const AuthProvider = ({ children }) => {
       user,
       profile,
       loading,
+      isDiscord,
       refresh,
       loginWithGoogle,
       logout,
       updateProfile,
     }),
-    [user, profile, loading, refresh, loginWithGoogle, logout, updateProfile]
+    [user, profile, loading, isDiscord, refresh, loginWithGoogle, logout, updateProfile]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -85,4 +110,3 @@ export const useAuth = () => {
   }
   return ctx;
 };
-

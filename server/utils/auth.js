@@ -38,8 +38,25 @@ function cookieOptions() {
 }
 
 export function getSessionTokenFromRequest(req) {
+  // 1. Cookie (existing standalone web app)
   const cookies = parseCookies(req.headers?.cookie || "");
-  return cookies[SESSION_COOKIE] || null;
+  const cookieToken = cookies[SESSION_COOKIE];
+  if (cookieToken) return cookieToken;
+
+  // 2. Bearer header (Discord Activity REST calls)
+  const authHeader = req.headers?.authorization || "";
+  if (authHeader.startsWith("Bearer ")) return authHeader.slice(7);
+
+  // 3. Query param (Discord Activity WebSocket connections — browser WS API can't set headers)
+  if (req.url) {
+    try {
+      const url = new URL(req.url, "http://localhost");
+      const qToken = url.searchParams.get("token");
+      if (qToken) return qToken;
+    } catch {}
+  }
+
+  return null;
 }
 
 export function getOAuthStateTokenFromRequest(req) {

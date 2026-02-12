@@ -17,6 +17,8 @@ import GameRoomList from "./components/GameRoomList";
 import { ErrorBoundary } from "./components/ErrorHandling";
 import ProfileModal from "./components/ProfileModal";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { isDiscordActivity } from "./utils/discord";
+import DiscordActivity from "./components/DiscordActivity";
 
 const RELEASE_NOTES = [
   {
@@ -506,6 +508,17 @@ const NewsPage = () => (
 );
 
 function App() {
+  // In Discord Activity mode, skip the router and render the Discord entry point directly
+  if (isDiscordActivity()) {
+    return (
+      <ErrorBoundary>
+        <AuthProvider>
+          <DiscordActivity />
+        </AuthProvider>
+      </ErrorBoundary>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <AuthProvider>

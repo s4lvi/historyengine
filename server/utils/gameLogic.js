@@ -811,9 +811,9 @@ function maybeEnqueueBotArrow(
     return;
   }
 
-  if (!ownershipMap) {
+  if (!ownershipMap && !matrix) {
     if (process.env.DEBUG_BOTS === "true") {
-      debug(`[BOTS] skip ${nation.owner} no ownershipMap`);
+      debug(`[BOTS] skip ${nation.owner} no ownership source`);
     }
     return;
   }
@@ -1153,7 +1153,7 @@ function getFrontierCandidatesForBot(
       const key = `${nx},${ny}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      if (ownershipMap.get(key)?.owner === nation.owner) continue;
+      if (ownershipMap?.get(key)?.owner === nation.owner) continue;
       // Check matrix ground truth — skip cells already owned by us (legacy map may be stale)
       if (matrix && nIdx !== undefined && matrix.isOwnedBy(nx, ny, nIdx))
         continue;
@@ -2382,7 +2382,7 @@ function processArrowOrders(
   matrix = null,
 ) {
   if (!nation.arrowOrders) return;
-  if (!ownershipMap) return;
+  if (!ownershipMap && !matrix) return;
 
   const useMatrix = !!matrix;
   const nIdx = useMatrix ? matrix.ownerToIndex.get(nation.owner) : undefined;

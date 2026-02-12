@@ -57,10 +57,7 @@ const MONGO_URI =
   process.env.MONGO_URI || "mongodb://localhost:27017/fantasy-maps";
 
 mongoose
-  .connect(MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(MONGO_URI)
   .then(() => {
     debug("Connected to MongoDB");
     // Resume game loops for active game rooms
