@@ -1,13 +1,17 @@
 {
-    "name": "annexi",
-    "version": "1.0.0",
-    "type": "module",
-    "scripts": {
-      "start": "npm install && cd server && npm install && cd .. && node server/index.js",
-  "heroku-postbuild": "cd client && npm install && npm run build"
-    },
-    "engines": {
-      "node": ">=14.x"
-    }
+  "name": "annexi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "npm run start --prefix server",
+    "start:server": "npm run start --prefix server",
+    "start:client": "npm start --prefix client",
+    "build:client": "npm run build --prefix client",
+    "heroku-postbuild": "npm ci --prefix server && npm ci --prefix client --include=dev && npm run build:client"
+  },
+  "engines": {
+    "node": "20.x",
+    "npm": "10.x"
   }
-  
+}
