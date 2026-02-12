@@ -6,7 +6,12 @@ import {
   Routes,
   useNavigate,
 } from "react-router-dom";
-import { FaDiscord, FaInfoCircle, FaNewspaper, FaUserCircle } from "react-icons/fa";
+import {
+  FaDiscord,
+  FaInfoCircle,
+  FaNewspaper,
+  FaUserCircle,
+} from "react-icons/fa";
 import Game from "./components/Game";
 import GameRoomList from "./components/GameRoomList";
 import { ErrorBoundary } from "./components/ErrorHandling";
@@ -138,7 +143,9 @@ const ProfileMenu = () => {
           style={panelSurfaceStyle}
         >
           <div className="text-xs text-gray-400">Signed in as</div>
-          <div className="mb-2 truncate text-sm text-gray-200">{displayName}</div>
+          <div className="mb-2 truncate text-sm text-gray-200">
+            {displayName}
+          </div>
           <button
             onClick={() => {
               setOpen(false);
@@ -171,10 +178,10 @@ const AppShell = ({ children }) => {
   const navigate = useNavigate();
 
   return (
-      <div
-        className="relative h-screen min-h-0 flex flex-col bg-cover bg-center text-white"
-        style={pageStyle}
-      >
+    <div
+      className="relative h-screen min-h-0 flex flex-col bg-cover bg-center text-white"
+      style={pageStyle}
+    >
       <div
         className="pointer-events-none absolute inset-0 bg-black"
         style={overlayTintStyle}
@@ -227,7 +234,9 @@ const AppShell = ({ children }) => {
       </header>
 
       <main className="relative z-10 flex-1 min-h-0 overflow-y-auto scrollbar-panel">
-        <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6">{children}</div>
+        <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6">
+          {children}
+        </div>
       </main>
 
       <footer className="relative z-10 bg-gray-900" style={chromeSurfaceStyle}>
@@ -256,7 +265,10 @@ const AppShell = ({ children }) => {
 };
 
 const Card = ({ title, icon, children }) => (
-  <section className="rounded-lg bg-gray-900 p-5 shadow-xl" style={panelSurfaceStyle}>
+  <section
+    className="rounded-lg bg-gray-900 p-5 shadow-xl"
+    style={panelSurfaceStyle}
+  >
     {(title || icon) && (
       <div className="mb-3 flex items-center gap-2">
         {icon}
@@ -313,19 +325,6 @@ const NewsBlock = ({ limit }) => {
 
 const HomePage = () => (
   <AppShell>
-    <section
-      className="mb-6 rounded-lg p-6 shadow-xl sm:p-8"
-      style={heroSurfaceStyle}
-    >
-      <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-        Real-time conquest with persistent strategy
-      </h1>
-      <p className="mt-3 max-w-3xl text-base leading-relaxed text-gray-100 sm:text-lg">
-        Build a nation, control resources, and pressure enemy borders in live multiplayer matches.
-        Use the room list below to jump in, then check About, How to Play, and News for updates.
-      </p>
-    </section>
-
     <div className="grid gap-5 lg:grid-cols-3">
       <section
         className="rounded-lg bg-gray-900 shadow-xl lg:col-span-2"
@@ -335,10 +334,14 @@ const HomePage = () => (
       </section>
 
       <aside className="space-y-6 lg:col-span-1">
-        <Card title="About History Engine" icon={<FaInfoCircle className="text-blue-300" />}>
+        <Card
+          title="About Annexi.io"
+          icon={<FaInfoCircle className="text-blue-300" />}
+        >
           <p className="text-sm leading-relaxed text-gray-100">
-            History Engine is a territory control game focused on expansion pressure, defensive structure placement,
-            and timing troop commitments. Wins come from map control, not just fights.
+            Annexi is a territory control game focused on expansion pressure,
+            defensive structure placement, and timing troop commitments. Wins
+            come from map control, not just fights.
           </p>
           <NavLink
             to="/about"
@@ -348,7 +351,10 @@ const HomePage = () => (
           </NavLink>
         </Card>
 
-        <Card title="Release Notes" icon={<FaNewspaper className="text-blue-300" />}>
+        <Card
+          title="Release Notes"
+          icon={<FaNewspaper className="text-blue-300" />}
+        >
           <ReleaseNotesBlock limit={1} />
           <NavLink
             to="/news"
@@ -358,7 +364,10 @@ const HomePage = () => (
           </NavLink>
         </Card>
 
-        <Card title="Community News" icon={<FaDiscord className="text-blue-300" />}>
+        <Card
+          title="Community News"
+          icon={<FaDiscord className="text-blue-300" />}
+        >
           <NewsBlock limit={2} />
           <a
             href="https://discord.gg/6YRU8YP5q7"
@@ -381,24 +390,32 @@ const HowToPlayPage = () => (
         <section>
           <h3 className="text-lg font-semibold text-white">Getting Started</h3>
           <p className="mt-2">
-            Join or create a room, then click the map to found your nation. Your first placement becomes your capital.
-            If your capital falls and no town can be promoted, your run ends.
+            Join or create a room, then click the map to found your nation. Your
+            first placement becomes your capital. If your capital falls and no
+            town can be promoted, your run ends.
           </p>
         </section>
 
         <section>
-          <h3 className="text-lg font-semibold text-white">Expansion and Combat</h3>
+          <h3 className="text-lg font-semibold text-white">
+            Expansion and Combat
+          </h3>
           <p className="mt-2">
-            Draw arrows to push troops into neutral or enemy tiles. Territory also grows passively through diffusion.
-            Combat resolves automatically when fronts collide, with defenders benefiting from structures and terrain.
+            Draw arrows to push troops into neutral or enemy tiles. Territory
+            also grows passively through diffusion. Combat resolves
+            automatically when fronts collide, with defenders benefiting from
+            structures and terrain.
           </p>
         </section>
 
         <section>
-          <h3 className="text-lg font-semibold text-white">Resources and Structures</h3>
+          <h3 className="text-lg font-semibold text-white">
+            Resources and Structures
+          </h3>
           <p className="mt-2">
-            Control map nodes to generate food, wood, stone, iron, and gold. Spend those resources on towns, towers,
-            and forts to boost growth and hold lines.
+            Control map nodes to generate food, wood, stone, iron, and gold.
+            Spend those resources on towns, towers, and forts to boost growth
+            and hold lines.
           </p>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full border-collapse text-left text-sm">
@@ -413,7 +430,9 @@ const HowToPlayPage = () => (
                 <tr className="border-b border-gray-800">
                   <td className="py-2 pr-4">Town</td>
                   <td className="py-2 pr-4">400 wood, 200 stone, 1000 food</td>
-                  <td className="py-2">Raises max population and can replace a lost capital.</td>
+                  <td className="py-2">
+                    Raises max population and can replace a lost capital.
+                  </td>
                 </tr>
                 <tr className="border-b border-gray-800">
                   <td className="py-2 pr-4">Tower</td>
@@ -435,7 +454,9 @@ const HowToPlayPage = () => (
           <ul className="mt-2 list-disc space-y-1 pl-5">
             <li>Control 75% of land territory to win the match.</li>
             <li>Encirclement can instantly claim isolated enemy pockets.</li>
-            <li>Avoid overcommitting troops or your core can collapse quickly.</li>
+            <li>
+              Avoid overcommitting troops or your core can collapse quickly.
+            </li>
           </ul>
         </section>
       </div>
@@ -448,17 +469,23 @@ const AboutPage = () => (
     <Card title="About">
       <div className="space-y-4 text-sm leading-relaxed text-gray-200">
         <p>
-          History Engine is a multiplayer strategy sandbox centered on map pressure and territorial momentum.
-          Every match asks you to balance expansion, defense, and population survival.
+          Annexi is a multiplayer strategy sandbox centered on map pressure and
+          territorial momentum. Every match asks you to balance expansion,
+          defense, and population survival.
         </p>
         <p>
-          Players direct movement through drawn front-line arrows while passive influence spreads into nearby neutral
-          land. The interaction between active aggression and passive control creates most of the strategic depth.
+          Players direct movement through drawn front-line arrows while passive
+          influence spreads into nearby neutral land. The interaction between
+          active aggression and passive control creates most of the strategic
+          depth.
         </p>
         <ul className="list-disc space-y-1 pl-5">
           <li>Real-time multiplayer rooms with custom map generation.</li>
           <li>Resource economy with structure-driven defense layers.</li>
-          <li>Capital loss, town promotion, and refounding rules for comeback dynamics.</li>
+          <li>
+            Capital loss, town promotion, and refounding rules for comeback
+            dynamics.
+          </li>
         </ul>
       </div>
     </Card>
