@@ -108,8 +108,26 @@ const MobileActionDock = ({
 
   return (
     <div className="fixed left-0 right-0 z-20" style={dockStyle}>
-      <div className="bg-gray-900 bg-opacity-80 text-white px-4 py-2">
-        <div className="text-xs text-gray-300 mb-1">Attack Settings</div>
+      <div className="bg-gray-900 bg-opacity-85 text-white px-3 py-2">
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <div className="text-sm text-gray-200">Attack Settings</div>
+          <button
+            className={`px-3 py-1.5 rounded text-xs ${
+              showBuild || uiMode === "buildStructure"
+                ? "bg-yellow-700"
+                : "bg-gray-800"
+            }`}
+            onClick={() => {
+              setShowBuild((prev) => {
+                const next = !prev;
+                onSetMode?.(next ? "buildStructure" : "idle");
+                return next;
+              });
+            }}
+          >
+            {showBuild ? "Close Build" : "Build Menu"}
+          </button>
+        </div>
         <input
           type="range"
           min="5"
@@ -118,12 +136,13 @@ const MobileActionDock = ({
           onChange={(e) => setAttackPercent?.(Number(e.target.value) / 100)}
           className="w-full"
         />
-        <div className="text-xs text-gray-300 mt-1">
-          Troop Commitment: {Math.round((attackPercent || 0.25) * 100)}%
+        <div className="mt-1 flex items-center justify-between text-xs text-gray-300">
+          <span>Troop Commitment: {Math.round((attackPercent || 0.25) * 100)}%</span>
+          <span>Arrows: {activeAttackArrows?.length || 0}</span>
         </div>
       </div>
       {showBuild && (
-        <div className="bg-gray-900 bg-opacity-90 text-white px-4 py-3">
+        <div className="bg-gray-900 bg-opacity-90 text-white px-3 py-3">
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm font-medium">Build</div>
             <button
@@ -165,29 +184,6 @@ const MobileActionDock = ({
           </div>
         </div>
       )}
-      <div className="bg-gray-900 bg-opacity-85 text-white px-2 py-2">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-xs text-gray-300">
-            Active attack arrows: {activeAttackArrows?.length || 0}
-          </div>
-          <button
-            className={`px-3 py-2 rounded text-xs ${
-              showBuild || uiMode === "buildStructure"
-                ? "bg-yellow-700"
-                : "bg-gray-800"
-            }`}
-            onClick={() => {
-              setShowBuild((prev) => {
-                const next = !prev;
-                onSetMode?.(next ? "buildStructure" : "idle");
-                return next;
-              });
-            }}
-          >
-            {showBuild ? "Close Build" : "Build Menu"}
-          </button>
-        </div>
-      </div>
     </div>
   );
 };

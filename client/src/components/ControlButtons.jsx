@@ -6,26 +6,33 @@ const ControlButtons = ({
   onOpenSettings,
   onOpenPlayerList,
   topOffset = 0,
+  isMobile = false,
 }) => {
   return (
     <div className="relative top-0 right-0">
       <div
-        className="absolute p-3 right-0 flex flex-row gap-2 z-50"
+        className={`absolute right-0 flex flex-row gap-2 z-50 ${
+          isMobile ? "p-2" : "p-3"
+        }`}
         style={{
           top: `calc(env(safe-area-inset-top, 0px) + ${topOffset}px)`,
         }}
       >
         <button
           onClick={onOpenPlayerList}
-          className="p-2 bg-gray-900 text-white rounded-lg shadow-lg hover:bg-gray-700"
+          className={`bg-gray-900 text-white rounded-lg shadow-lg hover:bg-gray-700 ${
+            isMobile ? "p-1.5" : "p-2"
+          }`}
         >
-          <Users size={24} />
+          <Users size={isMobile ? 20 : 24} />
         </button>
         <button
           onClick={onOpenSettings}
-          className="p-2 bg-gray-900 text-white rounded-lg shadow-lg hover:bg-gray-700"
+          className={`bg-gray-900 text-white rounded-lg shadow-lg hover:bg-gray-700 ${
+            isMobile ? "p-1.5" : "p-2"
+          }`}
         >
-          <Settings size={24} />
+          <Settings size={isMobile ? 20 : 24} />
         </button>
       </div>
     </div>

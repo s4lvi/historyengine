@@ -1,6 +1,13 @@
 import React from "react";
 
-const ContextPanel = ({ isMobile, cellInfo, onClose, nationColors, nationLabels }) => {
+const ContextPanel = ({
+  isMobile,
+  cellInfo,
+  onClose,
+  nationColors,
+  nationLabels,
+  bottomOffset = 0,
+}) => {
   if (!cellInfo) return null;
 
   const {
@@ -26,8 +33,15 @@ const ContextPanel = ({ isMobile, cellInfo, onClose, nationColors, nationLabels 
     <div
       className={
         isMobile
-          ? "fixed left-2 right-2 bottom-24 z-30 bg-gray-900 bg-opacity-90 text-white p-3 rounded"
+          ? "fixed left-2 right-2 z-30 bg-gray-900 bg-opacity-90 text-white p-3 rounded"
           : "fixed left-2 top-14 z-30 w-64 bg-gray-900 bg-opacity-90 text-white p-3 rounded shadow-lg"
+      }
+      style={
+        isMobile
+          ? {
+              bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
+            }
+          : undefined
       }
     >
       <div className="flex items-center justify-between mb-2">

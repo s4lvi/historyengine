@@ -104,10 +104,16 @@ const Game = ({ discordRoomId }) => {
   const readyPlayerCount = roomPlayers.filter((player) => player.ready).length;
   const discordTopOffset = isMobile && isDiscord ? 56 : 0;
   const discordBottomOffset = isMobile && isDiscord ? 56 : 0;
-  const mobileDockReservedHeight = isMobile ? 132 : 0;
+  const mobileDockReservedHeight = isMobile ? 96 : 0;
+  const controlButtonsTopOffset = isMobile
+    ? discordTopOffset + 84
+    : discordTopOffset;
   const arrowPanelTopOffset = isMobile ? discordTopOffset + 64 : 0;
   const arrowPanelBottomOffset = isMobile
     ? discordBottomOffset + mobileDockReservedHeight
+    : 0;
+  const contextPanelBottomOffset = isMobile
+    ? discordBottomOffset + mobileDockReservedHeight + 12
     : 0;
 
   // ----------------------------
@@ -1439,7 +1445,8 @@ const Game = ({ discordRoomId }) => {
       <ControlButtons
         onOpenSettings={() => setShowSettings(true)}
         onOpenPlayerList={() => setShowPlayerList(true)}
-        topOffset={discordTopOffset}
+        topOffset={controlButtonsTopOffset}
+        isMobile={isMobile}
       />
       {!isDefeated && (
         <StatsBar
@@ -1606,6 +1613,7 @@ const Game = ({ discordRoomId }) => {
         onClose={() => setSelectedCellInfo(null)}
         nationColors={nationColors}
         nationLabels={nationLabels}
+        bottomOffset={contextPanelBottomOffset}
       />
       <ArrowPanel
         activeAttackArrows={activeAttackArrows}
