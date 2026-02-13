@@ -110,19 +110,19 @@ const Game = ({ discordRoomId }) => {
   const isRoomLobby = roomStatus === "lobby";
   const isRoomCreator = gameState?.roomCreator === userId;
   const readyPlayerCount = roomPlayers.filter((player) => player.ready).length;
-  const discordTopOffset = 0;
-  const discordBottomOffset = 0;
   const isDiscordPiP =
     discordLayoutMode === Common.LayoutModeTypeObject.PIP;
   const isDiscordPortrait =
     discordOrientation === Common.OrientationTypeObject.PORTRAIT;
   const isCompactDiscordHud = isDiscord && (isDiscordPiP || isDiscordPortrait);
+  const discordTopOffset = isMobile && isDiscord ? 36 : 0;
+  const discordBottomOffset = 0;
   const mobileDockReservedHeight = isMobile ? (isCompactDiscordHud ? 84 : 96) : 0;
   const controlButtonsTopOffset = isMobile
-    ? discordTopOffset + (isCompactDiscordHud ? 56 : 72)
+    ? discordTopOffset + (isCompactDiscordHud ? 48 : 56)
     : discordTopOffset + 8;
   const arrowPanelTopOffset = isMobile
-    ? discordTopOffset + (isCompactDiscordHud ? 56 : 64)
+    ? discordTopOffset + (isCompactDiscordHud ? 84 : 92)
     : 0;
   const arrowPanelBottomOffset = isMobile
     ? discordBottomOffset + mobileDockReservedHeight

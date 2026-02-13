@@ -30,11 +30,6 @@ const StatsBar = ({ gameState, userId, topOffset = 0, isMobile = false }) => {
   // Safely access territory length
   const territoryLength = userNation.territory?.x?.length || 0;
 
-  // Safely access cities length
-  const citiesLength =
-    userNation.cities?.filter((c) => c.type === "capital" || c.type === "town")
-      .length || 0;
-
   const formatDelta = (d) => {
     if (d === undefined || d === 0) return null;
     const sign = d > 0 ? "+" : "";
@@ -42,6 +37,31 @@ const StatsBar = ({ gameState, userId, topOffset = 0, isMobile = false }) => {
     const str = abs >= 1 ? `${sign}${d.toFixed(0)}` : `${sign}${d.toFixed(2)}`;
     return str;
   };
+
+  const coreStats = [
+    {
+      label: "Population",
+      value: (userNation.population || 0).toLocaleString(),
+    },
+    ...(userNation.troopCount != null
+      ? [
+          {
+            label: "Troops",
+            value: Math.round(userNation.troopCount).toLocaleString(),
+          },
+        ]
+      : []),
+    { label: "Territory", value: `${territoryLength} tiles` },
+    { label: "Controlled", value: `${userNation.territoryPercentage}%` },
+  ];
+
+  const resourceStats = ["food", "wood", "stone", "iron", "gold"].map(
+    (resource) => ({
+      label: resource,
+      value: (userNation.resources?.[resource] || 0).toFixed(0),
+      delta: deltas[resource],
+    })
+  );
 
   return (
     <div
@@ -52,63 +72,68 @@ const StatsBar = ({ gameState, userId, topOffset = 0, isMobile = false }) => {
         top: `calc(env(safe-area-inset-top, 0px) + ${topOffset}px)`,
       }}
     >
-      <div className="flex items-center gap-6 flex-nowrap min-w-max whitespace-nowrap">
-        {/* Core Stats */}
-        <div className="flex gap-6 items-center">
-          <div>
-            <span className="text-sm opacity-80">Population</span>
-            <div className="font-medium">
-              {(userNation.population || 0).toLocaleString()}
-            </div>
-          </div>
-          {userNation.troopCount != null && (
-            <div>
-              <span className="text-sm opacity-80">Troops</span>
-              <div className="font-medium">
-                {Math.round(userNation.troopCount).toLocaleString()}
-              </div>
-            </div>
-          )}
-          <div>
-            <span className="text-sm opacity-80">Territory</span>
-            <div className="font-medium">{territoryLength} tiles</div>
-          </div>
-          <div>
-            <span className="text-sm opacity-80">Controlled</span>
-            <div className="font-medium">{userNation.territoryPercentage}%</div>
-          </div>
-        </div>
-
-        {/* Divider */}
-        <div className="h-8 w-px bg-white bg-opacity-20"></div>
-
-        {/* Resources Section */}
-        <div className="flex gap-6 items-center">
-          {["food", "wood", "stone", "iron", "gold"].map((resource) => {
-            const delta = deltas[resource];
-            const deltaStr = formatDelta(delta);
+      {isMobile ? (
+        <div className="flex items-center gap-4 flex-nowrap min-w-max whitespace-nowrap">
+          {[...coreStats, ...resourceStats].map((stat) => {
+            const deltaStr = formatDelta(stat.delta);
             return (
-              <div key={resource}>
-                <span className="text-sm opacity-80 capitalize">
-                  {resource}
+              <div key={stat.label} className="flex items-baseline gap-1.5">
+                <span className="text-[11px] uppercase tracking-wide text-gray-300">
+                  {stat.label}
                 </span>
-                <div className="font-medium flex items-center gap-1">
-                  <span>{(userNation.resources?.[resource] || 0).toFixed(0)}</span>
-                  {deltaStr && (
-                    <span
-                      className={`text-xs ${
-                        delta > 0 ? "text-green-400" : "text-red-400"
-                      }`}
-                    >
-                      {deltaStr}
-                    </span>
-                  )}
-                </div>
+                <span className="text-sm font-semibold">{stat.value}</span>
+                {deltaStr && (
+                  <span
+                    className={`text-[10px] ${
+                      stat.delta > 0 ? "text-green-400" : "text-red-400"
+                    }`}
+                  >
+                    {deltaStr}
+                  </span>
+                )}
               </div>
             );
           })}
         </div>
-      </div>
+      ) : (
+        <div className="flex items-center gap-6 flex-nowrap min-w-max whitespace-nowrap">
+          <div className="flex gap-6 items-center">
+            {coreStats.map((stat) => (
+              <div key={stat.label}>
+                <span className="text-sm opacity-80">{stat.label}</span>
+                <div className="font-medium">{stat.value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="h-8 w-px bg-white bg-opacity-20"></div>
+
+          <div className="flex gap-6 items-center">
+            {resourceStats.map((stat) => {
+              const deltaStr = formatDelta(stat.delta);
+              return (
+                <div key={stat.label}>
+                  <span className="text-sm opacity-80 capitalize">
+                    {stat.label}
+                  </span>
+                  <div className="font-medium flex items-center gap-1">
+                    <span>{stat.value}</span>
+                    {deltaStr && (
+                      <span
+                        className={`text-xs ${
+                          stat.delta > 0 ? "text-green-400" : "text-red-400"
+                        }`}
+                      >
+                        {deltaStr}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
