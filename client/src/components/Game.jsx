@@ -111,8 +111,14 @@ const Game = ({ discordRoomId }) => {
   const isRoomLobby = roomStatus === "lobby";
   const isRoomCreator = gameState?.roomCreator === userId;
   const readyPlayerCount = roomPlayers.filter((player) => player.ready).length;
-  const discordTopOffset = isMobile ? viewportInsets.top : 0;
-  const discordBottomOffset = isMobile ? viewportInsets.bottom : 0;
+  const discordHeaderCompensation =
+    isMobile && isDiscord ? Math.ceil(statsBarHeight * 0.5) : 0;
+  const discordTopOffset = isMobile
+    ? viewportInsets.top + discordHeaderCompensation
+    : 0;
+  const discordBottomOffset = isMobile
+    ? (isDiscord ? 0 : viewportInsets.bottom)
+    : 0;
   const mobileDockReservedHeight = isMobile ? mobileDockHeight : 0;
   const controlButtonsTopOffset = isMobile
     ? discordTopOffset + statsBarHeight + 8

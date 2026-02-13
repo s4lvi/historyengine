@@ -160,17 +160,19 @@ const StatsBar = ({
                 <span className="text-[10px] uppercase tracking-wide text-gray-300">
                   {stat.label}
                 </span>
-                <div className="flex items-baseline gap-1">
+                <div className="flex items-baseline gap-1 whitespace-nowrap">
                   <span className="text-sm font-semibold truncate">{stat.value}</span>
-                {deltaStr && (
                   <span
-                    className={`text-[10px] ${
-                      stat.delta > 0 ? "text-green-400" : "text-red-400"
+                    className={`inline-block w-8 text-right text-[10px] ${
+                      deltaStr
+                        ? stat.delta > 0
+                          ? "text-green-400"
+                          : "text-red-400"
+                        : "opacity-0"
                     }`}
                   >
-                    {deltaStr}
+                    {deltaStr || "+0"}
                   </span>
-                )}
                 </div>
               </div>
             );
@@ -197,17 +199,19 @@ const StatsBar = ({
                   <span className="text-sm opacity-80 capitalize">
                     {stat.label}
                   </span>
-                  <div className="font-medium flex items-center gap-1">
+                  <div className="font-medium flex items-center gap-1 whitespace-nowrap">
                     <span>{stat.value}</span>
-                    {deltaStr && (
-                      <span
-                        className={`text-xs ${
-                          stat.delta > 0 ? "text-green-400" : "text-red-400"
-                        }`}
-                      >
-                        {deltaStr}
-                      </span>
-                    )}
+                    <span
+                      className={`inline-block w-9 text-right text-xs ${
+                        deltaStr
+                          ? stat.delta > 0
+                            ? "text-green-400"
+                            : "text-red-400"
+                          : "opacity-0"
+                      }`}
+                    >
+                      {deltaStr || "+0"}
+                    </span>
                   </div>
                 </div>
               );
