@@ -91,10 +91,17 @@ const Game = ({ discordRoomId }) => {
   const [isMobile, setIsMobile] = useState(false);
   const [combatFlashes, setCombatFlashes] = useState([]);
   const [regionData, setRegionData] = useState(null);
+  const [isStartingRoom, setIsStartingRoom] = useState(false);
   const actionModalRef = useRef(actionModal);
   const isDefeatedRef = useRef(isDefeated);
   const hasFoundedRef = useRef(hasFounded);
   const allowRefound = config?.territorial?.allowRefound !== false;
+  const roomStatus = gameState?.roomStatus || "open";
+  const roomPlayers = gameState?.players || [];
+  const isRoomStarted = roomStatus === "open" || roomStatus === "paused";
+  const isRoomLobby = roomStatus === "lobby";
+  const isRoomCreator = gameState?.roomCreator === userId;
+  const readyPlayerCount = roomPlayers.filter((player) => player.ready).length;
 
   // ----------------------------
   // Big Arrow system state
@@ -173,6 +180,7 @@ const Game = ({ discordRoomId }) => {
   };
 
   const handleBuildStructure = (type) => {
+    if (!isRoomStarted) return;
     setBuildingStructure(type);
     setFoundingNation(false);
     setDrawingArrowType(null);
@@ -190,12 +198,12 @@ const Game = ({ discordRoomId }) => {
       const coarse =
         window.matchMedia &&
         window.matchMedia("(pointer: coarse)").matches;
-      setIsMobile(coarse || window.innerWidth < 768);
+      setIsMobile(isDiscord || coarse || window.innerWidth < 768);
     };
     updateMobile();
     window.addEventListener("resize", updateMobile);
     return () => window.removeEventListener("resize", updateMobile);
-  }, []);
+  }, [isDiscord]);
 
   // ----------------------------
   // API call helpers
@@ -394,6 +402,8 @@ const Game = ({ discordRoomId }) => {
         tickCount: data.tickCount,
         roomName: data.roomName,
         roomCreator: data.roomCreator,
+        roomStatus: data.roomStatus || prevState?.roomStatus || "open",
+        players: data.players || prevState?.players || [],
         gameState: data.gameState,
       };
     });
@@ -894,6 +904,7 @@ const Game = ({ discordRoomId }) => {
   const handleBuildCity = async (x, y, cityType, cityName) => {
     // If x and y are null, it means we're just selecting what to build
     if (x === null && y === null) {
+      if (!isRoomStarted) return;
       setBuildingStructure(cityType);
       setUiMode("buildStructure");
       return;
@@ -901,6 +912,7 @@ const Game = ({ discordRoomId }) => {
 
     // Otherwise, we're actually building at the selected location
     if (!userId || !hasJoined) return;
+    if (!isRoomStarted) return;
 
     try {
       const response = await apiFetch(`api/gamerooms/${id}/buildCity`, {
@@ -1007,6 +1019,7 @@ const Game = ({ discordRoomId }) => {
   // Big Arrow handlers
   // ----------------------------
   const handleStartDrawArrow = (type) => {
+    if (!isRoomStarted) return;
     // Clear any existing drawing state
     setCurrentArrowPath([]);
     enterDrawMode(type);
@@ -1026,6 +1039,7 @@ const Game = ({ discordRoomId }) => {
 
   const handleSendArrow = async (type, path) => {
     if (!userId || !hasJoined) return;
+    if (!isRoomStarted) return;
     if (!path || path.length < 2) return;
 
     const playerNation = gameState?.gameState?.nations?.find(
@@ -1152,6 +1166,7 @@ const Game = ({ discordRoomId }) => {
   };
 
   const handleSetTroopTarget = async (newTarget) => {
+    if (!isRoomStarted) return;
     setTroopTarget(newTarget);
     if (!userId || !hasJoined) return;
     try {
@@ -1164,6 +1179,34 @@ const Game = ({ discordRoomId }) => {
       });
     } catch (err) {
       console.error("Failed to set troop target:", err);
+    }
+  };
+
+  const handleStartRoom = async () => {
+    if (!isRoomCreator || !isRoomLobby || isStartingRoom) return;
+    try {
+      setIsStartingRoom(true);
+      const response = await apiFetch(`api/gamerooms/${id}/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to start room");
+      }
+      setGameState((prev) =>
+        prev
+          ? {
+              ...prev,
+              roomStatus: "open",
+            }
+          : prev
+      );
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsStartingRoom(false);
     }
   };
 
@@ -1410,6 +1453,31 @@ const Game = ({ discordRoomId }) => {
         gameState={gameState}
         getNationColor={getNationColor}
       />
+      {isRoomLobby && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2">
+          <div className="pointer-events-auto rounded-lg border border-emerald-700/50 bg-gray-900/90 px-4 py-3 text-white shadow-lg">
+            <div className="text-sm font-semibold">
+              Lobby: {readyPlayerCount}/{roomPlayers.length || 0} ready
+            </div>
+            <div className="text-xs text-gray-300">
+              Players pick a founding tile, then the host starts the match.
+            </div>
+            {isRoomCreator ? (
+              <button
+                onClick={handleStartRoom}
+                disabled={isStartingRoom}
+                className="mt-2 w-full rounded bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-emerald-900"
+              >
+                {isStartingRoom ? "Starting..." : "Start Room"}
+              </button>
+            ) : (
+              <div className="mt-2 text-xs text-gray-400">
+                Waiting for host to start.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {/* Main Content Area */}
       <div className="absolute inset-0">
         {!isMapLoaded ? (
@@ -1455,6 +1523,7 @@ const Game = ({ discordRoomId }) => {
             combatFlashes={combatFlashes}
             setCombatFlashes={setCombatFlashes}
             regionData={regionData}
+            isDiscord={isDiscord}
           />
         )}
       </div>
@@ -1484,6 +1553,12 @@ const Game = ({ discordRoomId }) => {
           onExitMode={exitModes}
           arrowCosts={config?.arrowCosts}
           gameState={gameState}
+          isRoomStarted={isRoomStarted}
+          canStartRoom={isRoomCreator && isRoomLobby}
+          onStartRoom={handleStartRoom}
+          isStartingRoom={isStartingRoom}
+          readyPlayerCount={readyPlayerCount}
+          totalPlayers={roomPlayers.length}
         />
       )}
       {isMobile && (
@@ -1501,6 +1576,12 @@ const Game = ({ discordRoomId }) => {
           buildCosts={config?.buildCosts?.structures}
           activeAttackArrows={activeAttackArrows}
           activeDefendArrow={activeDefendArrow}
+          isRoomStarted={isRoomStarted}
+          canStartRoom={isRoomCreator && isRoomLobby}
+          onStartRoom={handleStartRoom}
+          isStartingRoom={isStartingRoom}
+          readyPlayerCount={readyPlayerCount}
+          totalPlayers={roomPlayers.length}
         />
       )}
       <ContextPanel

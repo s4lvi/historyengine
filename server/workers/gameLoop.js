@@ -653,7 +653,10 @@ class GameLoop {
   async getLiveGameRoom(roomId) {
     const roomKey = roomId?.toString();
     let gameRoom = this.cachedGameRoom.get(roomKey);
-    if (gameRoom && gameRoom.status !== "open") {
+    if (
+      gameRoom &&
+      (gameRoom.status === "initializing" || gameRoom.status === "error")
+    ) {
       const GameRoom = mongoose.model("GameRoom");
       const fresh = await GameRoom.findById(roomKey);
       if (fresh) {

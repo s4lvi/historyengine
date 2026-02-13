@@ -151,10 +151,30 @@ export function buildGameStateResponse(gameRoom, userId, full = false, matrix = 
     resourceNodeClaims: filteredClaims,
   };
 
+  const activeNationOwners = new Set(
+    (gameRoom.gameState?.nations || [])
+      .filter((nation) => nation.status !== "defeated")
+      .map((nation) => nation.owner)
+  );
+  const players = (gameRoom.players || []).map((player) => {
+    const founded = activeNationOwners.has(player.userId);
+    const explicitReady = player?.userState?.ready;
+    const ready = founded || explicitReady === true;
+    return {
+      userId: player.userId,
+      displayName: player?.profile?.displayName || player.userId,
+      ready,
+      founded,
+      isCreator: gameRoom?.creator?.userId === player.userId,
+    };
+  });
+
   return {
     tickCount: gameRoom.tickCount,
     roomName: gameRoom.roomName,
     roomCreator: gameRoom.creator.userId,
+    roomStatus: gameRoom.status || "open",
+    players,
     gameState: filteredGameState,
     usePackedDeltas, // Tell client which format we're using
   };

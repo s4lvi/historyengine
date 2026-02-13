@@ -84,9 +84,8 @@ export function createNoise2D(seed) {
 
 export function simulateErosion(heightMap, iterations = 10) {
   try {
-    const newMap = heightMap.map((row) => row.map((cell) => ({ ...cell })));
-    const width = newMap[0].length;
-    const height = newMap.length;
+    const width = heightMap[0].length;
+    const height = heightMap.length;
     for (let iter = 0; iter < iterations; iter++) {
       for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
@@ -95,22 +94,22 @@ export function simulateErosion(heightMap, iterations = 10) {
           for (let dy = -1; dy <= 1; dy++) {
             for (let dx = -1; dx <= 1; dx++) {
               if (dx === 0 && dy === 0) continue;
-              const neighbor = newMap[y + dy][x + dx];
-              const diff = newMap[y][x].elevation - neighbor.elevation;
+              const neighbor = heightMap[y + dy][x + dx];
+              const diff = heightMap[y][x].elevation - neighbor.elevation;
               if (diff > 0) {
                 // Transfer a small fraction of the difference
                 erosionAmount += diff * 0.05;
               }
             }
           }
-          newMap[y][x].elevation = Math.max(
+          heightMap[y][x].elevation = Math.max(
             0,
-            newMap[y][x].elevation - erosionAmount
+            heightMap[y][x].elevation - erosionAmount
           );
         }
       }
     }
-    return newMap;
+    return heightMap;
   } catch (error) {
     console.error("Error in simulateErosion:", error);
     throw error;
@@ -302,9 +301,9 @@ export function generateRivers(heightMap, width, height, options = {}) {
 
     const distanceMap = computeDistanceToSea(heightMap, seaLevel, true);
     const total = width * height;
-    const flow = new Float32Array(total);
-    const effectiveElev = new Float32Array(total);
-    const order = new Array(total);
+    let flow = new Float32Array(total);
+    let effectiveElev = new Float32Array(total);
+    let order = new Array(total);
     const neighborSteps = [
       { dx: 1, dy: 0, dist: 1 },
       { dx: -1, dy: 0, dist: 1 },
@@ -482,7 +481,7 @@ export function generateRivers(heightMap, width, height, options = {}) {
       sources.push(idx);
     }
 
-    const visitStamp = new Int32Array(total);
+    let visitStamp = new Int32Array(total);
     let stamp = 1;
     const maxSteps = width + height;
 
@@ -671,6 +670,12 @@ export function generateRivers(heightMap, width, height, options = {}) {
         steps += 1;
       }
     }
+
+    // Free typed arrays before return for earlier GC (~5MB)
+    flow = null;
+    effectiveElev = null;
+    order = null;
+    visitStamp = null;
 
     return { rivers, erosionMap };
   } catch (error) {
@@ -943,11 +948,12 @@ function generateMoistureMap(
   if (DEBUG_MAP) console.log("Base moisture calculated.");
 
   // 2. WATER PROXIMITY BOOST: Compute distance-to-water via BFS
-  let waterDistance = Array.from({ length: height }, () =>
-    Array(width).fill(Infinity)
-  );
-  const queue = [];
-  let queueIndex = 0;
+  // Use flat Int32Array for distance and queue to reduce object overhead.
+  const totalCells = width * height;
+  const waterDistFlat = new Int32Array(totalCells).fill(-1);
+  const bfsQueue = new Int32Array(totalCells);
+  let queueHead = 0;
+  let queueTail = 0;
   // Seed the BFS with water cells.
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -955,29 +961,32 @@ function generateMoistureMap(
         heightMap[y][x].elevation < waterThreshold ||
         rivers.has(`${x},${y}`)
       ) {
-        waterDistance[y][x] = 0;
-        queue.push({ x, y });
+        const idx = y * width + x;
+        waterDistFlat[idx] = 0;
+        bfsQueue[queueTail++] = idx;
       }
     }
   }
-  const directions = [
-    { dx: 1, dy: 0 },
-    { dx: -1, dy: 0 },
-    { dx: 0, dy: 1 },
-    { dx: 0, dy: -1 },
-  ];
-  while (queueIndex < queue.length) {
-    const { x, y } = queue[queueIndex++];
-    const d = waterDistance[y][x];
-    for (const { dx, dy } of directions) {
-      const nx = x + dx;
-      const ny = y + dy;
-      if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-        if (waterDistance[ny][nx] > d + 1) {
-          waterDistance[ny][nx] = d + 1;
-          queue.push({ x: nx, y: ny });
-        }
-      }
+  while (queueHead < queueTail) {
+    const idx = bfsQueue[queueHead++];
+    const x = idx % width;
+    const y = (idx - x) / width;
+    const d = waterDistFlat[idx];
+    if (x > 0 && waterDistFlat[idx - 1] === -1) {
+      waterDistFlat[idx - 1] = d + 1;
+      bfsQueue[queueTail++] = idx - 1;
+    }
+    if (x < width - 1 && waterDistFlat[idx + 1] === -1) {
+      waterDistFlat[idx + 1] = d + 1;
+      bfsQueue[queueTail++] = idx + 1;
+    }
+    if (y > 0 && waterDistFlat[idx - width] === -1) {
+      waterDistFlat[idx - width] = d + 1;
+      bfsQueue[queueTail++] = idx - width;
+    }
+    if (y < height - 1 && waterDistFlat[idx + width] === -1) {
+      waterDistFlat[idx + width] = d + 1;
+      bfsQueue[queueTail++] = idx + width;
     }
   }
   if (DEBUG_MAP) console.log("Water distance calculated.");
@@ -986,8 +995,8 @@ function generateMoistureMap(
   const maxWaterInfluenceDistance = 15; // in cells
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const dist = waterDistance[y][x];
-      if (dist < maxWaterInfluenceDistance) {
+      const dist = waterDistFlat[y * width + x];
+      if (dist >= 0 && dist < maxWaterInfluenceDistance) {
         // Closer cells get a larger boost (up to 0.3 extra).
         const boost =
           ((maxWaterInfluenceDistance - dist) / maxWaterInfluenceDistance) *
@@ -1022,20 +1031,25 @@ function generateMoistureMap(
   // 4. FOREST BOOST: A simple heuristic that boosts moisture in areas likely to be forested.
   // Here we add a small boost if the cell is at a moderate elevation and has moist neighbors.
   const forestBoost = 0.1;
-  // Create a copy so that neighbor reads are not affected by updates.
-  let forestMoisture = moistureMap.map((row) => row.slice());
+  // Snapshot moisture into a flat Float32Array for consistent neighbor reads (~1MB vs ~4MB for 2D copy).
+  const moistureSnap = new Float32Array(totalCells);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      moistureSnap[y * width + x] = moistureMap[y][x];
+    }
+  }
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       let sum = 0,
         count = 0;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx,
-            ny = y + dy;
-          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-            sum += moistureMap[ny][nx];
-            count++;
-          }
+      const yMin = y > 0 ? y - 1 : 0;
+      const yMax = y < height - 1 ? y + 1 : y;
+      const xMin = x > 0 ? x - 1 : 0;
+      const xMax = x < width - 1 ? x + 1 : x;
+      for (let ny = yMin; ny <= yMax; ny++) {
+        for (let nx = xMin; nx <= xMax; nx++) {
+          sum += moistureSnap[ny * width + nx];
+          count++;
         }
       }
       const avgNeighborMoisture = sum / count;
@@ -1046,11 +1060,10 @@ function generateMoistureMap(
         heightMap[y][x].elevation <= 0.6 &&
         avgNeighborMoisture > 0.6
       ) {
-        forestMoisture[y][x] += forestBoost;
+        moistureMap[y][x] += forestBoost;
       }
     }
   }
-  moistureMap = forestMoisture;
   if (DEBUG_MAP) console.log("Forest boost applied.");
 
   // 5. Add natural noise and clamp the values between 0 and 1.
@@ -1062,28 +1075,47 @@ function generateMoistureMap(
   }
 
   // 6. Smooth the moisture map a few times to simulate diffusion.
+  // Use ping-pong Float32Arrays instead of allocating new 2D arrays each iteration.
   const smoothIterations = Math.max(1, options.smoothIterations ?? 6);
+  const total = width * height;
+  let bufA = new Float32Array(total);
+  let bufB = new Float32Array(total);
+  // Copy current moistureMap into bufA
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      bufA[y * width + x] = moistureMap[y][x];
+    }
+  }
   for (let iter = 0; iter < smoothIterations; iter++) {
-    const newMap = Array.from({ length: height }, () => Array(width).fill(0));
+    const src = (iter & 1) === 0 ? bufA : bufB;
+    const dst = (iter & 1) === 0 ? bufB : bufA;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         let sum = 0,
           count = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const nx = x + dx,
-              ny = y + dy;
-            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-              sum += moistureMap[ny][nx];
-              count++;
-            }
+        const yMin = y > 0 ? y - 1 : 0;
+        const yMax = y < height - 1 ? y + 1 : y;
+        const xMin = x > 0 ? x - 1 : 0;
+        const xMax = x < width - 1 ? x + 1 : x;
+        for (let ny = yMin; ny <= yMax; ny++) {
+          for (let nx = xMin; nx <= xMax; nx++) {
+            sum += src[ny * width + nx];
+            count++;
           }
         }
-        newMap[y][x] = sum / count;
+        dst[y * width + x] = sum / count;
       }
     }
-    moistureMap = newMap;
   }
+  // Copy final buffer back to moistureMap
+  const finalBuf = (smoothIterations & 1) === 0 ? bufA : bufB;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      moistureMap[y][x] = finalBuf[y * width + x];
+    }
+  }
+  bufA = null;
+  bufB = null;
   if (DEBUG_MAP) console.log("Moisture diffused.");
 
   return moistureMap;
@@ -1092,8 +1124,13 @@ function generateMoistureMap(
 function smoothEligibleCells(mapData, radius = 2) {
   const height = mapData.length;
   const width = mapData[0].length;
-  // Make a deep copy of the mapData to store the new elevation values.
-  const newMapData = mapData.map((row) => row.map((cell) => ({ ...cell })));
+  // Snapshot just the elevation values into a flat typed array (~1MB vs ~50MB deep copy)
+  const elevSnap = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      elevSnap[y * width + x] = mapData[y][x].elevation;
+    }
+  }
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -1106,7 +1143,7 @@ function smoothEligibleCells(mapData, radius = 2) {
       ) {
         let sum = 0;
         let count = 0;
-        // Loop over the 3x3 neighborhood.
+        // Loop over the neighborhood.
         for (let dy = -radius; dy <= radius; dy++) {
           for (let dx = -radius; dx <= radius; dx++) {
             const ny = y + dy;
@@ -1119,20 +1156,20 @@ function smoothEligibleCells(mapData, radius = 2) {
                 neighbor.elevation >= 0.4 &&
                 neighbor.elevation <= 0.7
               ) {
-                sum += neighbor.elevation;
+                sum += elevSnap[ny * width + nx];
                 count++;
               }
             }
           }
         }
         if (count > 0) {
-          // Update the elevation with the neighborhood average.
-          newMapData[y][x].elevation = sum / count;
+          // Update the elevation with the neighborhood average directly on mapData.
+          mapData[y][x].elevation = sum / count;
         }
       }
     }
   }
-  return newMapData;
+  return mapData;
 }
 
 function ensureElevationConnectivity(heightMap, landThreshold, noise2D) {
@@ -1409,7 +1446,7 @@ export function generateWorldMap(
     // ----------------
     // River Generation
     // ----------------
-    const { rivers, erosionMap } = generateRivers(heightMap, width, height, {
+    let { rivers, erosionMap } = generateRivers(heightMap, width, height, {
       noise2D,
       flowThreshold: profile.rivers.flowThreshold,
       rainNoise: profile.rivers.rainNoise,
@@ -1435,7 +1472,7 @@ export function generateWorldMap(
     ];
 
     // Create a new map to store the spread erosion values.
-    const spreadErosionMap = Array(height)
+    let spreadErosionMap = Array(height)
       .fill(null)
       .map(() => Array(width).fill(0));
 
@@ -1474,6 +1511,7 @@ export function generateWorldMap(
       }
     }
     if (DEBUG_MAP) console.log("River erosion (with spread) applied.");
+    spreadErosionMap = null; // free ~4MB for GC
 
     // Ensure landmasses are connected before downstream passes.
     ensureElevationConnectivity(heightMap, 0.35, noise2D);
@@ -1500,11 +1538,11 @@ export function generateWorldMap(
     }
     if (DEBUG_MAP) console.log("Moisture map noise added successfully.");
 
-    const erodedHeightMap = simulateErosion(heightMap, erosion_passes);
+    simulateErosion(heightMap, erosion_passes);
     // ----------------
     // Assemble Final Map Data
     // ----------------
-    const mapData = erodedHeightMap.map((row, y) =>
+    const mapData = heightMap.map((row, y) =>
       row.map((cell, x) => {
         try {
           const { elevation } = cell;
@@ -1576,12 +1614,15 @@ export function generateWorldMap(
       })
     );
     if (DEBUG_MAP) console.log("Map data generated successfully.");
+    // Free intermediates no longer needed for GC
+    moistureMap = null;
+    erosionMap = null;
 
-    const smoothedMapData = smoothEligibleCells(mapData, profile.smoothRadius);
+    smoothEligibleCells(mapData, profile.smoothRadius);
     if (DEBUG_MAP) console.log("Smoothing pass completed.");
 
     if (DEBUG_MAP) console.log("World map generation completed.");
-    return smoothedMapData;
+    return mapData;
   } catch (error) {
     console.error("Error in generateWorldMap:", error, { width, height });
     throw error;

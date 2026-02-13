@@ -435,6 +435,9 @@ const GameRoomList = () => {
                   Players: {room.players?.length || 0}
                 </p>
                 <p className="text-sm text-gray-300">
+                  Status: {room.status === "lobby" ? "Lobby" : "In Progress"}
+                </p>
+                <p className="text-sm text-gray-300">
                   Refounding: {room.allowRefound === false ? "Disabled" : "Allowed"}
                 </p>
               </div>

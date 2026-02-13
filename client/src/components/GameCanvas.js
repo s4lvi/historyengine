@@ -1354,6 +1354,7 @@ const GameCanvas = ({
   combatFlashes,
   setCombatFlashes,
   regionData,
+  isDiscord,
 }) => {
   const stageWidth = window.innerWidth;
   const stageHeight = window.innerHeight;
@@ -1740,8 +1741,7 @@ const GameCanvas = ({
         button === 2 ||
         middleDown ||
         rightDown ||
-        uiMode === "pan" ||
-        (isMobile && uiMode === "idle");
+        uiMode === "pan";
 
       if (defendCombo && canDraw) {
         if (panRef.current.active) {
@@ -1781,8 +1781,8 @@ const GameCanvas = ({
       }
 
       // Arrow drawing mode
-      if (canDraw && button === 0) {
-        const drawMode = forcedDraw || "attack";
+      if (canDraw && button === 0 && forcedDraw) {
+        const drawMode = forcedDraw;
         const cell = getCellCoordinates(x, y);
         if (
           cell.x >= 0 &&
@@ -1808,7 +1808,6 @@ const GameCanvas = ({
       buildingStructure,
       drawingArrowType,
       uiMode,
-      isMobile,
       getCellCoordinates,
       mapMetadata,
       onArrowPathUpdate,
@@ -2593,6 +2592,7 @@ const GameCanvas = ({
       style={{
         width: "100%",
         height: "100%",
+        touchAction: isDiscord || isMobile ? "none" : "auto",
         cursor:
           buildingStructure ||
           foundingNation ||

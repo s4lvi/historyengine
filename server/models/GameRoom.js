@@ -7,8 +7,8 @@ const gameRoomSchema = new mongoose.Schema({
   joinCode: { type: String, required: true },
   status: {
     type: String,
-    enum: ["open", "ended", "initializing", "paused", "error"],
-    default: "open",
+    enum: ["lobby", "open", "ended", "initializing", "paused", "error"],
+    default: "lobby",
   },
   creator: {
     userId: { type: String, required: true },

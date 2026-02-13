@@ -1,7 +1,7 @@
 {
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "CLEAR_ROOMS=true node index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

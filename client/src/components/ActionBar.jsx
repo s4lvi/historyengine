@@ -187,6 +187,12 @@ const ActionBar = ({
   onExitMode,
   arrowCosts,
   gameState,
+  isRoomStarted = true,
+  canStartRoom = false,
+  onStartRoom,
+  isStartingRoom = false,
+  readyPlayerCount = 0,
+  totalPlayers = 0,
 }) => {
   const attackArrowCount = activeAttackArrows?.length || 0;
   const maxArrows = maxAttackArrows || 3;
@@ -236,6 +242,32 @@ const ActionBar = ({
               </span>
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isRoomStarted) {
+    return (
+      <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-gray-200">
+              Lobby phase: {readyPlayerCount}/{totalPlayers} ready
+            </div>
+            <div className="text-xs text-gray-400">
+              Waiting for the room creator to start.
+            </div>
+          </div>
+          {canStartRoom && (
+            <button
+              onClick={onStartRoom}
+              disabled={isStartingRoom}
+              className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-emerald-900"
+            >
+              {isStartingRoom ? "Starting..." : "Start Room"}
+            </button>
+          )}
         </div>
       </div>
     );

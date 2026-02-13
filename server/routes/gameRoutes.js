@@ -19,6 +19,16 @@ import GameRoom from "../models/GameRoom.js";
 
 const MIN_FOUND_DISTANCE = 5;
 const DEFAULT_ALLOW_REFOUND = config?.territorial?.allowRefound !== false;
+const ROOM_STATUS = {
+  LOBBY: "lobby",
+  OPEN: "open",
+  ENDED: "ended",
+  INITIALIZING: "initializing",
+  PAUSED: "paused",
+  ERROR: "error",
+};
+const JOINABLE_ROOM_STATUSES = new Set([ROOM_STATUS.LOBBY, ROOM_STATUS.OPEN]);
+const PLAYABLE_ROOM_STATUSES = new Set([ROOM_STATUS.OPEN, ROOM_STATUS.PAUSED]);
 
 /** Return only client-relevant config fields (strip bot AI, combat internals, density params) */
 function getClientSafeConfig(cfg) {
@@ -83,6 +93,20 @@ function parseBoolean(value, fallback = false) {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") return value.toLowerCase() === "true";
   return Boolean(value);
+}
+
+function isJoinableRoomStatus(status) {
+  return JOINABLE_ROOM_STATUSES.has(status);
+}
+
+function isPlayableRoomStatus(status) {
+  return PLAYABLE_ROOM_STATUSES.has(status);
+}
+
+function ensurePlayableRoom(gameRoom, res) {
+  if (isPlayableRoomStatus(gameRoom?.status)) return true;
+  res.status(409).json({ error: "Game has not started yet" });
+  return false;
 }
 
 async function getAuthoritativeRoom(roomId) {
@@ -519,7 +543,7 @@ router.post("/discord-instance", async (req, res, next) => {
     // Look up existing open room with this Discord instance
     const existing = await GameRoom.findOne({
       discordInstanceId: instanceId,
-      status: { $in: ["open", "initializing"] },
+      status: { $in: [ROOM_STATUS.LOBBY, ROOM_STATUS.OPEN, ROOM_STATUS.INITIALIZING] },
     });
 
     if (existing) {
@@ -530,7 +554,7 @@ router.post("/discord-instance", async (req, res, next) => {
           userId: sessionActor.userId,
           password: null,
           profile: sessionActor.profile || {},
-          userState: {},
+          userState: { ready: false },
         });
         existing.markModified("players");
         await existing.save();
@@ -565,7 +589,7 @@ router.post("/discord-instance", async (req, res, next) => {
       discordInstanceId: instanceId,
       creator: { userId: sessionActor.userId, password: null, profile: sessionActor.profile || {} },
       players: [
-        { userId: sessionActor.userId, password: null, profile: sessionActor.profile || {}, userState: {} },
+        { userId: sessionActor.userId, password: null, profile: sessionActor.profile || {}, userState: { ready: false } },
       ],
       gameState: {
         nations: [],
@@ -612,9 +636,8 @@ router.post("/discord-instance", async (req, res, next) => {
         await Map.findByIdAndUpdate(newMap._id, { status: "generating", generationProgress: 95, generationStage: "spawning_bots" });
         await spawnBotsForRoom(gameRoom._id, finalMapData, botCount || 0);
 
-        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
+        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: ROOM_STATUS.LOBBY });
         await gameLoop.refreshRoomCache(gameRoom._id);
-        await gameLoop.startRoom(gameRoom._id);
 
         await Map.findByIdAndUpdate(newMap._id, { status: "ready", generationProgress: 100, generationStage: "complete" });
       } catch (err) {
@@ -694,7 +717,7 @@ router.post("/init", async (req, res, next) => {
       status: "initializing", // initial status while map is generating
       creator: { userId: creatorId, password: null, profile: creatorProfile },
       players: [
-        { userId: creatorId, password: null, profile: creatorProfile, userState: {} },
+        { userId: creatorId, password: null, profile: creatorProfile, userState: { ready: false } },
       ],
       gameState: {
         nations: [],
@@ -807,17 +830,13 @@ router.post("/init", async (req, res, next) => {
 
         await spawnBotsForRoom(gameRoom._id, mapData, botCount);
 
-        // Update game room status to "open" before starting the loop
-        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: "open" });
-        // Refresh in-memory cache so the loop doesn't see stale status
+        // Move room into lobby after map generation completes.
+        await GameRoom.findByIdAndUpdate(gameRoom._id, { status: ROOM_STATUS.LOBBY });
+        // Refresh in-memory cache so status is immediately visible to status polls.
         await gameLoop.refreshRoomCache(gameRoom._id);
-        debug("Game room status updated to 'open':", gameRoom._id);
+        debug("Game room status updated to 'lobby':", gameRoom._id);
 
-        // Start the game loop for the room
-        await gameLoop.startRoom(gameRoom._id);
-        debug("Game loop started for room:", gameRoom._id);
-
-        // Mark generation complete only after room is open and loop is started
+        // Mark generation complete once room is staged in lobby.
         await Map.findByIdAndUpdate(newMap._id, {
           status: "ready",
           generationProgress: 100,
@@ -865,9 +884,9 @@ router.get("/:id/status", async (req, res, next) => {
         ? 100
         : map.status === "error"
         ? 100
-        : gameRoom.status === "open"
+        : gameRoom.status === ROOM_STATUS.OPEN || gameRoom.status === ROOM_STATUS.LOBBY
         ? 98
-        : gameRoom.status === "initializing"
+        : gameRoom.status === ROOM_STATUS.INITIALIZING
         ? 20
         : 0;
     const progress = Math.max(
@@ -885,7 +904,11 @@ router.get("/:id/status", async (req, res, next) => {
       height: map.height,
       progress,
       stage: map.generationStage || null,
-      ready: map.status === "ready" && gameRoom.status === "open",
+      ready:
+        map.status === "ready" &&
+        (gameRoom.status === ROOM_STATUS.LOBBY ||
+          gameRoom.status === ROOM_STATUS.OPEN ||
+          gameRoom.status === ROOM_STATUS.PAUSED),
     });
   } catch (error) {
     next(error);
@@ -940,7 +963,7 @@ router.post("/", async (req, res, next) => {
       map: gameMap._id,
       roomName: roomName || "Game Room",
       joinCode: generatedJoinCode,
-      status: "open",
+      status: ROOM_STATUS.LOBBY,
       creator: {
         userId: creatorId,
         password: null,
@@ -951,7 +974,7 @@ router.post("/", async (req, res, next) => {
           userId: creatorId,
           password: null,
           profile: creatorProfile,
-          userState: {},
+          userState: { ready: false },
         },
       ],
       gameState: {
@@ -971,7 +994,6 @@ router.post("/", async (req, res, next) => {
     if (mapData) {
       await spawnBotsForRoom(gameRoom._id, mapData, botCount);
     }
-    await gameLoop.startRoom(gameRoom._id);
     res.status(201).json(gameRoom);
   } catch (error) {
     next(error);
@@ -979,12 +1001,16 @@ router.post("/", async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------
-// GET /api/gamerooms - List open game rooms
+// GET /api/gamerooms - List joinable game rooms
 // -------------------------------------------------------------------
 router.get("/", async (req, res, next) => {
   try {
-    const gameRooms = await GameRoom.find({ status: "open" })
-      .select("roomName joinCode map createdAt tickCount gameState.settings.allowRefound")
+    const gameRooms = await GameRoom.find({
+      status: { $in: [ROOM_STATUS.LOBBY, ROOM_STATUS.OPEN] },
+    })
+      .select(
+        "roomName joinCode map createdAt tickCount status players gameState.settings.allowRefound"
+      )
       .populate("map", "name width height");
     const payload = gameRooms.map((room) => {
       const allowRefound =
@@ -1264,8 +1290,12 @@ router.post("/:id/pause", async (req, res, next) => {
   try {
     const auth = await requireCreator(req, res);
     if (!auth) return;
+    const { gameRoom } = auth;
+    if (gameRoom.status !== ROOM_STATUS.OPEN) {
+      return res.status(400).json({ error: "Only active games can be paused" });
+    }
     await gameLoop.stopRoom(req.params.id.toString());
-    await GameRoom.findByIdAndUpdate(req.params.id, { status: "paused" });
+    await GameRoom.findByIdAndUpdate(req.params.id, { status: ROOM_STATUS.PAUSED });
     res.json({ message: "Game session paused successfully" });
   } catch (error) {
     next(error);
@@ -1279,9 +1309,44 @@ router.post("/:id/unpause", async (req, res, next) => {
   try {
     const auth = await requireCreator(req, res);
     if (!auth) return;
-    await GameRoom.findByIdAndUpdate(req.params.id, { status: "open" });
+    const { gameRoom } = auth;
+    if (gameRoom.status !== ROOM_STATUS.PAUSED) {
+      return res.status(400).json({ error: "Game is not paused" });
+    }
+    await GameRoom.findByIdAndUpdate(req.params.id, { status: ROOM_STATUS.OPEN });
     await gameLoop.startRoom(req.params.id.toString());
     res.json({ message: "Game session unpaused successfully" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------------
+// POST /api/gamerooms/:id/start - Start a lobby room (creator only)
+// -------------------------------------------------------------------
+router.post("/:id/start", async (req, res, next) => {
+  try {
+    const auth = await requireCreator(req, res);
+    if (!auth) return;
+    const { gameRoom } = auth;
+
+    if (gameRoom.status === ROOM_STATUS.OPEN) {
+      return res.json({ message: "Game already started" });
+    }
+    if (gameRoom.status !== ROOM_STATUS.LOBBY) {
+      return res.status(400).json({ error: "Room is not in lobby state" });
+    }
+
+    await GameRoom.findByIdAndUpdate(req.params.id, { status: ROOM_STATUS.OPEN });
+    await gameLoop.refreshRoomCache(req.params.id.toString());
+    await gameLoop.startRoom(req.params.id.toString());
+
+    const liveRoom = await getAuthoritativeRoom(req.params.id.toString());
+    if (liveRoom) {
+      broadcastRoomUpdate(req.params.id.toString(), liveRoom);
+    }
+
+    res.json({ message: "Game started successfully" });
   } catch (error) {
     next(error);
   }
@@ -1357,8 +1422,8 @@ router.post("/:id/join", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
-    if (gameRoom.status !== "open")
-      return res.status(400).json({ error: "Game room is not open" });
+    if (!isJoinableRoomStatus(gameRoom.status))
+      return res.status(400).json({ error: "Game room is not accepting new players" });
     if (gameRoom.joinCode !== joinCode)
       return res.status(403).json({ error: "Invalid join code" });
     let player = gameRoom.players.find((p) => p.userId === actorId);
@@ -1371,7 +1436,15 @@ router.post("/:id/join", async (req, res, next) => {
       if (sessionActor) {
         player.profile = actorProfile;
       }
+      if (typeof player?.userState?.ready !== "boolean") {
+        player.userState = {
+          ...(player.userState || {}),
+          ready: false,
+        };
+      }
       touchRoom(gameRoom._id.toString());
+      await persistRoomMutation(gameRoom, req.params.id, ["players"]);
+      broadcastRoomUpdate(req.params.id.toString(), gameRoom);
       res.json({
         message: "Rejoined game room successfully",
         userId: player.userId,
@@ -1387,11 +1460,12 @@ router.post("/:id/join", async (req, res, next) => {
         userId: actorId,
         password: sessionActor ? null : password,
         profile: actorProfile,
-        userState: {},
+        userState: { ready: false },
       };
       gameRoom.players.push(player);
       touchRoom(gameRoom._id.toString());
       await persistRoomMutation(gameRoom, req.params.id, ["players"]);
+      broadcastRoomUpdate(req.params.id.toString(), gameRoom);
       res.json({
         message: "Joined game room successfully",
         userId: player.userId,
@@ -1464,6 +1538,13 @@ router.post("/:id/foundNation", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom) {
       return res.status(404).json({ error: "Game room not found" });
+    }
+    if (
+      gameRoom.status !== ROOM_STATUS.LOBBY &&
+      gameRoom.status !== ROOM_STATUS.OPEN &&
+      gameRoom.status !== ROOM_STATUS.PAUSED
+    ) {
+      return res.status(400).json({ error: "Room is not in a playable state" });
     }
 
     // 2. Validate
@@ -1645,8 +1726,17 @@ router.post("/:id/foundNation", async (req, res, next) => {
       }
 
       lockedRoom.gameState.nations = lockedNations.concat(newNation);
+      const lockedPlayer = (lockedRoom.players || []).find(
+        (entry) => entry.userId === userId
+      );
+      if (lockedPlayer) {
+        lockedPlayer.userState = {
+          ...(lockedPlayer.userState || {}),
+          ready: true,
+        };
+      }
       founded = true;
-      await persistRoomMutation(lockedRoom, req.params.id, ["gameState.nations"]);
+      await persistRoomMutation(lockedRoom, req.params.id, ["gameState.nations", "players"]);
 
       // Sync matrix with the new nation's territory
       gameLoop.syncMatrixFromNations(req.params.id.toString(), lockedRoom.gameState.nations);
@@ -1699,6 +1789,7 @@ router.post("/:id/buildCity", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!ensurePlayableRoom(gameRoom, res)) return;
     if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
@@ -2017,6 +2108,7 @@ router.post("/:id/arrow", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!ensurePlayableRoom(gameRoom, res)) return;
     if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
@@ -2251,6 +2343,7 @@ router.post("/:id/clearArrow", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!ensurePlayableRoom(gameRoom, res)) return;
     if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
@@ -2322,6 +2415,7 @@ router.post("/:id/reinforceArrow", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!ensurePlayableRoom(gameRoom, res)) return;
     if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
@@ -2400,6 +2494,7 @@ router.post("/:id/retreatArrow", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!ensurePlayableRoom(gameRoom, res)) return;
     if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }
@@ -2441,6 +2536,7 @@ router.post("/:id/troopTarget", async (req, res, next) => {
     const gameRoom = await getAuthoritativeRoom(req.params.id);
     if (!gameRoom)
       return res.status(404).json({ error: "Game room not found" });
+    if (!ensurePlayableRoom(gameRoom, res)) return;
     if (!sessionActor && !hasValidPlayerCredentials(gameRoom, userId, password)) {
       return res.status(403).json({ error: "Invalid credentials" });
     }

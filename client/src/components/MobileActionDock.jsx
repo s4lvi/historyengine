@@ -19,6 +19,12 @@ const MobileActionDock = ({
   buildCosts,
   activeAttackArrows,
   activeDefendArrow,
+  isRoomStarted = true,
+  canStartRoom = false,
+  onStartRoom,
+  isStartingRoom = false,
+  readyPlayerCount = 0,
+  totalPlayers = 0,
 }) => {
   const [showBuild, setShowBuild] = useState(false);
   const [showPower, setShowPower] = useState(false);
@@ -60,6 +66,30 @@ const MobileActionDock = ({
           >
             Found
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isRoomStarted) {
+    return (
+      <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-85 text-white p-4 z-20">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm text-gray-100">
+              Lobby: {readyPlayerCount}/{totalPlayers} ready
+            </div>
+            <div className="text-xs text-gray-300">Waiting for host to start</div>
+          </div>
+          {canStartRoom && (
+            <button
+              onClick={onStartRoom}
+              disabled={isStartingRoom}
+              className="px-4 py-2 rounded bg-emerald-600 text-sm font-semibold disabled:bg-emerald-900"
+            >
+              {isStartingRoom ? "Starting..." : "Start Room"}
+            </button>
+          )}
         </div>
       </div>
     );

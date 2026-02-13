@@ -259,6 +259,12 @@ const AppShell = ({ children }) => {
             <NavLink to="/news" className="hover:text-white">
               Release Notes & News
             </NavLink>
+            <NavLink to="/terms" className="hover:text-white">
+              Terms
+            </NavLink>
+            <NavLink to="/privacy" className="hover:text-white">
+              Privacy
+            </NavLink>
           </div>
         </div>
       </footer>
@@ -507,6 +513,229 @@ const NewsPage = () => (
   </AppShell>
 );
 
+const TermsPage = () => (
+  <AppShell>
+    <Card title="Terms of Service">
+      <div className="space-y-4 text-sm leading-relaxed text-gray-200">
+        <p className="text-xs text-gray-400">Last updated: February 12, 2026</p>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">1. Acceptance of Terms</h3>
+          <p className="mt-2">
+            By accessing or using annexi.io ("the Service"), you agree to be bound by
+            these Terms of Service. If you do not agree to these terms, do not use the
+            Service.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">2. Description of Service</h3>
+          <p className="mt-2">
+            Annexi.io is a free-to-play multiplayer browser-based strategy game. We
+            provide the game client, matchmaking servers, and related services. The
+            Service is provided "as is" and may change at any time without notice.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">3. User Accounts</h3>
+          <p className="mt-2">
+            You may sign in using a third-party authentication provider (e.g. Google
+            or Discord). You are responsible for maintaining the security of your
+            account. You must not share your account or impersonate other users.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">4. User Conduct</h3>
+          <p className="mt-2">You agree not to:</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>Use cheats, exploits, bots, or automation tools.</li>
+            <li>Harass, threaten, or abuse other players.</li>
+            <li>Attempt to disrupt, overload, or interfere with the Service.</li>
+            <li>Reverse-engineer or scrape any part of the Service.</li>
+          </ul>
+          <p className="mt-2">
+            We reserve the right to suspend or terminate accounts that violate these
+            rules at our sole discretion.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">5. Intellectual Property</h3>
+          <p className="mt-2">
+            All content, graphics, code, and game mechanics are owned by the annexi.io
+            team. You may not reproduce, distribute, or create derivative works from
+            any part of the Service without written permission.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">6. Disclaimer of Warranties</h3>
+          <p className="mt-2">
+            The Service is provided "as is" without warranty of any kind, express or
+            implied, including but not limited to warranties of merchantability,
+            fitness for a particular purpose, or non-infringement. We do not guarantee
+            uninterrupted or error-free operation.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">7. Limitation of Liability</h3>
+          <p className="mt-2">
+            To the fullest extent permitted by law, annexi.io and its operators shall
+            not be liable for any indirect, incidental, special, consequential, or
+            punitive damages arising from your use of the Service.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">8. Changes to Terms</h3>
+          <p className="mt-2">
+            We may update these Terms at any time. Continued use of the Service after
+            changes constitutes acceptance of the revised Terms. Material changes will
+            be communicated through the Service or our Discord server.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">9. Contact</h3>
+          <p className="mt-2">
+            Questions about these Terms can be directed to us through our{" "}
+            <a
+              href="https://discord.gg/6YRU8YP5q7"
+              target="_blank"
+              rel="noreferrer"
+              className="text-yellow-400 hover:text-yellow-300 underline"
+            >
+              Discord server
+            </a>
+            .
+          </p>
+        </section>
+      </div>
+    </Card>
+  </AppShell>
+);
+
+const PrivacyPage = () => (
+  <AppShell>
+    <Card title="Privacy Policy">
+      <div className="space-y-4 text-sm leading-relaxed text-gray-200">
+        <p className="text-xs text-gray-400">Last updated: February 12, 2026</p>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">1. Information We Collect</h3>
+          <p className="mt-2">When you use annexi.io, we may collect:</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>
+              <strong>Account information:</strong> Display name and authentication
+              identifiers provided by your sign-in provider (Google or Discord). We do
+              not store your password.
+            </li>
+            <li>
+              <strong>Game data:</strong> In-game actions, match history, and room
+              participation for gameplay functionality.
+            </li>
+            <li>
+              <strong>Technical data:</strong> Browser type, connection timestamps, and
+              basic server logs for maintaining service reliability.
+            </li>
+          </ul>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">2. How We Use Your Information</h3>
+          <p className="mt-2">We use collected information to:</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>Provide, operate, and maintain the game service.</li>
+            <li>Display your chosen display name to other players.</li>
+            <li>Enforce our Terms of Service and prevent abuse.</li>
+            <li>Improve game performance and fix bugs.</li>
+          </ul>
+          <p className="mt-2">
+            We do not sell, rent, or share your personal information with third parties
+            for marketing purposes.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">3. Cookies and Local Storage</h3>
+          <p className="mt-2">
+            We use browser cookies and local storage to maintain your authentication
+            session and game preferences. These are essential for the Service to
+            function and are not used for tracking or advertising.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">4. Third-Party Services</h3>
+          <p className="mt-2">
+            We use third-party authentication providers (Google, Discord) for sign-in.
+            Their use of your data is governed by their respective privacy policies. We
+            only receive the minimal profile information needed to identify your
+            account.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">5. Data Retention</h3>
+          <p className="mt-2">
+            We retain your account data for as long as your account is active. Game
+            match data may be retained for analysis and improvement. You may request
+            deletion of your account data by contacting us through Discord.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">6. Data Security</h3>
+          <p className="mt-2">
+            We take reasonable measures to protect your information, including encrypted
+            connections (HTTPS) and secure authentication flows. However, no method of
+            transmission over the internet is 100% secure.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">7. Children's Privacy</h3>
+          <p className="mt-2">
+            The Service is not directed at children under 13. We do not knowingly
+            collect personal information from children under 13. If you believe a child
+            has provided us with personal information, please contact us so we can
+            delete it.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">8. Changes to This Policy</h3>
+          <p className="mt-2">
+            We may update this Privacy Policy from time to time. Changes will be posted
+            on this page with an updated revision date. Continued use of the Service
+            constitutes acceptance of the revised policy.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-semibold text-white">9. Contact</h3>
+          <p className="mt-2">
+            For privacy-related questions or data deletion requests, reach out through
+            our{" "}
+            <a
+              href="https://discord.gg/6YRU8YP5q7"
+              target="_blank"
+              rel="noreferrer"
+              className="text-yellow-400 hover:text-yellow-300 underline"
+            >
+              Discord server
+            </a>
+            .
+          </p>
+        </section>
+      </div>
+    </Card>
+  </AppShell>
+);
+
 function App() {
   // In Discord Activity mode, skip the router and render the Discord entry point directly
   if (isDiscordActivity()) {
@@ -529,6 +758,8 @@ function App() {
             <Route path="/how-to-play" element={<HowToPlayPage />} />
             <Route path="/about" element={<AboutPage />} />
             <Route path="/news" element={<NewsPage />} />
+            <Route path="/terms" element={<TermsPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/rooms/:id" element={<Game />} />
           </Routes>
         </Router>
