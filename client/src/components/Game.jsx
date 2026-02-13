@@ -112,7 +112,7 @@ const Game = ({ discordRoomId }) => {
   const isRoomCreator = gameState?.roomCreator === userId;
   const readyPlayerCount = roomPlayers.filter((player) => player.ready).length;
   const discordHeaderCompensation =
-    isMobile && isDiscord ? Math.ceil(statsBarHeight * 0.5) : 0;
+    isMobile && isDiscord ? Math.ceil(statsBarHeight) : 0;
   const discordTopOffset = isMobile
     ? viewportInsets.top + discordHeaderCompensation
     : 0;
@@ -276,6 +276,33 @@ const Game = ({ discordRoomId }) => {
       viewport?.removeEventListener("scroll", updateInsets);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isMobile) return;
+
+    const preventSelection = (event) => {
+      const target = event.target;
+      const tagName = target?.tagName?.toLowerCase?.() || "";
+      const isEditable =
+        tagName === "input" ||
+        tagName === "textarea" ||
+        target?.isContentEditable;
+      if (isEditable) return;
+      event.preventDefault();
+    };
+
+    const preventContextMenu = (event) => {
+      event.preventDefault();
+    };
+
+    document.addEventListener("selectstart", preventSelection);
+    document.addEventListener("contextmenu", preventContextMenu);
+
+    return () => {
+      document.removeEventListener("selectstart", preventSelection);
+      document.removeEventListener("contextmenu", preventContextMenu);
+    };
+  }, [isMobile]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -1547,8 +1574,14 @@ const Game = ({ discordRoomId }) => {
 
   return (
     <div
-      className="relative overflow-hidden"
-      style={{ height: "100dvh", minHeight: "100vh" }}
+      className="relative overflow-hidden select-none"
+      style={{
+        height: "100dvh",
+        minHeight: "100vh",
+        WebkitTouchCallout: "none",
+        WebkitUserSelect: "none",
+        userSelect: "none",
+      }}
     >
       {topScrimHeight > 0 && (
         <div
