@@ -1366,6 +1366,7 @@ const GameCanvas = ({
     setOffsetClamped,
     panBy,
     handleWheel,
+    zoomAtPoint,
     getCellCoordinates,
   } = usePanZoom({ mapMetadata, stageWidth, stageHeight });
 
@@ -1638,6 +1639,14 @@ const GameCanvas = ({
   /* ----- Viewport State ----- */
   const [isPanning, setIsPanning] = useState(false);
   const drawTypeRef = useRef(null);
+  const touchPointsRef = useRef(new Map());
+  const pinchRef = useRef({
+    active: false,
+    ids: [],
+    startDistance: 1,
+    startScale: 1,
+    lastMid: null,
+  });
   const panRef = useRef({
     active: false,
     startX: 0,
@@ -1706,6 +1715,31 @@ const GameCanvas = ({
   }, []);
 
   /* ----- Pointer Handlers ----- */
+  const beginPinchGesture = useCallback(
+    (points) => {
+      if (!points || points.size < 2) return false;
+      const entries = Array.from(points.entries());
+      const [idA, a] = entries[0];
+      const [idB, b] = entries[1];
+      if (!a || !b) return false;
+      const mid = {
+        x: (a.x + b.x) / 2,
+        y: (a.y + b.y) / 2,
+      };
+      const distance = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+      pinchRef.current = {
+        active: true,
+        ids: [idA, idB],
+        startDistance: distance,
+        startScale: scale,
+        lastMid: mid,
+      };
+      setIsPanning(true);
+      return true;
+    },
+    [scale]
+  );
+
   const handlePointerDown = useCallback(
     (e) => {
       let x, y;
@@ -1716,10 +1750,35 @@ const GameCanvas = ({
         x = e.nativeEvent.clientX - rect.left;
         y = e.nativeEvent.clientY - rect.top;
       }
+      const originalEvent = e.data?.originalEvent || e.nativeEvent || {};
+      const pointerId = originalEvent.pointerId ?? "mouse";
+      const pointerType = originalEvent.pointerType || "mouse";
+      const isTouchPointer = pointerType === "touch";
+
+      if (isTouchPointer) {
+        touchPointsRef.current.set(pointerId, { x, y });
+        if (touchPointsRef.current.size >= 2) {
+          // Two-finger touch always switches to pan/zoom mode.
+          if (isDrawingArrowRef.current) {
+            isDrawingArrowRef.current = false;
+            arrowPathRef.current = [];
+            lastArrowPointRef.current = null;
+            drawTypeRef.current = null;
+            onCancelArrow?.();
+          }
+          if (panRef.current.active) {
+            panRef.current.active = false;
+            panRef.current.moved = false;
+            panRef.current.button = null;
+          }
+          beginPinchGesture(touchPointsRef.current);
+          return;
+        }
+      }
       // Check which button is pressed (0: left, 1: middle, 2: right)
-      const button = e.data?.originalEvent?.button ?? e.nativeEvent?.button;
+      const button = originalEvent.button ?? e.nativeEvent?.button;
       const buttons =
-        e.data?.originalEvent?.buttons ?? e.nativeEvent?.buttons ?? 0;
+        originalEvent.buttons ?? e.nativeEvent?.buttons ?? 0;
       const leftDown = (buttons & 1) === 1;
       const rightDown = (buttons & 2) === 2;
       const middleDown = (buttons & 4) === 4;
@@ -1734,14 +1793,13 @@ const GameCanvas = ({
           ? "attack"
           : uiMode === "drawDefend"
           ? "defend"
-          : drawingArrowType;
+          : drawingArrowType || "attack";
       const canDraw = !foundingNation && !buildingStructure;
       const shouldPan =
         button === 1 ||
         button === 2 ||
         middleDown ||
-        rightDown ||
-        uiMode === "pan";
+        rightDown;
 
       if (defendCombo && canDraw) {
         if (panRef.current.active) {
@@ -1781,7 +1839,8 @@ const GameCanvas = ({
       }
 
       // Arrow drawing mode
-      if (canDraw && button === 0 && forcedDraw) {
+      const primaryDrawActivation = button === 0 || isTouchPointer;
+      if (canDraw && primaryDrawActivation && forcedDraw) {
         const drawMode = forcedDraw;
         const cell = getCellCoordinates(x, y);
         if (
@@ -1812,7 +1871,9 @@ const GameCanvas = ({
       mapMetadata,
       onArrowPathUpdate,
       onStartDrawArrow,
+      onCancelArrow,
       offset,
+      beginPinchGesture,
     ]
   );
 
@@ -1826,6 +1887,36 @@ const GameCanvas = ({
         x = e.nativeEvent.clientX - rect.left;
         y = e.nativeEvent.clientY - rect.top;
       }
+      const originalEvent = e.data?.originalEvent || e.nativeEvent || {};
+      const pointerId = originalEvent.pointerId ?? "mouse";
+      const pointerType = originalEvent.pointerType || "mouse";
+      const isTouchPointer = pointerType === "touch";
+
+      if (isTouchPointer) {
+        touchPointsRef.current.set(pointerId, { x, y });
+      }
+
+      if (pinchRef.current.active) {
+        const { ids, startDistance, startScale, lastMid } = pinchRef.current;
+        const a = touchPointsRef.current.get(ids[0]);
+        const b = touchPointsRef.current.get(ids[1]);
+        if (a && b) {
+          const mid = {
+            x: (a.x + b.x) / 2,
+            y: (a.y + b.y) / 2,
+          };
+          const distance = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+          const targetScale =
+            startScale * (distance / Math.max(1, startDistance));
+          zoomAtPoint(mid.x, mid.y, targetScale);
+          if (lastMid) {
+            panBy(mid.x - lastMid.x, mid.y - lastMid.y);
+          }
+          pinchRef.current.lastMid = mid;
+        }
+        return;
+      }
+
       if (panRef.current.active) {
         const dx = x - panRef.current.startX;
         const dy = y - panRef.current.startY;
@@ -1904,6 +1995,8 @@ const GameCanvas = ({
       drawingArrowType,
       onArrowPathUpdate,
       setOffsetClamped,
+      panBy,
+      zoomAtPoint,
     ]
   );
 
@@ -1960,6 +2053,14 @@ const GameCanvas = ({
   );
 
   const handlePointerLeave = useCallback(() => {
+    touchPointsRef.current.clear();
+    pinchRef.current = {
+      active: false,
+      ids: [],
+      startDistance: 1,
+      startScale: 1,
+      lastMid: null,
+    };
     // If the pointer leaves the canvas while drawing, cancel the arrow
     finishArrowDrawing(false);
     if (panRef.current.active) {
@@ -1972,6 +2073,29 @@ const GameCanvas = ({
 
   const handlePointerUp = useCallback(
     (e) => {
+      const originalEvent = e.data?.originalEvent || e.nativeEvent || {};
+      const pointerId = originalEvent.pointerId ?? "mouse";
+      const pointerType = originalEvent.pointerType || "mouse";
+      const isTouchPointer = pointerType === "touch";
+      if (isTouchPointer) {
+        touchPointsRef.current.delete(pointerId);
+        if (pinchRef.current.active) {
+          const [idA, idB] = pinchRef.current.ids;
+          const keepPinch =
+            touchPointsRef.current.has(idA) && touchPointsRef.current.has(idB);
+          if (!keepPinch) {
+            pinchRef.current = {
+              active: false,
+              ids: [],
+              startDistance: 1,
+              startScale: 1,
+              lastMid: null,
+            };
+            setIsPanning(false);
+          }
+          return;
+        }
+      }
       if (panRef.current.active) {
         const wasMoved = panRef.current.moved;
         const panButton = panRef.current.button;
@@ -1979,14 +2103,17 @@ const GameCanvas = ({
         panRef.current.moved = false;
         panRef.current.button = null;
         setIsPanning(false);
-        if (panButton === 1 || panButton === 2 || wasMoved || uiMode === "pan") {
+        if (panButton === 1 || panButton === 2 || wasMoved) {
           return;
         }
       }
       // Arrow drawing completed
       if (isDrawingArrowRef.current && (drawTypeRef.current || drawingArrowType)) {
+        const hadArrowSegment = arrowPathRef.current.length >= 2;
         finishArrowDrawing(true);
-        return;
+        if (hadArrowSegment) {
+          return;
+        }
       }
       let x, y;
       if (e.data?.global) {
@@ -2067,7 +2194,6 @@ const GameCanvas = ({
       onCancelBuild,
       drawingArrowType,
       finishArrowDrawing,
-      uiMode,
       onInspectCell,
       buildCellInfo,
     ]
