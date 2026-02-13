@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from "react";
 
-const StatsBar = ({ gameState, userId }) => {
+const StatsBar = ({ gameState, userId, topOffset = 0, isMobile = false }) => {
   const userNation = gameState?.gameState?.nations?.find(
     (n) => n.owner === userId
   );
@@ -44,7 +44,14 @@ const StatsBar = ({ gameState, userId }) => {
   };
 
   return (
-    <div className="absolute top-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-2 z-40 overflow-x-auto">
+    <div
+      className={`absolute left-0 right-0 bg-gray-900 bg-opacity-60 text-white z-40 overflow-x-auto ${
+        isMobile ? "p-1.5" : "p-2"
+      }`}
+      style={{
+        top: `calc(env(safe-area-inset-top, 0px) + ${topOffset}px)`,
+      }}
+    >
       <div className="flex items-center gap-6 flex-nowrap min-w-max whitespace-nowrap">
         {/* Core Stats */}
         <div className="flex gap-6 items-center">

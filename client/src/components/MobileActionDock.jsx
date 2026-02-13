@@ -24,15 +24,22 @@ const MobileActionDock = ({
   isStartingRoom = false,
   readyPlayerCount = 0,
   totalPlayers = 0,
+  bottomOffset = 0,
 }) => {
   const [showBuild, setShowBuild] = useState(false);
   const buildMap = buildCosts || {};
   const buildEntries = Object.entries(buildMap);
+  const dockStyle = {
+    bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
+  };
 
   if (!hasFounded) {
     if (isSpectating) {
       return (
-        <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-80 text-white p-4 z-20">
+        <div
+          className="fixed left-0 right-0 bg-gray-900 bg-opacity-80 text-white p-4 z-20"
+          style={dockStyle}
+        >
           <div className="flex items-center justify-between">
             <div className="text-sm text-gray-200">
               Spectating — your nation has been defeated.
@@ -50,7 +57,10 @@ const MobileActionDock = ({
       );
     }
     return (
-      <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-80 text-white p-4 z-20">
+      <div
+        className="fixed left-0 right-0 bg-gray-900 bg-opacity-80 text-white p-4 z-20"
+        style={dockStyle}
+      >
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm text-gray-300">Found Your Nation</div>
@@ -71,7 +81,10 @@ const MobileActionDock = ({
 
   if (!isRoomStarted) {
     return (
-      <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-85 text-white p-4 z-20">
+      <div
+        className="fixed left-0 right-0 bg-gray-900 bg-opacity-85 text-white p-4 z-20"
+        style={dockStyle}
+      >
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-sm text-gray-100">
@@ -94,7 +107,7 @@ const MobileActionDock = ({
   }
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-20">
+    <div className="fixed left-0 right-0 z-20" style={dockStyle}>
       <div className="bg-gray-900 bg-opacity-80 text-white px-4 py-2">
         <div className="text-xs text-gray-300 mb-1">Attack Settings</div>
         <input

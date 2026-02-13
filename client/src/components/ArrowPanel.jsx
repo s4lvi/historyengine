@@ -119,14 +119,31 @@ const ArrowPanel = ({
   onReinforceArrow,
   onRetreatArrow,
   onClearArrow,
+  isMobile = false,
+  topOffset = 0,
+  bottomOffset = 0,
 }) => {
   const hasArrows =
     (activeAttackArrows && activeAttackArrows.length > 0) || activeDefendArrow;
 
   if (!hasArrows) return null;
 
+  const panelStyle = isMobile
+    ? {
+        top: `calc(env(safe-area-inset-top, 0px) + ${topOffset}px)`,
+        bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
+      }
+    : undefined;
+
   return (
-    <div className="fixed right-2 top-20 left-auto z-30 w-56 flex flex-col gap-2">
+    <div
+      className={`fixed z-30 flex flex-col gap-2 ${
+        isMobile
+          ? "left-2 right-2 w-auto max-w-none overflow-y-auto"
+          : "right-2 top-20 left-auto w-56"
+      }`}
+      style={panelStyle}
+    >
       <div className="text-xs font-bold text-gray-400 uppercase tracking-wide px-1">
         Active Arrows
       </div>
