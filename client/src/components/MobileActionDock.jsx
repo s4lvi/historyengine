@@ -18,7 +18,6 @@ const MobileActionDock = ({
   playerResources,
   buildCosts,
   activeAttackArrows,
-  activeDefendArrow,
   isRoomStarted = true,
   canStartRoom = false,
   onStartRoom,
@@ -27,7 +26,6 @@ const MobileActionDock = ({
   totalPlayers = 0,
 }) => {
   const [showBuild, setShowBuild] = useState(false);
-  const [showPower, setShowPower] = useState(false);
   const buildMap = buildCosts || {};
   const buildEntries = Object.entries(buildMap);
 
@@ -95,35 +93,22 @@ const MobileActionDock = ({
     );
   }
 
-  const toggleMode = (mode) => {
-    if (uiMode === mode) {
-      onSetMode?.("idle");
-      return;
-    }
-    if (mode !== "buildStructure") {
-      setShowBuild(false);
-    }
-    onSetMode?.(mode);
-  };
-
   return (
     <div className="fixed bottom-0 left-0 right-0 z-20">
-      {showPower && (
-        <div className="bg-gray-900 bg-opacity-80 text-white px-4 py-2">
-          <div className="text-xs text-gray-300 mb-1">Troop Commitment</div>
-          <input
-            type="range"
-            min="5"
-            max="100"
-            value={Math.round((attackPercent || 0.25) * 100)}
-            onChange={(e) => setAttackPercent?.(Number(e.target.value) / 100)}
-            className="w-full"
-          />
-          <div className="text-xs text-gray-300 mt-1">
-            {Math.round((attackPercent || 0.25) * 100)}%
-          </div>
+      <div className="bg-gray-900 bg-opacity-80 text-white px-4 py-2">
+        <div className="text-xs text-gray-300 mb-1">Attack Settings</div>
+        <input
+          type="range"
+          min="5"
+          max="100"
+          value={Math.round((attackPercent || 0.25) * 100)}
+          onChange={(e) => setAttackPercent?.(Number(e.target.value) / 100)}
+          className="w-full"
+        />
+        <div className="text-xs text-gray-300 mt-1">
+          Troop Commitment: {Math.round((attackPercent || 0.25) * 100)}%
         </div>
-      )}
+      </div>
       {showBuild && (
         <div className="bg-gray-900 bg-opacity-90 text-white px-4 py-3">
           <div className="flex items-center justify-between mb-2">
@@ -168,26 +153,15 @@ const MobileActionDock = ({
         </div>
       )}
       <div className="bg-gray-900 bg-opacity-85 text-white px-2 py-2">
-        <div className="flex items-center justify-around">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs text-gray-300">
+            Active attack arrows: {activeAttackArrows?.length || 0}
+          </div>
           <button
             className={`px-3 py-2 rounded text-xs ${
-              uiMode === "drawAttack" ? "bg-red-700" : "bg-gray-800"
-            }`}
-            onClick={() => toggleMode("drawAttack")}
-          >
-            Attack ({activeAttackArrows?.length || 0})
-          </button>
-          <button
-            className={`px-3 py-2 rounded text-xs ${
-              uiMode === "drawDefend" ? "bg-blue-700" : "bg-gray-800"
-            }`}
-            onClick={() => toggleMode("drawDefend")}
-          >
-            Defend {activeDefendArrow ? "●" : ""}
-          </button>
-          <button
-            className={`px-3 py-2 rounded text-xs ${
-              showBuild || uiMode === "buildStructure" ? "bg-yellow-700" : "bg-gray-800"
+              showBuild || uiMode === "buildStructure"
+                ? "bg-yellow-700"
+                : "bg-gray-800"
             }`}
             onClick={() => {
               setShowBuild((prev) => {
@@ -197,23 +171,7 @@ const MobileActionDock = ({
               });
             }}
           >
-            Build
-          </button>
-          <button
-            className={`px-3 py-2 rounded text-xs ${
-              uiMode === "pan" ? "bg-green-700" : "bg-gray-800"
-            }`}
-            onClick={() => toggleMode("pan")}
-          >
-            Pan
-          </button>
-          <button
-            className={`px-3 py-2 rounded text-xs ${
-              showPower ? "bg-purple-700" : "bg-gray-800"
-            }`}
-            onClick={() => setShowPower((prev) => !prev)}
-          >
-            Power
+            {showBuild ? "Close Build" : "Build Menu"}
           </button>
         </div>
       </div>

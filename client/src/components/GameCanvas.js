@@ -1775,6 +1775,9 @@ const GameCanvas = ({
       const pointerId = originalEvent.pointerId ?? "mouse";
       const pointerType = originalEvent.pointerType || "mouse";
       const isTouchPointer = pointerType === "touch";
+      if (isTouchPointer) {
+        originalEvent.preventDefault?.();
+      }
 
       const forcedDraw =
         uiMode === "drawAttack"
@@ -1978,6 +1981,9 @@ const GameCanvas = ({
       const pointerId = originalEvent.pointerId ?? "mouse";
       const pointerType = originalEvent.pointerType || "mouse";
       const isTouchPointer = pointerType === "touch";
+      if (isTouchPointer) {
+        originalEvent.preventDefault?.();
+      }
 
       if (isTouchPointer) {
         touchPointsRef.current.set(pointerId, { x, y });
@@ -2173,6 +2179,9 @@ const GameCanvas = ({
       const pointerId = originalEvent.pointerId ?? "mouse";
       const pointerType = originalEvent.pointerType || "mouse";
       const isTouchPointer = pointerType === "touch";
+      if (isTouchPointer) {
+        originalEvent.preventDefault?.();
+      }
       if (isTouchPointer) {
         if (longPressRef.current.pointerId === pointerId) {
           clearLongPress();
@@ -2819,6 +2828,9 @@ const GameCanvas = ({
         width: "100%",
         height: "100%",
         touchAction: isDiscord || isMobile ? "none" : "auto",
+        userSelect: "none",
+        WebkitUserSelect: "none",
+        WebkitTouchCallout: "none",
         cursor:
           buildingStructure ||
           foundingNation ||
