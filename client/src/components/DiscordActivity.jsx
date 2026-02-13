@@ -25,7 +25,10 @@ const DiscordSetupScreen = ({ profile, onStart, loading }) => {
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-gray-900 text-white">
+    <div
+      className="flex items-center justify-center bg-gray-900 text-white"
+      style={{ minHeight: "100dvh" }}
+    >
       <form onSubmit={handleSubmit} className="w-[90vw] max-w-sm space-y-5 p-6">
         <div className="text-center">
           <img src="annexilogo.png" alt="Annexi" className="mx-auto h-10 mb-3" />
@@ -202,7 +205,10 @@ const DiscordActivity = () => {
 
   if (error) {
     return (
-      <div className="flex h-screen items-center justify-center bg-gray-900 text-white">
+      <div
+        className="flex items-center justify-center bg-gray-900 text-white"
+        style={{ minHeight: "100dvh" }}
+      >
         <div className="text-center">
           <h2 className="text-xl font-bold mb-2">Failed to start game</h2>
           <p className="text-gray-400">{error}</p>
@@ -213,7 +219,10 @@ const DiscordActivity = () => {
 
   if (phase === "auth") {
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-gray-900 text-white">
+      <div
+        className="flex flex-col items-center justify-center bg-gray-900 text-white"
+        style={{ minHeight: "100dvh" }}
+      >
         <LoadingSpinner />
         <p className="mt-4 text-gray-300">Authenticating...</p>
       </div>
@@ -232,7 +241,10 @@ const DiscordActivity = () => {
 
   if (phase === "creating") {
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-gray-900 text-white">
+      <div
+        className="flex flex-col items-center justify-center bg-gray-900 text-white"
+        style={{ minHeight: "100dvh" }}
+      >
         <LoadingSpinner />
         <p className="mt-4 text-gray-300">{status}</p>
       </div>

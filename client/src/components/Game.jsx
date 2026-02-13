@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { Common, Events } from "@discord/embedded-app-sdk";
 import GameCanvas from "./GameCanvas";
 import Modal from "./Modal";
 import { LoadingSpinner } from "./ErrorHandling";
@@ -14,7 +15,7 @@ import MobileActionDock from "./MobileActionDock";
 import ContextPanel from "./ContextPanel";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch, getWsUrl } from "../utils/api";
-import { isDiscordActivity, getDiscordToken } from "../utils/discord";
+import { isDiscordActivity, getDiscordSdk, getDiscordToken } from "../utils/discord";
 
 const Game = ({ discordRoomId }) => {
   // Get game room ID from URL params or Discord prop.
@@ -89,6 +90,13 @@ const Game = ({ discordRoomId }) => {
   const [uiMode, setUiMode] = useState("idle");
   const [selectedCellInfo, setSelectedCellInfo] = useState(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [discordLayoutMode, setDiscordLayoutMode] = useState(
+    Common.LayoutModeTypeObject.UNHANDLED
+  );
+  const [discordOrientation, setDiscordOrientation] = useState(
+    Common.OrientationTypeObject.UNHANDLED
+  );
+  const [stageViewport, setStageViewport] = useState({ width: 0, height: 0 });
   const [combatFlashes, setCombatFlashes] = useState([]);
   const [regionData, setRegionData] = useState(null);
   const [isStartingRoom, setIsStartingRoom] = useState(false);
@@ -102,13 +110,20 @@ const Game = ({ discordRoomId }) => {
   const isRoomLobby = roomStatus === "lobby";
   const isRoomCreator = gameState?.roomCreator === userId;
   const readyPlayerCount = roomPlayers.filter((player) => player.ready).length;
-  const discordTopOffset = isMobile && isDiscord ? 56 : 0;
-  const discordBottomOffset = isMobile && isDiscord ? 56 : 0;
-  const mobileDockReservedHeight = isMobile ? 96 : 0;
+  const discordTopOffset = 0;
+  const discordBottomOffset = 0;
+  const isDiscordPiP =
+    discordLayoutMode === Common.LayoutModeTypeObject.PIP;
+  const isDiscordPortrait =
+    discordOrientation === Common.OrientationTypeObject.PORTRAIT;
+  const isCompactDiscordHud = isDiscord && (isDiscordPiP || isDiscordPortrait);
+  const mobileDockReservedHeight = isMobile ? (isCompactDiscordHud ? 84 : 96) : 0;
   const controlButtonsTopOffset = isMobile
-    ? discordTopOffset + 84
-    : discordTopOffset;
-  const arrowPanelTopOffset = isMobile ? discordTopOffset + 64 : 0;
+    ? discordTopOffset + (isCompactDiscordHud ? 56 : 72)
+    : discordTopOffset + 8;
+  const arrowPanelTopOffset = isMobile
+    ? discordTopOffset + (isCompactDiscordHud ? 56 : 64)
+    : 0;
   const arrowPanelBottomOffset = isMobile
     ? discordBottomOffset + mobileDockReservedHeight
     : 0;
@@ -124,6 +139,7 @@ const Game = ({ discordRoomId }) => {
   const [activeAttackArrows, setActiveAttackArrows] = useState([]); // [{path, remainingPower, status, ...}]
   const [activeDefendArrow, setActiveDefendArrow] = useState(null); // {path: [{x,y}...], remainingPower, ...}
   const prevArrowsRef = useRef({ attacks: [], defend: null });
+  const canvasHostRef = useRef(null);
 
   useEffect(() => {
     setHasJoined(false);
@@ -211,12 +227,103 @@ const Game = ({ discordRoomId }) => {
       const coarse =
         window.matchMedia &&
         window.matchMedia("(pointer: coarse)").matches;
-      setIsMobile(isDiscord || coarse || window.innerWidth < 768);
+      const portrait =
+        window.innerHeight >= window.innerWidth &&
+        window.innerWidth < 992;
+      setIsMobile(isDiscord || coarse || window.innerWidth < 768 || portrait);
     };
     updateMobile();
+    const mediaQuery =
+      window.matchMedia && window.matchMedia("(pointer: coarse)");
+    const onChange = () => updateMobile();
+    mediaQuery?.addEventListener?.("change", onChange);
     window.addEventListener("resize", updateMobile);
-    return () => window.removeEventListener("resize", updateMobile);
+    return () => {
+      window.removeEventListener("resize", updateMobile);
+      mediaQuery?.removeEventListener?.("change", onChange);
+    };
   }, [isDiscord]);
+
+  useEffect(() => {
+    if (!isDiscord) return;
+
+    const sdk = getDiscordSdk();
+    if (!sdk) return;
+
+    const onLayoutModeUpdate = (payload) => {
+      const nextMode = Number(payload?.layout_mode);
+      if (Number.isFinite(nextMode)) {
+        setDiscordLayoutMode(nextMode);
+      }
+    };
+
+    const onOrientationUpdate = (payload) => {
+      const nextOrientation = Number(payload?.screen_orientation);
+      if (Number.isFinite(nextOrientation)) {
+        setDiscordOrientation(nextOrientation);
+      }
+    };
+
+    (async () => {
+      try {
+        await sdk.subscribe(Events.ACTIVITY_LAYOUT_MODE_UPDATE, onLayoutModeUpdate);
+      } catch (err) {
+        console.warn("[DISCORD] Failed to subscribe layout mode updates", err);
+      }
+      try {
+        await sdk.subscribe(Events.ORIENTATION_UPDATE, onOrientationUpdate);
+      } catch (err) {
+        console.warn("[DISCORD] Failed to subscribe orientation updates", err);
+      }
+    })();
+
+    return () => {
+      sdk
+        .unsubscribe(Events.ACTIVITY_LAYOUT_MODE_UPDATE, onLayoutModeUpdate)
+        .catch(() => {});
+      sdk.unsubscribe(Events.ORIENTATION_UPDATE, onOrientationUpdate).catch(() => {});
+    };
+  }, [isDiscord]);
+
+  useEffect(() => {
+    const host = canvasHostRef.current;
+    if (!host) return;
+
+    let frameId = 0;
+    const measure = () => {
+      frameId = 0;
+      const rect = host.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width));
+      const height = Math.max(1, Math.floor(rect.height));
+      setStageViewport((prev) => {
+        if (prev.width === width && prev.height === height) return prev;
+        return { width, height };
+      });
+    };
+    const scheduleMeasure = () => {
+      if (frameId) cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+
+    let resizeObserver;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(scheduleMeasure);
+      resizeObserver.observe(host);
+    }
+
+    const viewport = window.visualViewport;
+    window.addEventListener("resize", scheduleMeasure);
+    viewport?.addEventListener("resize", scheduleMeasure);
+
+    return () => {
+      if (frameId) cancelAnimationFrame(frameId);
+      window.removeEventListener("resize", scheduleMeasure);
+      viewport?.removeEventListener("resize", scheduleMeasure);
+      resizeObserver?.disconnect();
+    };
+  }, []);
 
   // ----------------------------
   // API call helpers
@@ -1441,7 +1548,10 @@ const Game = ({ discordRoomId }) => {
   const isMapLoaded = mapMetadata && loadedRows >= mapMetadata.height;
 
   return (
-    <div className="relative h-screen overflow-hidden">
+    <div
+      className="relative overflow-hidden"
+      style={{ height: "100dvh", minHeight: "100vh" }}
+    >
       <ControlButtons
         onOpenSettings={() => setShowSettings(true)}
         onOpenPlayerList={() => setShowPlayerList(true)}
@@ -1501,7 +1611,7 @@ const Game = ({ discordRoomId }) => {
         </div>
       )}
       {/* Main Content Area */}
-      <div className="absolute inset-0">
+      <div ref={canvasHostRef} className="absolute inset-0">
         {!isMapLoaded ? (
           <div className="flex flex-col items-center justify-center h-full bg-gray-800">
             <LoadingSpinner />
@@ -1546,6 +1656,8 @@ const Game = ({ discordRoomId }) => {
             setCombatFlashes={setCombatFlashes}
             regionData={regionData}
             isDiscord={isDiscord}
+            stageWidth={stageViewport.width}
+            stageHeight={stageViewport.height}
           />
         )}
       </div>

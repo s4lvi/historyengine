@@ -17,6 +17,9 @@
     height: 100%;
     overflow: hidden;
   }
+  #root {
+    height: 100%;
+  }
   img {
     image-rendering: pixelated;
     image-rendering: crisp-edges; /* for some browsers */

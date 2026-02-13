@@ -941,6 +941,22 @@ function usePanZoom({ mapMetadata, stageWidth, stageHeight }) {
     [stageWidth, stageHeight, mapMetadata]
   );
 
+  useEffect(() => {
+    if (!mapMetadata) return;
+    const clampedScale = Math.max(scaleRef.current || 1, computedMinScale);
+    if (Math.abs(clampedScale - scaleRef.current) > 0.0001) {
+      scaleRef.current = clampedScale;
+      setScale(clampedScale);
+    }
+    setOffset((prev) => {
+      const next = clampOffsetFinal(prev, clampedScale);
+      if (next.x === prev.x && next.y === prev.y) {
+        return prev;
+      }
+      return next;
+    });
+  }, [mapMetadata, computedMinScale, clampOffsetFinal]);
+
   const zoomAtPoint = useCallback(
     (screenX, screenY, targetScale) => {
       const prevScale = scaleRef.current;
@@ -1357,9 +1373,17 @@ const GameCanvas = ({
   setCombatFlashes,
   regionData,
   isDiscord,
+  stageWidth,
+  stageHeight,
 }) => {
-  const stageWidth = window.innerWidth;
-  const stageHeight = window.innerHeight;
+  const viewportWidth = Math.max(
+    1,
+    Math.floor(stageWidth || window.innerWidth || 1)
+  );
+  const viewportHeight = Math.max(
+    1,
+    Math.floor(stageHeight || window.innerHeight || 1)
+  );
 
   const {
     cellSize,
@@ -1370,7 +1394,11 @@ const GameCanvas = ({
     handleWheel,
     zoomAtPoint,
     getCellCoordinates,
-  } = usePanZoom({ mapMetadata, stageWidth, stageHeight });
+  } = usePanZoom({
+    mapMetadata,
+    stageWidth: viewportWidth,
+    stageHeight: viewportHeight,
+  });
 
   // Local state for unit selections and hovered cell
   const [hoveredCell, setHoveredCell] = useState(null);
@@ -2326,8 +2354,8 @@ const GameCanvas = ({
     if (!mapMetadata) return null;
     const visibleLeft = -offset.x / scale;
     const visibleTop = -offset.y / scale;
-    const visibleRight = visibleLeft + stageWidth / scale;
-    const visibleBottom = visibleTop + stageHeight / scale;
+    const visibleRight = visibleLeft + viewportWidth / scale;
+    const visibleBottom = visibleTop + viewportHeight / scale;
     const minX = Math.max(0, Math.floor(visibleLeft / cellSize) - 2);
     const maxX = Math.min(
       mapMetadata.width - 1,
@@ -2339,7 +2367,7 @@ const GameCanvas = ({
       Math.ceil(visibleBottom / cellSize) + 2
     );
     return { minX, maxX, minY, maxY };
-  }, [mapMetadata, offset, scale, stageWidth, stageHeight, cellSize]);
+  }, [mapMetadata, offset, scale, viewportWidth, viewportHeight, cellSize]);
 
   const renderNationOverlays = useMemo(() => {
     const overlays = [];
@@ -2810,10 +2838,10 @@ const GameCanvas = ({
   return (
     <Stage
       interactive={true}
-      width={stageWidth}
-      height={stageHeight}
+      width={viewportWidth}
+      height={viewportHeight}
       options={{
-        backgroundColor: 0xeeeeee,
+        backgroundColor: 0x245c82,
         antialias: scale > 0.6,
         resolution: scale < 0.45 ? 1 : window.devicePixelRatio || 1,
         autoDensity: true,
