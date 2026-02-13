@@ -25,18 +25,49 @@ const MobileActionDock = ({
   readyPlayerCount = 0,
   totalPlayers = 0,
   bottomOffset = 0,
+  onHeightChange,
 }) => {
   const [showBuild, setShowBuild] = useState(false);
+  const dockRef = React.useRef(null);
   const buildMap = buildCosts || {};
   const buildEntries = Object.entries(buildMap);
   const dockStyle = {
     bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
   };
 
+  React.useEffect(() => {
+    if (!onHeightChange) return;
+    const node = dockRef.current;
+    if (!node) {
+      onHeightChange(0);
+      return;
+    }
+
+    const report = () => {
+      const next = Math.ceil(node.getBoundingClientRect().height || 0);
+      onHeightChange(next);
+    };
+
+    report();
+    let observer;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(report);
+      observer.observe(node);
+    }
+    window.addEventListener("resize", report);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", report);
+      onHeightChange(0);
+    };
+  }, [onHeightChange, showBuild, hasFounded, isSpectating, isRoomStarted]);
+
   if (!hasFounded) {
     if (isSpectating) {
       return (
         <div
+          ref={dockRef}
           className="fixed left-0 right-0 bg-gray-900 bg-opacity-80 text-white p-4 z-20"
           style={dockStyle}
         >
@@ -58,6 +89,7 @@ const MobileActionDock = ({
     }
     return (
       <div
+        ref={dockRef}
         className="fixed left-0 right-0 bg-gray-900 bg-opacity-80 text-white p-4 z-20"
         style={dockStyle}
       >
@@ -82,6 +114,7 @@ const MobileActionDock = ({
   if (!isRoomStarted) {
     return (
       <div
+        ref={dockRef}
         className="fixed left-0 right-0 bg-gray-900 bg-opacity-85 text-white p-4 z-20"
         style={dockStyle}
       >
@@ -107,7 +140,7 @@ const MobileActionDock = ({
   }
 
   return (
-    <div className="fixed left-0 right-0 z-20" style={dockStyle}>
+    <div ref={dockRef} className="fixed left-0 right-0 z-20" style={dockStyle}>
       <div className="bg-gray-900 bg-opacity-85 text-white px-3 py-2">
         <div className="flex items-center justify-between gap-3 mb-2">
           <div className="text-sm text-gray-200">Attack Settings</div>

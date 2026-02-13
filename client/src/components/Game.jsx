@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Common, Events } from "@discord/embedded-app-sdk";
 import GameCanvas from "./GameCanvas";
 import Modal from "./Modal";
 import { LoadingSpinner } from "./ErrorHandling";
@@ -15,7 +14,7 @@ import MobileActionDock from "./MobileActionDock";
 import ContextPanel from "./ContextPanel";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch, getWsUrl } from "../utils/api";
-import { isDiscordActivity, getDiscordSdk, getDiscordToken } from "../utils/discord";
+import { isDiscordActivity, getDiscordToken } from "../utils/discord";
 
 const Game = ({ discordRoomId }) => {
   // Get game room ID from URL params or Discord prop.
@@ -90,12 +89,9 @@ const Game = ({ discordRoomId }) => {
   const [uiMode, setUiMode] = useState("idle");
   const [selectedCellInfo, setSelectedCellInfo] = useState(null);
   const [isMobile, setIsMobile] = useState(false);
-  const [discordLayoutMode, setDiscordLayoutMode] = useState(
-    Common.LayoutModeTypeObject.UNHANDLED
-  );
-  const [discordOrientation, setDiscordOrientation] = useState(
-    Common.OrientationTypeObject.UNHANDLED
-  );
+  const [viewportInsets, setViewportInsets] = useState({ top: 0, bottom: 0 });
+  const [statsBarHeight, setStatsBarHeight] = useState(0);
+  const [mobileDockHeight, setMobileDockHeight] = useState(0);
   const [stageViewport, setStageViewport] = useState({ width: 0, height: 0 });
   const [combatFlashes, setCombatFlashes] = useState([]);
   const [regionData, setRegionData] = useState(null);
@@ -110,19 +106,14 @@ const Game = ({ discordRoomId }) => {
   const isRoomLobby = roomStatus === "lobby";
   const isRoomCreator = gameState?.roomCreator === userId;
   const readyPlayerCount = roomPlayers.filter((player) => player.ready).length;
-  const isDiscordPiP =
-    discordLayoutMode === Common.LayoutModeTypeObject.PIP;
-  const isDiscordPortrait =
-    discordOrientation === Common.OrientationTypeObject.PORTRAIT;
-  const isCompactDiscordHud = isDiscord && (isDiscordPiP || isDiscordPortrait);
-  const discordTopOffset = isMobile && isDiscord ? 36 : 0;
-  const discordBottomOffset = 0;
-  const mobileDockReservedHeight = isMobile ? (isCompactDiscordHud ? 84 : 96) : 0;
+  const discordTopOffset = isMobile ? viewportInsets.top : 0;
+  const discordBottomOffset = isMobile ? viewportInsets.bottom : 0;
+  const mobileDockReservedHeight = isMobile ? mobileDockHeight : 0;
   const controlButtonsTopOffset = isMobile
-    ? discordTopOffset + (isCompactDiscordHud ? 48 : 56)
+    ? discordTopOffset + statsBarHeight + 8
     : discordTopOffset + 8;
   const arrowPanelTopOffset = isMobile
-    ? discordTopOffset + (isCompactDiscordHud ? 84 : 92)
+    ? discordTopOffset + statsBarHeight + 8
     : 0;
   const arrowPanelBottomOffset = isMobile
     ? discordBottomOffset + mobileDockReservedHeight
@@ -245,45 +236,40 @@ const Game = ({ discordRoomId }) => {
   }, [isDiscord]);
 
   useEffect(() => {
-    if (!isDiscord) return;
-
-    const sdk = getDiscordSdk();
-    if (!sdk) return;
-
-    const onLayoutModeUpdate = (payload) => {
-      const nextMode = Number(payload?.layout_mode);
-      if (Number.isFinite(nextMode)) {
-        setDiscordLayoutMode(nextMode);
+    const updateInsets = () => {
+      const viewport = window.visualViewport;
+      if (!viewport) {
+        setViewportInsets({ top: 0, bottom: 0 });
+        return;
       }
+      const top = Math.max(0, Math.round(viewport.offsetTop || 0));
+      const bottom = Math.max(
+        0,
+        Math.round(window.innerHeight - (viewport.offsetTop + viewport.height))
+      );
+      setViewportInsets((prev) =>
+        prev.top === top && prev.bottom === bottom ? prev : { top, bottom }
+      );
     };
 
-    const onOrientationUpdate = (payload) => {
-      const nextOrientation = Number(payload?.screen_orientation);
-      if (Number.isFinite(nextOrientation)) {
-        setDiscordOrientation(nextOrientation);
-      }
-    };
-
-    (async () => {
-      try {
-        await sdk.subscribe(Events.ACTIVITY_LAYOUT_MODE_UPDATE, onLayoutModeUpdate);
-      } catch (err) {
-        console.warn("[DISCORD] Failed to subscribe layout mode updates", err);
-      }
-      try {
-        await sdk.subscribe(Events.ORIENTATION_UPDATE, onOrientationUpdate);
-      } catch (err) {
-        console.warn("[DISCORD] Failed to subscribe orientation updates", err);
-      }
-    })();
+    updateInsets();
+    const viewport = window.visualViewport;
+    window.addEventListener("resize", updateInsets);
+    viewport?.addEventListener("resize", updateInsets);
+    viewport?.addEventListener("scroll", updateInsets);
 
     return () => {
-      sdk
-        .unsubscribe(Events.ACTIVITY_LAYOUT_MODE_UPDATE, onLayoutModeUpdate)
-        .catch(() => {});
-      sdk.unsubscribe(Events.ORIENTATION_UPDATE, onOrientationUpdate).catch(() => {});
+      window.removeEventListener("resize", updateInsets);
+      viewport?.removeEventListener("resize", updateInsets);
+      viewport?.removeEventListener("scroll", updateInsets);
     };
-  }, [isDiscord]);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileDockHeight(0);
+    }
+  }, [isMobile]);
 
   useEffect(() => {
     const host = canvasHostRef.current;
@@ -1564,6 +1550,7 @@ const Game = ({ discordRoomId }) => {
           userId={userId}
           topOffset={discordTopOffset}
           isMobile={isMobile}
+          onHeightChange={setStatsBarHeight}
         />
       )}
       <SettingsModal
@@ -1717,6 +1704,7 @@ const Game = ({ discordRoomId }) => {
           readyPlayerCount={readyPlayerCount}
           totalPlayers={roomPlayers.length}
           bottomOffset={discordBottomOffset}
+          onHeightChange={setMobileDockHeight}
         />
       )}
       <ContextPanel

@@ -1,11 +1,18 @@
 import React, { useRef, useState, useEffect } from "react";
 
-const StatsBar = ({ gameState, userId, topOffset = 0, isMobile = false }) => {
+const StatsBar = ({
+  gameState,
+  userId,
+  topOffset = 0,
+  isMobile = false,
+  onHeightChange,
+}) => {
   const userNation = gameState?.gameState?.nations?.find(
     (n) => n.owner === userId
   );
 
   const prevResources = useRef({});
+  const barRef = useRef(null);
   const [deltas, setDeltas] = useState({});
 
   useEffect(() => {
@@ -23,6 +30,38 @@ const StatsBar = ({ gameState, userId, topOffset = 0, isMobile = false }) => {
     prevResources.current = { ...curr };
     setDeltas(newDeltas);
   }, [userNation?.resources]);
+
+  useEffect(() => {
+    if (!onHeightChange) return;
+    if (!userNation || userNation.status === "defeated") {
+      onHeightChange(0);
+      return;
+    }
+    const node = barRef.current;
+    if (!node) {
+      onHeightChange(0);
+      return;
+    }
+
+    const report = () => {
+      const next = Math.ceil(node.getBoundingClientRect().height || 0);
+      onHeightChange(next);
+    };
+
+    report();
+    let observer;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(report);
+      observer.observe(node);
+    }
+    window.addEventListener("resize", report);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", report);
+      onHeightChange(0);
+    };
+  }, [onHeightChange, userNation]);
 
   // Early return if no user nation or if user nation is defeated
   if (!userNation || userNation.status === "defeated") return null;
@@ -65,6 +104,7 @@ const StatsBar = ({ gameState, userId, topOffset = 0, isMobile = false }) => {
 
   return (
     <div
+      ref={barRef}
       className={`absolute left-0 right-0 bg-gray-900 bg-opacity-60 text-white z-40 overflow-x-auto ${
         isMobile ? "p-1.5" : "p-2"
       }`}
