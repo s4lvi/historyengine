@@ -613,7 +613,7 @@ router.post("/discord-instance", async (req, res, next) => {
         const mapData = await new Promise((resolve, reject) => {
           const worker = new Worker(
             new URL("../workers/mapWorker.js", import.meta.url),
-            { workerData: { width: w, height: h, erosion_passes: 4, num_blobs: 3, seed: mapSeed } }
+            { workerData: { width: w, height: h, erosion_passes: 4, num_blobs: w >= 500 ? 9 : 7, seed: mapSeed } }
           );
           worker.on("message", resolve);
           worker.on("error", reject);
