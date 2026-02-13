@@ -196,6 +196,11 @@ const toFiniteNumber = (value, fallback = 0) => {
   return Number.isFinite(num) ? num : fallback;
 };
 
+const sameOwner = (ownerId, currentUserId) =>
+  ownerId != null &&
+  currentUserId != null &&
+  String(ownerId) === String(currentUserId);
+
 const cloneAttackArrow = (arrow) => ({
   ...arrow,
   path: Array.isArray(arrow?.path)
@@ -1406,7 +1411,7 @@ const GameCanvas = ({
   const pendingHoverRef = useRef(null);
   const nations = gameState?.gameState?.nations || [];
   const playerNation = useMemo(() =>
-    nations.find((n) => n.owner === userId && n.status !== "defeated") || null,
+    nations.find((n) => sameOwner(n.owner, userId) && n.status !== "defeated") || null,
     [nations, userId]
   );
   const resourceNodeClaims = gameState?.gameState?.resourceNodeClaims || {};
@@ -1445,7 +1450,7 @@ const GameCanvas = ({
       if (!owner || !captureInitRef.current) return;
       const prevOwner = lastClaimOwnersRef.current?.[key] || null;
       if (owner === prevOwner) return;
-      if (userId && owner !== userId) return;
+      if (userId && !sameOwner(owner, userId)) return;
       const [xStr, yStr] = key.split(",");
       const x = Number(xStr);
       const y = Number(yStr);
@@ -2075,7 +2080,7 @@ const GameCanvas = ({
             const maxRangeCfg = cfg?.territorial?.arrowMaxRange ?? 60;
             const gs = gameStateRef.current;
             const playerNation = gs?.gameState?.nations?.find(
-              (n) => n.owner === userId
+              (n) => sameOwner(n.owner, userId)
             );
             const pop = playerNation?.population || 0;
             const maxRange = Math.min(maxRangeCfg, baseRange + Math.sqrt(pop) * rangePerSqrtPop);
@@ -2152,7 +2157,7 @@ const GameCanvas = ({
           }
           let foodCost = arrowCostCfg.food.base + arrowCostCfg.food.perTile * pathLen;
           let goldCost = arrowCostCfg.gold.base + arrowCostCfg.gold.perTile * pathLen;
-          const pNation = nations.find((n) => n.owner === userId);
+          const pNation = nations.find((n) => sameOwner(n.owner, userId));
           const activeAttacks = pNation?.arrowOrders?.attacks?.length || 0;
           if (arrowCostCfg.firstArrowFree && activeAttacks === 0) {
             foodCost = 0;
@@ -2287,7 +2292,7 @@ const GameCanvas = ({
           ? required.some((r) => cellResources.includes(r))
           : cellResources.includes(required);
         const userNation = gameState?.gameState?.nations?.find(
-          (n) => n.owner === userId
+          (n) => sameOwner(n.owner, userId)
         );
         let territoryValid = false;
         if (userNation?.territory?.x && userNation?.territory?.y) {
@@ -2530,7 +2535,7 @@ const GameCanvas = ({
     }
 
     if (buildingStructure === "tower") {
-      const playerNation = allNations.find((n) => n.owner === userId);
+      const playerNation = allNations.find((n) => sameOwner(n.owner, userId));
       if (!playerNation) return true;
       let towerCount = 0;
       for (const c of playerNation.cities || []) {
@@ -2561,7 +2566,7 @@ const GameCanvas = ({
       ? required.some((r) => cellResources.includes(r))
       : cellResources.includes(required);
     const userNation = gameState?.gameState?.nations?.find(
-      (n) => n.owner === userId
+      (n) => sameOwner(n.owner, userId)
     );
     let territoryValid = false;
     if (userNation?.territory?.x && userNation?.territory?.y) {
@@ -2736,7 +2741,7 @@ const GameCanvas = ({
         let goldCost = arrowCostCfg.gold.base + arrowCostCfg.gold.perTile * pathLen;
 
         // First arrow free check
-        const pNation = nations.find((n) => n.owner === userId);
+        const pNation = nations.find((n) => sameOwner(n.owner, userId));
         const activeAttacks = pNation?.arrowOrders?.attacks?.length || 0;
         if (arrowCostCfg.firstArrowFree && activeAttacks === 0) {
           foodCost = 0;

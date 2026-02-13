@@ -40,6 +40,11 @@ export function hasActiveConnections(roomId) {
   return !!(set && set.size > 0);
 }
 
+export function getActiveConnectionCount(roomId) {
+  const set = rooms.get(roomId);
+  return set ? set.size : 0;
+}
+
 let getLiveRoomFn = null;
 let getMatrixFn = null;
 

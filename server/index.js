@@ -145,7 +145,7 @@ const EMPTY_ROOM_CLEANUP_INTERVAL_MS =
 async function cleanupEmptyRooms() {
   try {
     const rooms = await GameRoom.find({
-      status: { $in: ["open", "paused"] },
+      status: { $in: ["lobby", "open", "paused"] },
     })
       .select("_id map")
       .lean();

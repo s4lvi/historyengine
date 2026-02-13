@@ -5,7 +5,7 @@ import { Worker } from "worker_threads";
 import { gameLoop } from "../workers/gameLoop.js";
 import config from "../config/config.js";
 import { buildGameStateResponse } from "../utils/gameStateView.js";
-import { broadcastRoomUpdate, touchRoom } from "../wsHub.js";
+import { broadcastRoomUpdate, touchRoom, getActiveConnectionCount } from "../wsHub.js";
 import { assignResourcesToMap } from "../utils/resourceManagement.js";
 import { generateCityName, generateTowerName, generateUniqueName } from "../utils/nameGenerator.js";
 import { computePathLength, computeMaxArrowRange } from "../utils/gameLogic.js";
@@ -1019,6 +1019,7 @@ router.get("/", async (req, res, next) => {
       return {
         ...room.toObject(),
         allowRefound,
+        connectedPlayers: getActiveConnectionCount(room._id.toString()),
       };
     });
     res.json(payload);

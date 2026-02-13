@@ -1,5 +1,10 @@
 import React, { useRef, useState, useEffect } from "react";
 
+const sameOwner = (ownerId, currentUserId) =>
+  ownerId != null &&
+  currentUserId != null &&
+  String(ownerId) === String(currentUserId);
+
 const StatsBar = ({
   gameState,
   userId,
@@ -8,7 +13,7 @@ const StatsBar = ({
   onHeightChange,
 }) => {
   const userNation = gameState?.gameState?.nations?.find(
-    (n) => n.owner === userId
+    (n) => sameOwner(n.owner, userId)
   );
 
   const prevResources = useRef({});

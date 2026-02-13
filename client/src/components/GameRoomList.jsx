@@ -432,7 +432,7 @@ const GameRoomList = () => {
                   Map: {room.map.name} ({room.map.width}x{room.map.height})
                 </p>
                 <p className="text-sm text-gray-300">
-                  Players: {room.players?.length || 0}
+                  Players: {room.connectedPlayers ?? room.players?.length ?? 0}
                 </p>
                 <p className="text-sm text-gray-300">
                   Status: {room.status === "lobby" ? "Lobby" : "In Progress"}

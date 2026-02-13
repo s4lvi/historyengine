@@ -16,6 +16,11 @@ import { useAuth } from "../context/AuthContext";
 import { apiFetch, getWsUrl } from "../utils/api";
 import { isDiscordActivity, getDiscordToken } from "../utils/discord";
 
+const sameOwner = (ownerId, currentUserId) =>
+  ownerId != null &&
+  currentUserId != null &&
+  String(ownerId) === String(currentUserId);
+
 const Game = ({ discordRoomId }) => {
   // Get game room ID from URL params or Discord prop.
   const { id: paramId } = useParams();
@@ -479,7 +484,7 @@ const Game = ({ discordRoomId }) => {
         const now = performance.now();
         const newFlashes = [];
         data.gameState.nations.forEach((nation) => {
-          if (nation.owner !== userId) return;
+          if (!sameOwner(nation.owner, userId)) return;
           const delta = nation.territoryDeltaForClient;
           if (!delta) return;
           if (delta.add?.x?.length) {
@@ -527,7 +532,7 @@ const Game = ({ discordRoomId }) => {
       ? winningNation.nationName || winningNation.displayName || winningNation.owner
       : null;
     if (winningNation) {
-      if (winningNation.owner === userId) {
+      if (sameOwner(winningNation.owner, userId)) {
         if (!actionModalRef.current || actionModalRef.current.type !== "win") {
           setActionModal({
             type: "win",
@@ -558,10 +563,10 @@ const Game = ({ discordRoomId }) => {
       }
     } else {
       const playerNation = data.gameState.nations?.find(
-        (n) => n.owner === userId && n.status !== "defeated"
+        (n) => sameOwner(n.owner, userId) && n.status !== "defeated"
       );
       const defeatedNation = data.gameState.nations?.find(
-        (n) => n.owner === userId && n.status === "defeated"
+        (n) => sameOwner(n.owner, userId) && n.status === "defeated"
       );
       const anyNationForUser = !!playerNation || !!defeatedNation;
       if (playerNation) {
@@ -1148,8 +1153,8 @@ const Game = ({ discordRoomId }) => {
     if (!isRoomStarted) return;
     if (!path || path.length < 2) return;
 
-    const playerNation = gameState?.gameState?.nations?.find(
-      (n) => n.owner === userId
+    const playerNation = gameState?.gameState?.nations?.find((n) =>
+      sameOwner(n.owner, userId)
     );
     const population = playerNation?.population || 0;
     const initialPower = population * attackPercent;
@@ -1319,7 +1324,7 @@ const Game = ({ discordRoomId }) => {
   // Track arrow state from server and detect completions
   useEffect(() => {
     const playerNation = gameState?.gameState?.nations?.find(
-      (n) => n.owner === userId && n.status !== "defeated"
+      (n) => sameOwner(n.owner, userId) && n.status !== "defeated"
     );
     const serverArrows = playerNation?.arrowOrders || {};
     const tickCount = Number(gameState?.tickCount);
@@ -1428,7 +1433,7 @@ const Game = ({ discordRoomId }) => {
   }, [gameState, userId, config]);
 
   const playerNation = gameState?.gameState?.nations?.find(
-    (n) => n.owner === userId && n.status !== "defeated"
+    (n) => sameOwner(n.owner, userId) && n.status !== "defeated"
   );
   const playerResources = playerNation?.resources || {};
   const playerTroopCount = playerNation?.troopCount ?? 0;
