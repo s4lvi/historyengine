@@ -14,6 +14,7 @@ import {
 } from "react-icons/fa";
 import Game from "./components/Game";
 import GameRoomList from "./components/GameRoomList";
+import MapPreview from "./components/MapPreview";
 import { ErrorBoundary } from "./components/ErrorHandling";
 import ProfileModal from "./components/ProfileModal";
 import { AuthProvider, useAuth } from "./context/AuthContext";
@@ -760,6 +761,16 @@ function App() {
             <Route path="/news" element={<NewsPage />} />
             <Route path="/terms" element={<TermsPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
+            {process.env.NODE_ENV !== "production" && (
+              <Route
+                path="/map-preview"
+                element={
+                  <AppShell>
+                    <MapPreview />
+                  </AppShell>
+                }
+              />
+            )}
             <Route path="/rooms/:id" element={<Game />} />
           </Routes>
         </Router>

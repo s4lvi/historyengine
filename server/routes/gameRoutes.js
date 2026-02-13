@@ -778,6 +778,7 @@ router.post("/init", async (req, res, next) => {
           erosion_passes: erosionPasses,
           num_blobs: numBlobs,
           seed: mapSeed,
+          mapConfig: config?.mapGeneration,
         });
 
         await Map.findByIdAndUpdate(newMap._id, {

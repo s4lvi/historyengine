@@ -1,1098 +1,481 @@
-// mapUtils.js
+// mapUtils.js — Domain-warped FBM terrain generation
 const DEBUG_MAP = process.env.DEBUG_MAP === "true";
 
-// Standard linear interpolation
-export function lerp(t, a, b) {
-  try {
-    if (
-      typeof t !== "number" ||
-      typeof a !== "number" ||
-      typeof b !== "number"
-    ) {
-      console.error("Invalid parameters for lerp:", { t, a, b });
-      throw new Error("Invalid parameters for lerp");
-    }
-    return a + t * (b - a);
-  } catch (error) {
-    console.error("Error in lerp:", error);
-    throw error;
+// Default generation config — overridden by gameConfig.json mapGeneration section
+const DEFAULTS = {
+  seaLevel: 0.35,
+  coastalLevel: 0.40,
+  mountainLevel: 0.85,
+  elevationOffset: 0.40,
+  noiseWeight: 0.6,
+  anchorWeight: 0.4,
+  warp1Scale: 0.003,
+  warp1Amplitude: 40,
+  warp2Scale: 0.006,
+  warp2Amplitude: 20,
+  fbmOctaves: 6,
+  fbmFrequency: 0.008,
+  fbmPersistence: 0.5,
+  borderWidth: 0.18,
+  anchorMargin: 0.15,
+  anchorMinStrength: 0.4,
+  anchorStrengthRange: 0.35,
+  anchorMinSigma: 0.15,
+  anchorSigmaRange: 0.12,
+  peakAmplifyStrength: 0.8,
+  subSeaPush: 0.6,
+  riverFlowMultiplier: 0.12,
+  riverWidenMultiplier: 4,
+  moistureInfluenceRadius: 15,
+  rainShadowDecay: 0.92,
+  moistureSmoothPasses: 3,
+};
+
+function resolveConfig(cfg) {
+  if (!cfg) return { ...DEFAULTS };
+  const out = {};
+  for (const key of Object.keys(DEFAULTS)) {
+    out[key] = cfg[key] !== undefined ? cfg[key] : DEFAULTS[key];
   }
+  return out;
 }
 
-// A smooth step function for smooth transitions
-export function smoothStep(edge0, edge1, x) {
-  try {
-    const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
-    return t * t * (3 - 2 * t);
-  } catch (error) {
-    console.error("Error in smoothStep:", error, { edge0, edge1, x });
-    throw error;
-  }
-}
+// ─── Phase 1: Seeded PRNG + Noise ────────────────────────────────────────────
 
-// Improved noise function (Perlin-like noise)
-export function createNoise2D(seed) {
-  try {
-    const permutation = Array.from({ length: 256 }, (_, i) => i);
-    for (let i = permutation.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [permutation[i], permutation[j]] = [permutation[j], permutation[i]];
-    }
-    const p = [...permutation, ...permutation];
-    return (x, y) => {
-      try {
-        const X = Math.floor(x) & 255;
-        const Y = Math.floor(y) & 255;
-        x -= Math.floor(x);
-        y -= Math.floor(y);
-        const u = x * x * x * (x * (x * 6 - 15) + 10);
-        const v = y * y * y * (y * (y * 6 - 15) + 10);
-        const A = p[X] + Y;
-        const B = p[X + 1] + Y;
-        const hash = (h, x, y) => {
-          const vec = [
-            [1, 1],
-            [-1, 1],
-            [1, -1],
-            [-1, -1],
-            [1, 0],
-            [-1, 0],
-            [1, 0],
-            [-1, 0],
-            [0, 1],
-            [0, -1],
-            [0, 1],
-            [0, -1],
-          ][h % 12];
-          return vec[0] * x + vec[1] * y;
-        };
-        return lerp(
-          v,
-          lerp(u, hash(p[A], x, y), hash(p[B], x - 1, y)),
-          lerp(u, hash(p[A + 1], x, y - 1), hash(p[B + 1], x - 1, y - 1))
-        );
-      } catch (error) {
-        console.error("Error in noise2D function:", error, { x, y });
-        throw error;
-      }
-    };
-  } catch (error) {
-    console.error("Error in noise2D:", error);
-    throw error;
-  }
-}
-
-export function simulateErosion(heightMap, iterations = 10) {
-  try {
-    const width = heightMap[0].length;
-    const height = heightMap.length;
-    for (let iter = 0; iter < iterations; iter++) {
-      for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-          let erosionAmount = 0;
-          // Check neighboring cells
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              if (dx === 0 && dy === 0) continue;
-              const neighbor = heightMap[y + dy][x + dx];
-              const diff = heightMap[y][x].elevation - neighbor.elevation;
-              if (diff > 0) {
-                // Transfer a small fraction of the difference
-                erosionAmount += diff * 0.05;
-              }
-            }
-          }
-          heightMap[y][x].elevation = Math.max(
-            0,
-            heightMap[y][x].elevation - erosionAmount
-          );
-        }
-      }
-    }
-    return heightMap;
-  } catch (error) {
-    console.error("Error in simulateErosion:", error);
-    throw error;
-  }
-}
-
-export function computeDistanceToSea(
-  heightMap,
-  seaLevel = 0.3,
-  useDiagonal = false
-) {
-  const height = heightMap.length;
-  const width = heightMap[0].length;
-  const distanceMap = Array.from({ length: height }, () =>
-    Array(width).fill(Infinity)
-  );
-  const queue = [];
-  let queueIndex = 0;
-  const directions = useDiagonal
-    ? [
-        { dx: 1, dy: 0 },
-        { dx: -1, dy: 0 },
-        { dx: 0, dy: 1 },
-        { dx: 0, dy: -1 },
-        { dx: 1, dy: 1 },
-        { dx: 1, dy: -1 },
-        { dx: -1, dy: 1 },
-        { dx: -1, dy: -1 },
-      ]
-    : [
-        { dx: 1, dy: 0 },
-        { dx: -1, dy: 0 },
-        { dx: 0, dy: 1 },
-        { dx: 0, dy: -1 },
-      ];
-
-  // Seed the BFS with sea cells.
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      if (heightMap[y][x].elevation < seaLevel) {
-        distanceMap[y][x] = 0;
-        queue.push({ x, y });
-      }
-    }
-  }
-
-  while (queueIndex < queue.length) {
-    const { x, y } = queue[queueIndex++];
-    const currentDist = distanceMap[y][x];
-
-    for (const { dx, dy } of directions) {
-      const nx = x + dx;
-      const ny = y + dy;
-      if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-        if (distanceMap[ny][nx] > currentDist + 1) {
-          distanceMap[ny][nx] = currentDist + 1;
-          queue.push({ x: nx, y: ny });
-        }
-      }
-    }
-  }
-  return distanceMap;
-}
-
-export function aStarRiverPath(start, heightMap, distanceMap, seaLevel = 0.3) {
-  const height = heightMap.length;
-  const width = heightMap[0].length;
-  const openSet = [];
-  const closedSet = new Set();
-
-  // Helper to generate a unique key for a cell.
-  function nodeKey(x, y) {
-    return `${x},${y}`;
-  }
-
-  // The starting node.
-  const startNode = {
-    x: start.x,
-    y: start.y,
-    g: 0,
-    // f = g + h, where h is the precomputed distance-to-sea.
-    f: distanceMap[start.y][start.x],
-    parent: null,
+function mulberry32(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  openSet.push(startNode);
-
-  const directions = [
-    { dx: 1, dy: 0 },
-    { dx: -1, dy: 0 },
-    { dx: 0, dy: 1 },
-    { dx: 0, dy: -1 },
-  ];
-
-  // Parameters to control the cost function.
-  const uphillWeight = 999; // Extra cost for moving uphill.
-  const downhillReward = 35; // Reward (cost reduction) for moving downhill.
-  const heuristicWeight = 0.4; // Scale factor to reduce the influence of the distance-to-sea heuristic.
-
-  while (openSet.length > 0) {
-    // Get the node with the lowest f value.
-    openSet.sort((a, b) => a.f - b.f);
-    const current = openSet.shift();
-    const currentKey = nodeKey(current.x, current.y);
-
-    if (closedSet.has(currentKey)) continue;
-    closedSet.add(currentKey);
-
-    // Check if we've reached the sea.
-    if (heightMap[current.y][current.x].elevation < seaLevel) {
-      // Reconstruct the path from start to current.
-      const path = [];
-      let node = current;
-      while (node) {
-        path.push({ x: node.x, y: node.y });
-        node = node.parent;
-      }
-      path.reverse();
-      return path;
-    }
-
-    // Expand neighbors.
-    for (const { dx, dy } of directions) {
-      const nx = current.x + dx;
-      const ny = current.y + dy;
-
-      // Ensure neighbor is within bounds.
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      const neighborKey = nodeKey(nx, ny);
-      if (closedSet.has(neighborKey)) continue;
-
-      // Compute the cost to move to the neighbor.
-      let stepCost = 1; // Base cost per step.
-      const elevationDiff =
-        heightMap[ny][nx].elevation - heightMap[current.y][current.x].elevation;
-      if (elevationDiff > 0) {
-        // Penalize uphill movement.
-        stepCost += elevationDiff * uphillWeight;
-      } else {
-        // Reward downhill moves by reducing the cost.
-        // (Be sure not to reduce below a minimum cost.)
-        stepCost = Math.max(0.1, stepCost - -elevationDiff * downhillReward);
-      }
-      const tentative_g = current.g + stepCost;
-      const h = distanceMap[ny][nx]; // heuristic: steps from neighbor to sea.
-      const f = tentative_g + heuristicWeight * h;
-
-      // See if we already have an entry for this neighbor.
-      const existingIndex = openSet.findIndex(
-        (node) => node.x === nx && node.y === ny
-      );
-      if (existingIndex !== -1) {
-        if (tentative_g < openSet[existingIndex].g) {
-          // Found a better path to the neighbor.
-          openSet[existingIndex].g = tentative_g;
-          openSet[existingIndex].f = f;
-          openSet[existingIndex].parent = current;
-        }
-      } else {
-        openSet.push({ x: nx, y: ny, g: tentative_g, f, parent: current });
-      }
-    }
-  }
-
-  // If openSet is empty and no sea cell was reached, return null.
-  return null;
 }
 
-// Generate rivers and build an erosion map
-export function generateRivers(heightMap, width, height, options = {}) {
-  try {
-    const seaLevel = options.seaLevel ?? 0.3;
-    const noise2D = options.noise2D || null;
-    const flowThreshold =
-      options.flowThreshold ??
-      Math.max(80, Math.round(Math.sqrt(width * height) * 1.5));
-    const rainNoise = options.rainNoise ?? 0.45;
-    const rainElevationBonus = options.rainElevationBonus ?? 0.6;
-    const elevWeight = options.elevWeight ?? 1.4;
-    const distWeight = options.distWeight ?? 0.7;
-    const meanderWeight = options.meanderWeight ?? 0.35;
-    const dirFieldWeight = options.dirFieldWeight ?? 0.4;
-    const slopeWeight = options.slopeWeight ?? 0.6;
-    const dirNoiseScale = options.dirNoiseScale ?? 0.02;
-    const pickNoiseScale = options.pickNoiseScale ?? 0.12;
-    const rivers = new Set();
-    const erosionMap = Array(height)
-      .fill(null)
-      .map(() => Array(width).fill(0));
-
-    const distanceMap = computeDistanceToSea(heightMap, seaLevel, true);
-    const total = width * height;
-    let flow = new Float32Array(total);
-    let effectiveElev = new Float32Array(total);
-    let order = new Array(total);
-    const neighborSteps = [
-      { dx: 1, dy: 0, dist: 1 },
-      { dx: -1, dy: 0, dist: 1 },
-      { dx: 0, dy: 1, dist: 1 },
-      { dx: 0, dy: -1, dist: 1 },
-      { dx: 1, dy: 1, dist: Math.SQRT2 },
-      { dx: 1, dy: -1, dist: Math.SQRT2 },
-      { dx: -1, dy: 1, dist: Math.SQRT2 },
-      { dx: -1, dy: -1, dist: Math.SQRT2 },
-    ];
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx = y * width + x;
-        const elev = heightMap[y][x].elevation;
-        const elevNoise = noise2D ? noise2D(x * 0.08, y * 0.08) * 0.03 : 0;
-        const effElev = Math.min(1, Math.max(0, elev + elevNoise));
-        effectiveElev[idx] = effElev;
-        order[idx] = idx;
-
-        if (elev <= seaLevel) {
-          flow[idx] = 0;
-          continue;
-        }
-
-        const noiseVal = noise2D ? noise2D(x * 0.06, y * 0.06) : 0;
-        const rain = 1 + noiseVal * rainNoise;
-        const elevBonus = Math.max(0, elev - 0.4) * rainElevationBonus;
-        flow[idx] = Math.max(0.1, rain + elevBonus);
-      }
-    }
-
-    const slopeExponent = 1.3;
-    order.sort((a, b) => effectiveElev[b] - effectiveElev[a]);
-    for (let i = 0; i < order.length; i++) {
-      const idx = order[i];
-      const x = idx % width;
-      const y = Math.floor(idx / width);
-      const elev = effectiveElev[idx];
-      if (elev <= seaLevel) continue;
-      const dist = distanceMap[y][x];
-
-      let dirX = 0;
-      let dirY = 0;
-      if (noise2D) {
-        const angle =
-          (noise2D(x * dirNoiseScale, y * dirNoiseScale) + 1) * Math.PI;
-        dirX = Math.cos(angle);
-        dirY = Math.sin(angle);
-      }
-
-      let slopeDirX = 0;
-      let slopeDirY = 0;
-      if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-        const elevL = effectiveElev[idx - 1];
-        const elevR = effectiveElev[idx + 1];
-        const elevU = effectiveElev[idx - width];
-        const elevD = effectiveElev[idx + width];
-        const gradX = (elevR - elevL) * 0.5;
-        const gradY = (elevD - elevU) * 0.5;
-        const len = Math.hypot(gradX, gradY);
-        if (len > 0) {
-          slopeDirX = -gradX / len;
-          slopeDirY = -gradY / len;
-        }
-      }
-
-      const downslope = [];
-      const fallback = [];
-      for (const step of neighborSteps) {
-        const nx = x + step.dx;
-        const ny = y + step.dy;
-        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-        const nIdx = ny * width + nx;
-        const nElev = effectiveElev[nIdx];
-        const nDist = distanceMap[ny][nx];
-        const elevDrop = elev - nElev;
-        const distDrop = dist - nDist;
-        if (elevDrop > 0) {
-          const baseSlope = elevDrop / step.dist;
-          const jitter = noise2D ? noise2D(nx * 0.08, ny * 0.08) * 0.05 : 0;
-          const dirBias = step.dx * dirX + step.dy * dirY;
-          const slopeBias = step.dx * slopeDirX + step.dy * slopeDirY;
-          const score =
-            baseSlope * elevWeight +
-            distDrop * distWeight +
-            jitter * meanderWeight +
-            dirBias * dirFieldWeight +
-            slopeBias * slopeWeight;
-          downslope.push({ idx: nIdx, score, slope: baseSlope });
-        } else if (distDrop > 0) {
-          fallback.push({ idx: nIdx, score: distDrop });
-        }
-      }
-
-      let pool = downslope;
-      if (pool.length === 0 && fallback.length > 0) {
-        fallback.sort((a, b) => b.score - a.score);
-        pool = fallback.slice(0, 1);
-      }
-      if (pool.length === 0) continue;
-
-      pool.sort((a, b) => b.score - a.score);
-      const top = pool;
-      let totalWeight = 0;
-      for (const entry of top) {
-        const base = Math.max(0.0001, entry.slope || entry.score);
-        const bias =
-          1 +
-          entry.score * 0.15 +
-          (noise2D ? noise2D(entry.idx * 0.0001, entry.idx * 0.00013) * 0.1 : 0);
-        const w = Math.pow(base * Math.max(0.2, bias), slopeExponent);
-        entry.weight = w;
-        totalWeight += w;
-      }
-      if (!Number.isFinite(totalWeight) || totalWeight <= 0) continue;
-
-      for (const entry of top) {
-        flow[entry.idx] += flow[idx] * (entry.weight / totalWeight);
-      }
-    }
-
-    let maxFlow = 0;
-    for (let i = 0; i < total; i++) {
-      if (flow[i] > maxFlow) maxFlow = flow[i];
-    }
-    const maxStrength = maxFlow > 0 ? maxFlow : 1;
-
-    const riverTargets = Math.max(10, Math.floor(total * 0.00008));
-    let sourceThreshold = flowThreshold * 1.6;
-    const sourceSpacing = Math.max(8, Math.floor(Math.min(width, height) * 0.02));
-    const gridW = Math.ceil(width / sourceSpacing);
-    const gridH = Math.ceil(height / sourceSpacing);
-    const sourceGrid = new Int8Array(gridW * gridH);
-    const candidates = [];
-
-    const collectCandidates = (threshold) => {
-      candidates.length = 0;
-      for (let i = 0; i < total; i++) {
-        const elev = heightMap[Math.floor(i / width)][i % width].elevation;
-        if (elev <= seaLevel + 0.08) continue;
-        if (flow[i] < threshold) continue;
-        candidates.push(i);
-      }
-    };
-
-    collectCandidates(sourceThreshold);
-    if (candidates.length < Math.min(6, riverTargets)) {
-      sourceThreshold = flowThreshold * 1.1;
-      collectCandidates(sourceThreshold);
-    }
-    candidates.sort((a, b) => flow[b] - flow[a]);
-
-    const sources = [];
-    for (let i = 0; i < candidates.length && sources.length < riverTargets; i++) {
-      const idx = candidates[i];
-      const x = idx % width;
-      const y = Math.floor(idx / width);
-      const gx = Math.floor(x / sourceSpacing);
-      const gy = Math.floor(y / sourceSpacing);
-      let blocked = false;
-      for (let oy = -1; oy <= 1 && !blocked; oy++) {
-        for (let ox = -1; ox <= 1; ox++) {
-          const nx = gx + ox;
-          const ny = gy + oy;
-          if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
-          if (sourceGrid[ny * gridW + nx]) {
-            blocked = true;
-            break;
-          }
-        }
-      }
-      if (blocked) continue;
-      sourceGrid[gy * gridW + gx] = 1;
-      sources.push(idx);
-    }
-
-    let visitStamp = new Int32Array(total);
-    let stamp = 1;
-    const maxSteps = width + height;
-
-    const addRiverCell = (x, y, strength) => {
-      if (x < 0 || x >= width || y < 0 || y >= height) return;
-      if (heightMap[y][x].elevation <= seaLevel) return;
-      const key = `${x},${y}`;
-      rivers.add(key);
-      erosionMap[y][x] += strength;
-    };
-
-    const pickNext = (x, y, prevDx, prevDy) => {
-      const idx = y * width + x;
-      const elev = effectiveElev[idx];
-      const dist = distanceMap[y][x];
-      if (!Number.isFinite(dist)) return -1;
-      let dirX = 0;
-      let dirY = 0;
-      if (noise2D) {
-        const angle =
-          (noise2D(x * dirNoiseScale, y * dirNoiseScale) + 1) * Math.PI;
-        dirX = Math.cos(angle);
-        dirY = Math.sin(angle);
-      }
-
-      let slopeDirX = 0;
-      let slopeDirY = 0;
-      if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-        const elevL = effectiveElev[idx - 1];
-        const elevR = effectiveElev[idx + 1];
-        const elevU = effectiveElev[idx - width];
-        const elevD = effectiveElev[idx + width];
-        const gradX = (elevR - elevL) * 0.5;
-        const gradY = (elevD - elevU) * 0.5;
-        const len = Math.hypot(gradX, gradY);
-        if (len > 0) {
-          slopeDirX = -gradX / len;
-          slopeDirY = -gradY / len;
-        }
-      }
-
-      const cardinalCandidates = [];
-      const diagonalCandidates = [];
-      for (const step of neighborSteps) {
-        const nx = x + step.dx;
-        const ny = y + step.dy;
-        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-        const nIdx = ny * width + nx;
-        const nElev = effectiveElev[nIdx];
-        const nDist = distanceMap[ny][nx];
-        const elevDrop = elev - nElev;
-        const distDrop = dist - nDist;
-        if (!Number.isFinite(nDist)) continue;
-        if (distDrop <= 0) continue;
-        const baseSlope = elevDrop > 0 ? elevDrop / step.dist : 0.0001;
-        const jitter = noise2D ? noise2D(nx * 0.08, ny * 0.08) * 0.05 : 0;
-        const dirBias = step.dx * dirX + step.dy * dirY;
-        const slopeBias = step.dx * slopeDirX + step.dy * slopeDirY;
-        let score =
-          baseSlope * elevWeight +
-          distDrop * distWeight +
-          jitter * meanderWeight +
-          dirBias * dirFieldWeight +
-          slopeBias * slopeWeight;
-        const isDiagonal = step.dist > 1;
-        if (isDiagonal) {
-          score *= 0.6;
-        } else {
-          score += 0.12;
-        }
-        if (prevDx !== 0 || prevDy !== 0) {
-          const alignment = step.dx * prevDx + step.dy * prevDy;
-          if (alignment > 0) {
-            score -= alignment * 0.25;
-          }
-        }
-        const entry = { idx: nIdx, score };
-        if (isDiagonal) {
-          diagonalCandidates.push(entry);
-        } else {
-          cardinalCandidates.push(entry);
-        }
-      }
-      const hasCardinal = cardinalCandidates.length > 0;
-      const hasDiagonal = diagonalCandidates.length > 0;
-      let selectionPool = null;
-      if (hasCardinal && hasDiagonal) {
-        cardinalCandidates.sort((a, b) => b.score - a.score);
-        diagonalCandidates.sort((a, b) => b.score - a.score);
-        const bestCardinal = cardinalCandidates[0].score;
-        const bestDiagonal = diagonalCandidates[0].score;
-        selectionPool =
-          bestDiagonal > bestCardinal * 1.25 ? diagonalCandidates : cardinalCandidates;
-      } else if (hasCardinal) {
-        cardinalCandidates.sort((a, b) => b.score - a.score);
-        selectionPool = cardinalCandidates;
-      } else if (hasDiagonal) {
-        diagonalCandidates.sort((a, b) => b.score - a.score);
-        selectionPool = diagonalCandidates;
-      }
-      if (selectionPool && selectionPool.length > 0) {
-        const topCount = Math.min(4, selectionPool.length);
-        let totalWeight = 0;
-        const weights = [];
-        for (let i = 0; i < topCount; i++) {
-          const weight = Math.max(0.0001, selectionPool[i].score);
-          weights.push(weight);
-          totalWeight += weight;
-        }
-        const pick =
-          ((noise2D ? noise2D(x * pickNoiseScale, y * pickNoiseScale) : 0) + 1) /
-          2;
-        let target = pick * totalWeight;
-        for (let i = 0; i < topCount; i++) {
-          target -= weights[i];
-          if (target <= 0) {
-            return selectionPool[i].idx;
-          }
-        }
-        return selectionPool[0].idx;
-      }
-
-      let fallbackIdx = -1;
-      let fallbackDist = Infinity;
-      for (const step of neighborSteps) {
-        if (step.dist > 1) continue;
-        const nx = x + step.dx;
-        const ny = y + step.dy;
-        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-        const nIdx = ny * width + nx;
-        const nDist = distanceMap[ny][nx];
-        if (!Number.isFinite(nDist)) continue;
-        if (nDist < fallbackDist) {
-          fallbackDist = nDist;
-          fallbackIdx = nIdx;
-        }
-      }
-      if (fallbackIdx >= 0) return fallbackIdx;
-      for (const step of neighborSteps) {
-        const nx = x + step.dx;
-        const ny = y + step.dy;
-        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-        const nIdx = ny * width + nx;
-        const nDist = distanceMap[ny][nx];
-        if (!Number.isFinite(nDist)) continue;
-        if (nDist < fallbackDist) {
-          fallbackDist = nDist;
-          fallbackIdx = nIdx;
-        }
-      }
-      return fallbackIdx;
-    };
-
-    for (let i = 0; i < sources.length; i++) {
-      let idx = sources[i];
-      stamp += 1;
-      let steps = 0;
-      let prevDx = 0;
-      let prevDy = 0;
-      while (idx >= 0 && steps < maxSteps) {
-        if (visitStamp[idx] === stamp) break;
-        visitStamp[idx] = stamp;
-        const x = idx % width;
-        const y = Math.floor(idx / width);
-        if (heightMap[y][x].elevation <= seaLevel) break;
-
-        const accum = flow[idx];
-        const strength = Math.min(1.6, (accum / maxStrength) * 2);
-        const widthLevel =
-          accum > flowThreshold * 6
-            ? 2
-            : accum > flowThreshold * 2
-            ? 1
-            : 0;
-        for (let dy = -widthLevel; dy <= widthLevel; dy++) {
-          for (let dx = -widthLevel; dx <= widthLevel; dx++) {
-            addRiverCell(x + dx, y + dy, strength);
-          }
-        }
-
-        const next = pickNext(x, y, prevDx, prevDy);
-        if (next < 0) break;
-        prevDx = (next % width) - x;
-        prevDy = Math.floor(next / width) - y;
-        idx = next;
-        steps += 1;
-      }
-    }
-
-    // Free typed arrays before return for earlier GC (~5MB)
-    flow = null;
-    effectiveElev = null;
-    order = null;
-    visitStamp = null;
-
-    return { rivers, erosionMap };
-  } catch (error) {
-    console.error("Error in generateRivers:", error);
-    throw error;
-  }
+export function smoothStep(edge0, edge1, x) {
+  const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
+  return t * t * (3 - 2 * t);
 }
 
-// Calculate temperature with natural variation
-export const calculateTemperature = (
-  x,
-  y,
-  elevation,
-  width,
-  height,
-  noise2D
-) => {
-  try {
-    const latitudeFactor = y / height;
-    const baseTemp =
-      25 * (1 - Math.pow(Math.abs(latitudeFactor - 0.5) * 1.25, 1.5));
-    const largeScaleNoise = noise2D(x * 0.02, y * 0.02) * 8;
-    const mediumScaleNoise = noise2D(x * 0.05, y * 0.05) * 4;
-    const smallScaleNoise = noise2D(x * 0.1, y * 0.1) * 2;
-    const elevationEffect = -elevation * 5;
-    return baseTemp + largeScaleNoise + smallScaleNoise + elevationEffect;
-  } catch (error) {
-    console.error("Error in calculateTemperature:", error, { x, y, elevation });
-    throw error;
+export function createNoise2D(seed) {
+  const rng = mulberry32(seed * 2654435761);
+  const perm = new Uint8Array(512);
+  const base = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) base[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = (rng() * (i + 1)) | 0;
+    const tmp = base[i];
+    base[i] = base[j];
+    base[j] = tmp;
   }
-};
+  for (let i = 0; i < 512; i++) perm[i] = base[i & 255];
 
-// Resource generation
-export const generateResources = (biome, elevation, moisture, temperature) => {
-  try {
-    const nodeChanceByBiome = {
-      GRASSLAND: 0.012,
-      SAVANNA: 0.01,
-      RIVER: 0.014,
-      COASTAL: 0.012,
-      FOREST: 0.01,
-      WOODLAND: 0.01,
-      TROPICAL_FOREST: 0.01,
-      RAINFOREST: 0.01,
-      TAIGA: 0.009,
-      MOUNTAIN: 0.014,
-      DESERT: 0.005,
-      TUNDRA: 0.006,
-    };
-    const nodeChance = nodeChanceByBiome[biome] ?? 0;
-    if (nodeChance <= 0) return [];
-    if (Math.random() > nodeChance) return [];
+  const gx = [1, -1, 1, -1, 1, -1, 1, -1, 0, 0, 0, 0];
+  const gy = [1, 1, -1, -1, 0, 0, 0, 0, 1, -1, 1, -1];
 
-    let weights = [];
-    if (biome === "MOUNTAIN") {
-      weights = [
-        { type: "stone", w: 0.45 },
-        { type: "iron", w: elevation > 0.65 ? 0.25 : 0.18 },
-        { type: "gold", w: elevation > 0.8 ? 0.08 : 0.04 },
-        { type: "food", w: 0.12 },
-        { type: "wood", w: 0.1 },
-      ];
-    } else if (biome === "DESERT") {
-      weights = [
-        { type: "stone", w: 0.35 },
-        { type: "iron", w: elevation > 0.65 ? 0.2 : 0.12 },
-        { type: "gold", w: elevation > 0.8 ? 0.06 : 0.03 },
-        { type: "food", w: 0.12 },
-        { type: "wood", w: 0.08 },
-      ];
-    } else if (biome === "TUNDRA") {
-      weights = [
-        { type: "iron", w: 0.28 },
-        { type: "stone", w: 0.22 },
-        { type: "food", w: 0.18 },
-        { type: "wood", w: 0.12 },
-        { type: "gold", w: 0.05 },
-      ];
-    } else if (biome === "RIVER" || biome === "COASTAL") {
-      weights = [
-        { type: "food", w: 0.45 },
-        { type: "wood", w: 0.22 },
-        { type: "stone", w: 0.12 },
-        { type: "iron", w: 0.08 },
-        { type: "gold", w: 0.05 },
-      ];
-    } else if (
-      biome === "FOREST" ||
-      biome === "WOODLAND" ||
-      biome === "TROPICAL_FOREST" ||
-      biome === "RAINFOREST" ||
-      biome === "TAIGA"
-    ) {
-      weights = [
-        { type: "wood", w: 0.45 },
-        { type: "food", w: 0.2 },
-        { type: "stone", w: 0.12 },
-        { type: "iron", w: 0.1 },
-        { type: "gold", w: 0.05 },
-      ];
-    } else {
-      weights = [
-        { type: "food", w: 0.5 },
-        { type: "wood", w: 0.2 },
-        { type: "stone", w: 0.12 },
-        { type: "iron", w: 0.1 },
-        { type: "gold", w: 0.08 },
-      ];
-    }
+  return (x, y) => {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+    const xf = x - Math.floor(x);
+    const yf = y - Math.floor(y);
+    const u = xf * xf * xf * (xf * (xf * 6 - 15) + 10);
+    const v = yf * yf * yf * (yf * (yf * 6 - 15) + 10);
 
-    let total = 0;
-    for (const entry of weights) total += entry.w;
-    let roll = Math.random() * total;
-    for (const entry of weights) {
-      roll -= entry.w;
-      if (roll <= 0) return [entry.type];
-    }
-    return [weights[weights.length - 1]?.type || "food"];
-  } catch (error) {
-    console.error("Error in generateResources:", error, {
-      biome,
-      elevation,
-      moisture,
-      temperature,
-    });
-    throw error;
+    const A = perm[X] + Y;
+    const B = perm[X + 1] + Y;
+
+    const h00 = perm[A] % 12;
+    const h10 = perm[B] % 12;
+    const h01 = perm[A + 1] % 12;
+    const h11 = perm[B + 1] % 12;
+
+    const n00 = gx[h00] * xf + gy[h00] * yf;
+    const n10 = gx[h10] * (xf - 1) + gy[h10] * yf;
+    const n01 = gx[h01] * xf + gy[h01] * (yf - 1);
+    const n11 = gx[h11] * (xf - 1) + gy[h11] * (yf - 1);
+
+    const nx0 = n00 + u * (n10 - n00);
+    const nx1 = n01 + u * (n11 - n01);
+    return nx0 + v * (nx1 - nx0);
+  };
+}
+
+// ─── Phase 2: Elevation via Domain-Warped FBM ────────────────────────────────
+
+function fbm(noise2D, x, y, octaves, freq, persistence) {
+  let value = 0;
+  let amp = 1;
+  let f = freq;
+  let maxAmp = 0;
+  for (let i = 0; i < octaves; i++) {
+    value += noise2D(x * f, y * f) * amp;
+    maxAmp += amp;
+    amp *= persistence;
+    f *= 2;
   }
-};
+  return value / maxAmp;
+}
 
-// Biome determination
-export const determineBiome = (
-  elevation,
-  moisture,
-  temperature,
-  x,
-  y,
-  noise2D
-) => {
-  try {
-    const thresholdNoise = noise2D(x * 0.05, y * 0.05) * 0.05;
-    if (elevation < 0.35 + thresholdNoise) return "OCEAN";
-    if (elevation < 0.4 + thresholdNoise) return "COASTAL";
-    if (elevation > 0.85 + thresholdNoise) return "MOUNTAIN";
+function generateElevation(width, height, numBlobs, noise2D, rng, cfg) {
+  const total = width * height;
+  const elev = new Float32Array(total);
 
-    const tempFactor = smoothStep(0, 35, temperature);
-    const adjustedMoisture = moisture + noise2D(x * 0.03, y * 0.03) * 0.1;
-    const moistureFactor = smoothStep(0, 1, adjustedMoisture);
-
-    if (tempFactor > 0.7) {
-      if (moistureFactor < 0.25) return "DESERT";
-      if (moistureFactor < 0.45) return "SAVANNA";
-      if (moistureFactor < 0.7) return "TROPICAL_FOREST";
-      return "RAINFOREST";
-    } else if (tempFactor < 0.3) {
-      if (moistureFactor < 0.35) return "TUNDRA";
-      return "TAIGA";
-    } else {
-      if (moistureFactor < 0.25) return "GRASSLAND";
-      if (moistureFactor < 0.65) return "WOODLAND";
-      return "FOREST";
-    }
-  } catch (error) {
-    console.error("Error in determineBiome:", error, {
-      elevation,
-      moisture,
-      temperature,
-      x,
-      y,
-    });
-    throw error;
-  }
-};
-
-// Generates a set of initial large blobs.
-function generateInitialBlobs(numBlobs, width, height) {
-  const minDim = Math.min(width, height);
-  const dist_factor = 0.9;
-  const blobs = [];
+  const anchors = [];
   for (let i = 0; i < numBlobs; i++) {
-    blobs.push({
-      x: Math.random() * (width * dist_factor) + width * (1 - dist_factor),
-      y: Math.random() * (height * dist_factor) + height * (1 - dist_factor),
-      radius: Math.random() * (minDim / 6) + minDim / 4,
+    anchors.push({
+      x: cfg.anchorMargin * width + rng() * width * (1 - 2 * cfg.anchorMargin),
+      y: cfg.anchorMargin * height + rng() * height * (1 - 2 * cfg.anchorMargin),
+      strength: cfg.anchorMinStrength + rng() * cfg.anchorStrengthRange,
+      sigma: Math.min(width, height) * (cfg.anchorMinSigma + rng() * cfg.anchorSigmaRange),
     });
   }
-  return blobs;
-}
+  // Ensure at least one strong anchor for mountain generation
+  anchors[0].strength = Math.max(anchors[0].strength, 0.55);
 
-function spawnSubBlobs(
-  blobs,
-  passes = 3,
-  spawnChance = 0.5,
-  scaleFactor = 0.7,
-  maxSubBlobs = 4
-) {
-  let allBlobs = blobs.slice(); // start with initial blobs
-  for (let pass = 0; pass < passes; pass++) {
-    const newBlobs = [];
-    // Consider all blobs from the previous pass.
-    for (const blob of allBlobs) {
-      // With a given chance, spawn either 1 or 2 sub–blobs from this blob.
-      if (Math.random() < spawnChance) {
-        // Randomly decide to spawn 1 or 2 sub-blobs.
-        const maxCount = Math.max(1, maxSubBlobs);
-        const numSubBlobs = Math.random() < 0.5 ? 1 : Math.min(4, maxCount);
-        for (let i = 0; i < numSubBlobs; i++) {
-          const angle = Math.random() * Math.PI * 2;
-          // Place the new blob exactly on the edge of the parent blob.
-          const subX = blob.x + Math.cos(angle) * blob.radius * 0.9;
-          const subY = blob.y + Math.sin(angle) * blob.radius * 0.9;
-          const subRadius = Math.random();
-          if (DEBUG_MAP) {
-            console.log("Added sub blob", blob.radius, subRadius);
-          }
-          newBlobs.push({ x: subX, y: subY, radius: subRadius });
-        }
-      }
-    }
-    // Add any new blobs from this pass to the overall collection.
-    allBlobs = allBlobs.concat(newBlobs);
-  }
-  return allBlobs;
-}
+  const border = width * cfg.borderWidth;
 
-export function calculateBlobElevation(x, y, blobs, noise2D) {
-  try {
-    let blobElevation = 0;
-    for (const blob of blobs) {
-      const dx = x - blob.x;
-      const dy = y - blob.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      // Influence is 1 at the center and falls to 0 at the blob's radius.
-      const influence = 1 - smoothStep(0, blob.radius, dist);
-      blobElevation = Math.max(blobElevation, influence);
-    }
-    // Add subtle low-frequency noise for additional natural variation.
-    const noiseVal = noise2D(x * 0.05, y * 0.05) * 0.3 - 0.1;
-    const noiseVal2 = noise2D(x * 0.15, y * 0.15) * 0.15;
-    const noiseVal3 = noise2D(x * 0.5, y * 0.5) * 0.1;
-    let elevation = blobElevation + noiseVal + noiseVal2 + noiseVal3;
-    // Clamp elevation to the 0–1 range.
-    elevation = Math.min(1, Math.max(0, elevation));
-    return elevation;
-  } catch (error) {
-    console.error("Error in calculateBlobElevation:", error, { x, y, blobs });
-    throw error;
-  }
-}
-
-function generateMoistureMap(
-  heightMap,
-  width,
-  height,
-  noise2D,
-  rivers,
-  options = {}
-) {
-  const waterThreshold = 0.3;
-  const baseMoistureWater = 1.0;
-  const baseMoistureLand = 0.3;
-
-  // 1. INITIAL BASE MOISTURE: water cells vs. land
-  let moistureMap = Array.from({ length: height }, (_, y) =>
-    Array.from({ length: width }, (_, x) =>
-      heightMap[y][x].elevation < waterThreshold
-        ? baseMoistureWater
-        : baseMoistureLand
-    )
-  );
-  if (DEBUG_MAP) console.log("Base moisture calculated.");
-
-  // 2. WATER PROXIMITY BOOST: Compute distance-to-water via BFS
-  // Use flat Int32Array for distance and queue to reduce object overhead.
-  const totalCells = width * height;
-  const waterDistFlat = new Int32Array(totalCells).fill(-1);
-  const bfsQueue = new Int32Array(totalCells);
-  let queueHead = 0;
-  let queueTail = 0;
-  // Seed the BFS with water cells.
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      if (
-        heightMap[y][x].elevation < waterThreshold ||
-        rivers.has(`${x},${y}`)
-      ) {
-        const idx = y * width + x;
-        waterDistFlat[idx] = 0;
-        bfsQueue[queueTail++] = idx;
+      const idx = y * width + x;
+
+      // Domain warp layer 1
+      const w1x = noise2D(x * cfg.warp1Scale, y * cfg.warp1Scale) * cfg.warp1Amplitude;
+      const w1y = noise2D(x * cfg.warp1Scale + 5.2, y * cfg.warp1Scale + 1.3) * cfg.warp1Amplitude;
+
+      // Domain warp layer 2
+      const w2x = noise2D((x + w1x) * cfg.warp2Scale, (y + w1y) * cfg.warp2Scale) * cfg.warp2Amplitude;
+      const w2y = noise2D((x + w1x) * cfg.warp2Scale + 3.7, (y + w1y) * cfg.warp2Scale + 8.1) * cfg.warp2Amplitude;
+
+      // FBM noise with warped coordinates
+      const wx = x + w1x + w2x;
+      const wy = y + w1y + w2y;
+      const noiseVal = fbm(noise2D, wx, wy, cfg.fbmOctaves, cfg.fbmFrequency, cfg.fbmPersistence);
+
+      // Continent anchor bias (Gaussian falloff)
+      let blobBias = 0;
+      for (let a = 0; a < anchors.length; a++) {
+        const dx = x - anchors[a].x;
+        const dy = y - anchors[a].y;
+        const d2 = dx * dx + dy * dy;
+        const sigma2 = anchors[a].sigma * anchors[a].sigma;
+        blobBias = Math.max(blobBias, anchors[a].strength * Math.exp(-d2 / (2 * sigma2)));
+      }
+
+      // Combine
+      let e = noiseVal * cfg.noiseWeight + blobBias * cfg.anchorWeight + cfg.elevationOffset;
+
+      // Amplify peaks near continent centers
+      if (blobBias > 0.2 && noiseVal > 0.15) {
+        e += (blobBias - 0.2) * noiseVal * cfg.peakAmplifyStrength;
+      }
+
+      // Border fade-out
+      const baseDistance = Math.min(x, width - 1 - x, y, height - 1 - y);
+      const noiseOffset = (noise2D(x * 0.3, y * 0.3) + 1) * 0.5 * border * 0.02;
+      let d = baseDistance + noiseOffset;
+      if (x === 0 || x === width - 1 || y === 0 || y === height - 1) d = 0;
+      const borderFactor = smoothStep(0, border, d);
+      e *= borderFactor;
+
+      // Push sub-sea-level cells lower
+      if (e < cfg.seaLevel) e *= cfg.subSeaPush;
+
+      elev[idx] = Math.max(0, Math.min(1, e));
+    }
+  }
+
+  // Guarantee mountain peaks
+  let maxElev = 0;
+  let maxIdx = 0;
+  for (let i = 0; i < total; i++) {
+    if (elev[i] > maxElev) { maxElev = elev[i]; maxIdx = i; }
+  }
+  if (maxElev < cfg.mountainLevel + 0.03) {
+    const cx = maxIdx % width;
+    const cy = (maxIdx - cx) / width;
+    const peakRadius = Math.max(4, Math.round(Math.min(width, height) * 0.015));
+    const r2 = peakRadius * peakRadius;
+    const boost = (cfg.mountainLevel + 0.07) - maxElev;
+    for (let dy = -peakRadius; dy <= peakRadius; dy++) {
+      for (let dx = -peakRadius; dx <= peakRadius; dx++) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const falloff = 1 - d2 / r2;
+        const ni = ny * width + nx;
+        elev[ni] = Math.min(1, elev[ni] + boost * falloff * falloff);
       }
     }
   }
-  while (queueHead < queueTail) {
-    const idx = bfsQueue[queueHead++];
+
+  return elev;
+}
+
+// ─── Phase 3: Connectivity Bridge ────────────────────────────────────────────
+
+function ensureConnectivity(elev, width, height, seaLevel, noise2D) {
+  const total = width * height;
+  const componentId = new Int32Array(total).fill(-1);
+  const queue = new Int32Array(total);
+  const componentSizes = [];
+  const neighbors = [1, -1, width, -width];
+
+  let componentCount = 0;
+  for (let i = 0; i < total; i++) {
+    if (componentId[i] !== -1 || elev[i] < seaLevel) continue;
+
+    let head = 0, tail = 0;
+    queue[tail++] = i;
+    componentId[i] = componentCount;
+    let size = 0;
+
+    while (head < tail) {
+      const cur = queue[head++];
+      size++;
+      const cx = cur % width;
+      const cy = (cur - cx) / width;
+
+      for (const offset of neighbors) {
+        const ni = cur + offset;
+        if (ni < 0 || ni >= total) continue;
+        const nx = ni % width;
+        if (Math.abs(nx - cx) > 1) continue;
+        if (componentId[ni] !== -1 || elev[ni] < seaLevel) continue;
+        componentId[ni] = componentCount;
+        queue[tail++] = ni;
+      }
+    }
+    componentSizes.push(size);
+    componentCount++;
+  }
+
+  if (componentCount <= 1) return;
+
+  let mainComp = 0;
+  for (let i = 1; i < componentSizes.length; i++) {
+    if (componentSizes[i] > componentSizes[mainComp]) mainComp = i;
+  }
+
+  const dist = new Int32Array(total).fill(-1);
+  const nearestMain = new Int32Array(total).fill(-1);
+  let head = 0, tail = 0;
+  for (let i = 0; i < total; i++) {
+    if (componentId[i] === mainComp) {
+      dist[i] = 0;
+      nearestMain[i] = i;
+      queue[tail++] = i;
+    }
+  }
+
+  while (head < tail) {
+    const cur = queue[head++];
+    const cx = cur % width;
+    for (const offset of neighbors) {
+      const ni = cur + offset;
+      if (ni < 0 || ni >= total) continue;
+      const nx = ni % width;
+      if (Math.abs(nx - cx) > 1) continue;
+      if (dist[ni] !== -1) continue;
+      dist[ni] = dist[cur] + 1;
+      nearestMain[ni] = nearestMain[cur];
+      queue[tail++] = ni;
+    }
+  }
+
+  const bestDist = new Int32Array(componentCount).fill(0x7fffffff);
+  const bestIdx = new Int32Array(componentCount).fill(-1);
+  const bestTarget = new Int32Array(componentCount).fill(-1);
+
+  for (let i = 0; i < total; i++) {
+    const comp = componentId[i];
+    if (comp < 0 || comp === mainComp) continue;
+    if (dist[i] < 0) continue;
+    if (dist[i] < bestDist[comp]) {
+      bestDist[comp] = dist[i];
+      bestIdx[comp] = i;
+      bestTarget[comp] = nearestMain[i];
+    }
+  }
+
+  for (let comp = 0; comp < componentCount; comp++) {
+    if (comp === mainComp || bestIdx[comp] === -1) continue;
+    const from = bestIdx[comp];
+    const to = bestTarget[comp];
+    const fx = from % width, fy = (from - fx) / width;
+    const tx = to % width, ty = (to - tx) / width;
+    const distCells = Math.max(1, bestDist[comp]);
+    const blobCount = Math.min(4, Math.max(2, Math.round(distCells / 18)));
+
+    for (let b = 1; b <= blobCount; b++) {
+      const t = b / (blobCount + 1);
+      const jitterX = noise2D ? noise2D((fx + tx) * 0.07 * t, (fy + ty) * 0.11 * t) * 3 : 0;
+      const jitterY = noise2D ? noise2D((fx + tx) * 0.11 * t, (fy + ty) * 0.07 * t) * 3 : 0;
+      const cx = Math.round(fx + (tx - fx) * t + jitterX);
+      const cy = Math.round(fy + (ty - fy) * t + jitterY);
+      const radius = Math.min(8, Math.max(3, Math.round(distCells / 12)));
+      const strength = 0.08 + radius / 20;
+      const r2 = radius * radius;
+
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > r2) continue;
+          const falloff = 1 - d2 / r2;
+          const lift = seaLevel + strength * falloff;
+          const ni = ny * width + nx;
+          elev[ni] = Math.max(elev[ni], Math.min(0.9, lift));
+        }
+      }
+    }
+  }
+}
+
+// ─── Phase 4: Rivers via Flow Accumulation ───────────────────────────────────
+
+function generateRivers(elev, width, height, noise2D, cfg) {
+  const total = width * height;
+  const flow = new Float32Array(total);
+  const riverMask = new Uint8Array(total);
+
+  for (let i = 0; i < total; i++) {
+    if (elev[i] >= cfg.seaLevel) {
+      const x = i % width;
+      const y = (i - x) / width;
+      flow[i] = 1.0 + noise2D(x * 0.06, y * 0.06) * 0.4 +
+        Math.max(0, elev[i] - 0.4) * 0.6;
+    }
+  }
+
+  const order = new Uint32Array(total);
+  for (let i = 0; i < total; i++) order[i] = i;
+  order.sort((a, b) => elev[b] - elev[a]);
+
+  const dx4 = [1, -1, 0, 0];
+  const dy4 = [0, 0, 1, -1];
+
+  for (let k = 0; k < total; k++) {
+    const idx = order[k];
+    if (elev[idx] < cfg.seaLevel) continue;
     const x = idx % width;
     const y = (idx - x) / width;
-    const d = waterDistFlat[idx];
-    if (x > 0 && waterDistFlat[idx - 1] === -1) {
-      waterDistFlat[idx - 1] = d + 1;
-      bfsQueue[queueTail++] = idx - 1;
-    }
-    if (x < width - 1 && waterDistFlat[idx + 1] === -1) {
-      waterDistFlat[idx + 1] = d + 1;
-      bfsQueue[queueTail++] = idx + 1;
-    }
-    if (y > 0 && waterDistFlat[idx - width] === -1) {
-      waterDistFlat[idx - width] = d + 1;
-      bfsQueue[queueTail++] = idx - width;
-    }
-    if (y < height - 1 && waterDistFlat[idx + width] === -1) {
-      waterDistFlat[idx + width] = d + 1;
-      bfsQueue[queueTail++] = idx + width;
-    }
-  }
-  if (DEBUG_MAP) console.log("Water distance calculated.");
 
-  // Boost moisture for cells near water.
-  const maxWaterInfluenceDistance = 15; // in cells
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const dist = waterDistFlat[y * width + x];
-      if (dist >= 0 && dist < maxWaterInfluenceDistance) {
-        // Closer cells get a larger boost (up to 0.3 extra).
-        const boost =
-          ((maxWaterInfluenceDistance - dist) / maxWaterInfluenceDistance) *
-          0.7;
-        moistureMap[y][x] += boost;
+    let bestSlope = 0;
+    let bestNeighbor = -1;
+
+    for (let d = 0; d < 4; d++) {
+      const nx = x + dx4[d];
+      const ny = y + dy4[d];
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const ni = ny * width + nx;
+      const slope = elev[idx] - elev[ni];
+      if (slope > bestSlope) {
+        bestSlope = slope;
+        bestNeighbor = ni;
       }
     }
-  }
-  if (DEBUG_MAP) console.log("Water boost applied.");
 
-  // 3. MOUNTAIN RAIN SHADOW: Reduce moisture if mountains block moisture from the west.
-  // Assume prevailing wind comes from the west.
-  const mountainThreshold = 0.6;
-  const maxShadowDistance = 15; // how far to look to the west
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let shadow = 0;
-      for (let d = 1; d <= maxShadowDistance; d++) {
-        const nx = x - d;
-        if (nx < 0) break;
-        if (heightMap[y][nx].elevation > mountainThreshold) {
-          // The higher the mountain above the threshold, the stronger the effect.
-          const mountainExcess = heightMap[y][nx].elevation - mountainThreshold;
-          shadow += mountainExcess * 0.4;
+    if (bestNeighbor >= 0) {
+      flow[bestNeighbor] += flow[idx];
+    }
+  }
+
+  const flowThreshold = Math.max(25, Math.round(Math.sqrt(total) * cfg.riverFlowMultiplier));
+
+  for (let i = 0; i < total; i++) {
+    if (elev[i] < cfg.seaLevel) continue;
+    if (flow[i] >= flowThreshold) {
+      riverMask[i] = 1;
+
+      if (flow[i] >= flowThreshold * cfg.riverWidenMultiplier) {
+        const x = i % width;
+        const y = (i - x) / width;
+        for (let d = 0; d < 4; d++) {
+          const nx = x + dx4[d];
+          const ny = y + dy4[d];
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            const ni = ny * width + nx;
+            if (elev[ni] >= cfg.seaLevel) riverMask[ni] = 1;
+          }
         }
       }
-      moistureMap[y][x] = Math.max(0, moistureMap[y][x] - shadow);
-    }
-  }
-  if (DEBUG_MAP) console.log("Mountain rain shadow applied.");
-
-  // 4. FOREST BOOST: A simple heuristic that boosts moisture in areas likely to be forested.
-  // Here we add a small boost if the cell is at a moderate elevation and has moist neighbors.
-  const forestBoost = 0.1;
-  // Snapshot moisture into a flat Float32Array for consistent neighbor reads (~1MB vs ~4MB for 2D copy).
-  const moistureSnap = new Float32Array(totalCells);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      moistureSnap[y * width + x] = moistureMap[y][x];
-    }
-  }
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let sum = 0,
-        count = 0;
-      const yMin = y > 0 ? y - 1 : 0;
-      const yMax = y < height - 1 ? y + 1 : y;
-      const xMin = x > 0 ? x - 1 : 0;
-      const xMax = x < width - 1 ? x + 1 : x;
-      for (let ny = yMin; ny <= yMax; ny++) {
-        for (let nx = xMin; nx <= xMax; nx++) {
-          sum += moistureSnap[ny * width + nx];
-          count++;
-        }
-      }
-      const avgNeighborMoisture = sum / count;
-      // If the cell is in a moderate elevation band and its neighborhood is moist,
-      // add a forest boost.
-      if (
-        heightMap[y][x].elevation >= 0.3 &&
-        heightMap[y][x].elevation <= 0.6 &&
-        avgNeighborMoisture > 0.6
-      ) {
-        moistureMap[y][x] += forestBoost;
-      }
-    }
-  }
-  if (DEBUG_MAP) console.log("Forest boost applied.");
-
-  // 5. Add natural noise and clamp the values between 0 and 1.
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      moistureMap[y][x] += noise2D(x * 0.1, y * 0.1) * 0.1;
-      moistureMap[y][x] = Math.max(0, Math.min(1, moistureMap[y][x]));
     }
   }
 
-  // 6. Smooth the moisture map a few times to simulate diffusion.
-  // Use ping-pong Float32Arrays instead of allocating new 2D arrays each iteration.
-  const smoothIterations = Math.max(1, options.smoothIterations ?? 6);
+  return riverMask;
+}
+
+// ─── Phase 5: Moisture ──────────────────────────────────────────────────────
+
+function generateMoisture(elev, riverMask, width, height, noise2D, cfg) {
   const total = width * height;
-  let bufA = new Float32Array(total);
-  let bufB = new Float32Array(total);
-  // Copy current moistureMap into bufA
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      bufA[y * width + x] = moistureMap[y][x];
+  const maxR = cfg.moistureInfluenceRadius;
+
+  const waterDist = new Int16Array(total).fill(-1);
+  const queue = new Int32Array(total);
+  let head = 0, tail = 0;
+
+  for (let i = 0; i < total; i++) {
+    if (elev[i] < cfg.seaLevel || riverMask[i]) {
+      waterDist[i] = 0;
+      queue[tail++] = i;
     }
   }
-  for (let iter = 0; iter < smoothIterations; iter++) {
+
+  while (head < tail) {
+    const cur = queue[head++];
+    const cx = cur % width;
+    const d = waterDist[cur];
+    if (d >= maxR) continue;
+
+    if (cx > 0 && waterDist[cur - 1] === -1) { waterDist[cur - 1] = d + 1; queue[tail++] = cur - 1; }
+    if (cx < width - 1 && waterDist[cur + 1] === -1) { waterDist[cur + 1] = d + 1; queue[tail++] = cur + 1; }
+    if (cur >= width && waterDist[cur - width] === -1) { waterDist[cur - width] = d + 1; queue[tail++] = cur - width; }
+    if (cur + width < total && waterDist[cur + width] === -1) { waterDist[cur + width] = d + 1; queue[tail++] = cur + width; }
+  }
+
+  let bufA = new Float32Array(total);
+  for (let i = 0; i < total; i++) {
+    const wd = waterDist[i];
+    let m = 0.3;
+    if (wd >= 0 && wd < maxR) {
+      m += ((maxR - wd) / maxR) * 0.7;
+    }
+    if (elev[i] < cfg.seaLevel) m = 1.0;
+    bufA[i] = m;
+  }
+
+  const mountainThreshold = 0.6;
+  for (let y = 0; y < height; y++) {
+    let shadow = 0;
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (elev[idx] > mountainThreshold) {
+        shadow += (elev[idx] - mountainThreshold) * 0.4;
+      }
+      shadow *= cfg.rainShadowDecay;
+      bufA[idx] = Math.max(0, bufA[idx] - shadow);
+    }
+  }
+
+  for (let i = 0; i < total; i++) {
+    const x = i % width;
+    const y = (i - x) / width;
+    bufA[i] += noise2D(x * 0.1, y * 0.1) * 0.1;
+    bufA[i] = Math.max(0, Math.min(1, bufA[i]));
+  }
+
+  let bufB = new Float32Array(total);
+  const smoothPasses = cfg.moistureSmoothPasses;
+  for (let iter = 0; iter < smoothPasses; iter++) {
     const src = (iter & 1) === 0 ? bufA : bufB;
     const dst = (iter & 1) === 0 ? bufB : bufA;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        let sum = 0,
-          count = 0;
+        const idx = y * width + x;
+        let sum = 0, count = 0;
         const yMin = y > 0 ? y - 1 : 0;
         const yMax = y < height - 1 ? y + 1 : y;
         const xMin = x > 0 ? x - 1 : 0;
@@ -1103,28 +486,165 @@ function generateMoistureMap(
             count++;
           }
         }
-        dst[y * width + x] = sum / count;
+        dst[idx] = sum / count;
       }
     }
   }
-  // Copy final buffer back to moistureMap
-  const finalBuf = (smoothIterations & 1) === 0 ? bufA : bufB;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      moistureMap[y][x] = finalBuf[y * width + x];
-    }
-  }
-  bufA = null;
-  bufB = null;
-  if (DEBUG_MAP) console.log("Moisture diffused.");
 
-  return moistureMap;
+  return (smoothPasses & 1) === 0 ? bufA : bufB;
 }
 
-function smoothEligibleCells(mapData, radius = 2) {
+// ─── Phase 6: Temperature ───────────────────────────────────────────────────
+
+export const calculateTemperature = (x, y, elevation, width, height, noise2D) => {
+  const latitudeFactor = y / height;
+  const baseTemp = 25 * (1 - Math.pow(Math.abs(latitudeFactor - 0.5) * 1.25, 1.5));
+  const largeScaleNoise = noise2D(x * 0.02, y * 0.02) * 8;
+  const mediumScaleNoise = noise2D(x * 0.05, y * 0.05) * 4;
+  const smallScaleNoise = noise2D(x * 0.1, y * 0.1) * 2;
+  const elevationEffect = -elevation * 5;
+  return baseTemp + largeScaleNoise + mediumScaleNoise + smallScaleNoise + elevationEffect;
+};
+
+// ─── Phase 7: Biome Assignment ──────────────────────────────────────────────
+
+export function determineBiome(elevation, moisture, temperature, x, y, noise2D, cfg) {
+  const c = cfg || DEFAULTS;
+  const thresholdNoise = noise2D(x * 0.05, y * 0.05) * 0.05;
+  if (elevation < c.seaLevel + thresholdNoise) return "OCEAN";
+  if (elevation < c.coastalLevel + thresholdNoise) return "COASTAL";
+  if (elevation > c.mountainLevel + thresholdNoise) return "MOUNTAIN";
+
+  const tempFactor = smoothStep(0, 35, temperature);
+  const adjustedMoisture = moisture + noise2D(x * 0.03, y * 0.03) * 0.1;
+  const moistureFactor = smoothStep(0, 1, adjustedMoisture);
+
+  if (tempFactor > 0.7) {
+    if (moistureFactor < 0.25) return "DESERT";
+    if (moistureFactor < 0.45) return "SAVANNA";
+    if (moistureFactor < 0.7) return "TROPICAL_FOREST";
+    return "RAINFOREST";
+  } else if (tempFactor < 0.3) {
+    if (moistureFactor < 0.35) return "TUNDRA";
+    return "TAIGA";
+  } else {
+    if (moistureFactor < 0.25) return "GRASSLAND";
+    if (moistureFactor < 0.65) return "WOODLAND";
+    return "FOREST";
+  }
+}
+
+// ─── Phase 8: Resources ─────────────────────────────────────────────────────
+
+export const generateResources = (biome, elevation, moisture, temperature, rng) => {
+  const nodeChanceByBiome = {
+    GRASSLAND: 0.012, SAVANNA: 0.01, RIVER: 0.014, COASTAL: 0.012,
+    FOREST: 0.01, WOODLAND: 0.01, TROPICAL_FOREST: 0.01, RAINFOREST: 0.01,
+    TAIGA: 0.009, MOUNTAIN: 0.014, DESERT: 0.005, TUNDRA: 0.006,
+  };
+  const nodeChance = nodeChanceByBiome[biome] ?? 0;
+  if (nodeChance <= 0 || rng() > nodeChance) return [];
+
+  let weights;
+  if (biome === "MOUNTAIN") {
+    weights = [
+      { type: "stone", w: 0.45 }, { type: "iron", w: elevation > 0.65 ? 0.25 : 0.18 },
+      { type: "gold", w: elevation > 0.8 ? 0.08 : 0.04 },
+      { type: "food", w: 0.12 }, { type: "wood", w: 0.1 },
+    ];
+  } else if (biome === "DESERT") {
+    weights = [
+      { type: "stone", w: 0.35 }, { type: "iron", w: elevation > 0.65 ? 0.2 : 0.12 },
+      { type: "gold", w: elevation > 0.8 ? 0.06 : 0.03 },
+      { type: "food", w: 0.12 }, { type: "wood", w: 0.08 },
+    ];
+  } else if (biome === "TUNDRA") {
+    weights = [
+      { type: "iron", w: 0.28 }, { type: "stone", w: 0.22 },
+      { type: "food", w: 0.18 }, { type: "wood", w: 0.12 }, { type: "gold", w: 0.05 },
+    ];
+  } else if (biome === "RIVER" || biome === "COASTAL") {
+    weights = [
+      { type: "food", w: 0.45 }, { type: "wood", w: 0.22 },
+      { type: "stone", w: 0.12 }, { type: "iron", w: 0.08 }, { type: "gold", w: 0.05 },
+    ];
+  } else if (biome === "FOREST" || biome === "WOODLAND" || biome === "TROPICAL_FOREST" || biome === "RAINFOREST" || biome === "TAIGA") {
+    weights = [
+      { type: "wood", w: 0.45 }, { type: "food", w: 0.2 },
+      { type: "stone", w: 0.12 }, { type: "iron", w: 0.1 }, { type: "gold", w: 0.05 },
+    ];
+  } else {
+    weights = [
+      { type: "food", w: 0.5 }, { type: "wood", w: 0.2 },
+      { type: "stone", w: 0.12 }, { type: "iron", w: 0.1 }, { type: "gold", w: 0.08 },
+    ];
+  }
+
+  let total = 0;
+  for (const entry of weights) total += entry.w;
+  let roll = rng() * total;
+  for (const entry of weights) {
+    roll -= entry.w;
+    if (roll <= 0) return [entry.type];
+  }
+  return [weights[weights.length - 1]?.type || "food"];
+};
+
+// ─── Phase 9: Assembly + Smoothing ──────────────────────────────────────────
+
+function assembleMapData(elev, moisture, riverMask, width, height, noise2D, rng, cfg) {
+  const mapData = new Array(height);
+
+  for (let y = 0; y < height; y++) {
+    const row = new Array(width);
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const elevation = elev[idx];
+      const moist = moisture[idx];
+      const temperature = calculateTemperature(x, y, elevation, width, height, noise2D);
+      const isRiver = riverMask[idx] === 1;
+
+      let biome = determineBiome(elevation, moist, temperature, x, y, noise2D, cfg);
+
+      const features = [];
+      if (elevation > 0.8) {
+        features.push("peaks", "cliffs");
+      } else if (elevation > 0.6) {
+        features.push("hills");
+        if (moist > 0.6) features.push("springs");
+      } else if (elevation < 0.3) {
+        features.push("lowlands");
+        if (moist > 0.6) {
+          features.push("wetlands");
+          if (noise2D(x * 0.2, y * 0.2) > 0.3) features.push("marshes");
+        }
+      }
+
+      if (moist > 0.7 && elevation > 0.3 && elevation < 0.6) {
+        features.push("fertile valleys");
+      }
+
+      if (isRiver) {
+        features.push("river");
+        biome = "RIVER";
+      }
+
+      const resources = generateResources(biome, elevation, moist, temperature, rng);
+
+      row[x] = {
+        x, y, elevation, moisture: moist, temperature, biome,
+        isRiver, erosion: 0, features, resources,
+      };
+    }
+    mapData[y] = row;
+  }
+
+  return mapData;
+}
+
+function smoothEligibleCells(mapData, radius) {
   const height = mapData.length;
   const width = mapData[0].length;
-  // Snapshot just the elevation values into a flat typed array (~1MB vs ~50MB deep copy)
   const elevSnap = new Float32Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -1135,496 +655,130 @@ function smoothEligibleCells(mapData, radius = 2) {
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const cell = mapData[y][x];
-      // Only smooth cells that are non-coastal and whose elevation is between 0.4 and 0.7.
-      if (
-        cell.biome !== "COASTAL" &&
-        cell.elevation >= 0.35 &&
-        cell.elevation <= 0.7
-      ) {
-        let sum = 0;
-        let count = 0;
-        // Loop over the neighborhood.
+      if (cell.biome !== "COASTAL" && cell.elevation >= 0.35 && cell.elevation <= 0.7) {
+        let sum = 0, count = 0;
         for (let dy = -radius; dy <= radius; dy++) {
           for (let dx = -radius; dx <= radius; dx++) {
-            const ny = y + dy;
-            const nx = x + dx;
+            const ny = y + dy, nx = x + dx;
             if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
               const neighbor = mapData[ny][nx];
-              // Only include neighbors that are also non-coastal and within our elevation bounds.
-              if (
-                neighbor.biome !== "COASTAL" &&
-                neighbor.elevation >= 0.4 &&
-                neighbor.elevation <= 0.7
-              ) {
+              if (neighbor.biome !== "COASTAL" && neighbor.elevation >= 0.4 && neighbor.elevation <= 0.7) {
                 sum += elevSnap[ny * width + nx];
                 count++;
               }
             }
           }
         }
-        if (count > 0) {
-          // Update the elevation with the neighborhood average directly on mapData.
-          mapData[y][x].elevation = sum / count;
-        }
+        if (count > 0) cell.elevation = sum / count;
       }
     }
   }
   return mapData;
 }
 
-function ensureElevationConnectivity(heightMap, landThreshold, noise2D) {
-  const height = heightMap.length;
-  if (height === 0) return heightMap;
-  const width = heightMap[0].length;
+// ─── Preview-only: compact biome buffer ─────────────────────────────────────
+
+const BIOME_INDEX = {
+  OCEAN: 0, COASTAL: 1, MOUNTAIN: 2, DESERT: 3, SAVANNA: 4,
+  TROPICAL_FOREST: 5, RAINFOREST: 6, TUNDRA: 7, TAIGA: 8,
+  GRASSLAND: 9, WOODLAND: 10, FOREST: 11, RIVER: 12,
+};
+
+export function generatePreview(width, height, erosion_passes, num_blobs, seed, mapConfig) {
+  const cfg = resolveConfig(mapConfig);
+  const t0 = Date.now();
+
+  const rng = mulberry32(seed * 2147483647 + 1);
+  const noise2D = createNoise2D(seed);
+
+  const elev = generateElevation(width, height, num_blobs, noise2D, rng, cfg);
+  ensureConnectivity(elev, width, height, cfg.seaLevel, noise2D);
+  const riverMask = generateRivers(elev, width, height, noise2D, cfg);
+  const moisture = generateMoisture(elev, riverMask, width, height, noise2D, cfg);
+
+  // Build compact biome buffer + stats
   const total = width * height;
+  const biomes = new Uint8Array(total);
+  const biomeCounts = new Array(13).fill(0);
+  let riverCount = 0;
 
-  const visited = new Uint8Array(total);
-  const componentId = new Int32Array(total);
-  componentId.fill(-1);
-  const componentSizes = [];
-
-  const queue = new Int32Array(total);
-  const neighbors = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ];
-
-  let componentCount = 0;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      if (visited[idx]) continue;
-      if (heightMap[y][x].elevation < landThreshold) continue;
+      const e = elev[idx];
+      const m = moisture[idx];
+      const t = calculateTemperature(x, y, e, width, height, noise2D);
+      const isRiver = riverMask[idx] === 1;
 
-      let head = 0;
-      let tail = 0;
-      queue[tail++] = idx;
-      visited[idx] = 1;
-      componentId[idx] = componentCount;
-      let size = 0;
+      let biome = determineBiome(e, m, t, x, y, noise2D, cfg);
+      if (isRiver) biome = "RIVER";
 
-      while (head < tail) {
-        const current = queue[head++];
-        size++;
-        const cy = Math.floor(current / width);
-        const cx = current - cy * width;
-        for (const [dx, dy] of neighbors) {
-          const nx = cx + dx;
-          const ny = cy + dy;
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          const nIdx = ny * width + nx;
-          if (visited[nIdx]) continue;
-          if (heightMap[ny][nx].elevation < landThreshold) continue;
-          visited[nIdx] = 1;
-          componentId[nIdx] = componentCount;
-          queue[tail++] = nIdx;
-        }
-      }
-
-      componentSizes.push(size);
-      componentCount++;
+      const bi = BIOME_INDEX[biome] ?? 0;
+      biomes[idx] = bi;
+      biomeCounts[bi]++;
+      if (isRiver) riverCount++;
     }
   }
 
-  if (componentCount <= 1) return heightMap;
+  const landCount = total - biomeCounts[0]; // 0 = OCEAN
+  const genTime = Date.now() - t0;
 
-  let mainComponent = 0;
-  for (let i = 1; i < componentSizes.length; i++) {
-    if (componentSizes[i] > componentSizes[mainComponent]) {
-      mainComponent = i;
-    }
-  }
-
-  const dist = new Int32Array(total);
-  const nearestMain = new Int32Array(total);
-  dist.fill(-1);
-  nearestMain.fill(-1);
-
-  let head = 0;
-  let tail = 0;
-  for (let i = 0; i < total; i++) {
-    if (componentId[i] === mainComponent) {
-      dist[i] = 0;
-      nearestMain[i] = i;
-      queue[tail++] = i;
-    }
-  }
-
-  while (head < tail) {
-    const current = queue[head++];
-    const cy = Math.floor(current / width);
-    const cx = current - cy * width;
-    for (const [dx, dy] of neighbors) {
-      const nx = cx + dx;
-      const ny = cy + dy;
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      const nIdx = ny * width + nx;
-      if (dist[nIdx] !== -1) continue;
-      dist[nIdx] = dist[current] + 1;
-      nearestMain[nIdx] = nearestMain[current];
-      queue[tail++] = nIdx;
-    }
-  }
-
-  const bestDist = new Int32Array(componentCount).fill(-1);
-  const bestIdx = new Int32Array(componentCount).fill(-1);
-  const bestTarget = new Int32Array(componentCount).fill(-1);
-
-  for (let i = 0; i < total; i++) {
-    const comp = componentId[i];
-    if (comp < 0 || comp === mainComponent) continue;
-    const d = dist[i];
-    if (d < 0) continue;
-    if (bestDist[comp] === -1 || d < bestDist[comp]) {
-      bestDist[comp] = d;
-      bestIdx[comp] = i;
-      bestTarget[comp] = nearestMain[i];
-    }
-  }
-
-  const addBlob = (cx, cy, radius, strength) => {
-    const r2 = radius * radius;
-    for (let dy = -radius; dy <= radius; dy++) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        const nx = cx + dx;
-        const ny = cy + dy;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-        const d2 = dx * dx + dy * dy;
-        if (d2 > r2) continue;
-        const falloff = 1 - d2 / r2;
-        const lift = landThreshold + strength * falloff;
-        heightMap[ny][nx].elevation = Math.max(
-          heightMap[ny][nx].elevation,
-          Math.min(0.9, lift)
-        );
-      }
-    }
+  return {
+    width, height,
+    biomes: Buffer.from(biomes.buffer).toString("base64"),
+    stats: {
+      landPercent: +(landCount / total * 100).toFixed(1),
+      riverCells: riverCount,
+      biomeCounts: Object.fromEntries(
+        Object.entries(BIOME_INDEX).map(([name, idx]) => [name, biomeCounts[idx]])
+      ),
+      genTimeMs: genTime,
+    },
   };
-
-  const jitter = (value, amount) => {
-    const n =
-      noise2D && typeof noise2D === "function"
-        ? noise2D(value * 0.07, value * 0.11)
-        : 0;
-    return value + n * amount;
-  };
-
-  for (let comp = 0; comp < componentCount; comp++) {
-    if (comp === mainComponent) continue;
-    if (bestIdx[comp] === -1 || bestTarget[comp] === -1) continue;
-    const from = bestIdx[comp];
-    const to = bestTarget[comp];
-    const fx = from % width;
-    const fy = Math.floor(from / width);
-    const tx = to % width;
-    const ty = Math.floor(to / width);
-    const distCells = Math.max(1, bestDist[comp]);
-    const blobCount = Math.min(4, Math.max(2, Math.round(distCells / 18)));
-    for (let i = 1; i <= blobCount; i++) {
-      const t = i / (blobCount + 1);
-      const cx = Math.round(jitter(lerp(t, fx, tx), 3));
-      const cy = Math.round(jitter(lerp(t, fy, ty), 3));
-      const radius = Math.min(8, Math.max(3, Math.round(distCells / 12)));
-      const strength = 0.08 + (radius / 20);
-      addBlob(cx, cy, radius, strength);
-    }
-  }
-
-  return heightMap;
 }
+
+// ─── Main Entry Point ───────────────────────────────────────────────────────
 
 export function generateWorldMap(
   width,
   height,
   erosion_passes = 3,
   num_blobs = 4,
-  seed = Math.random()
+  seed = 42,
+  mapConfig
 ) {
-  try {
-    if (DEBUG_MAP)
-      console.log("Starting world map generation using blob-based elevation...");
-    const totalCells = width * height;
-    const largeMap = totalCells >= 800000;
-    const profile = {
-      subBlobPasses: largeMap ? 2 : 3,
-      subBlobSpawnChance: largeMap ? 0.35 : 0.5,
-      maxSubBlobs: largeMap ? 2 : 4,
-      maxBlobs: largeMap ? 160 : Infinity,
-      moistureSmoothIterations: largeMap ? 3 : 6,
-      smoothRadius: largeMap ? 1 : 2,
-      rivers: {
-        flowThreshold: Math.max(
-          30,
-          Math.round(Math.sqrt(totalCells) * (largeMap ? 0.08 : 0.06))
-        ),
-        rainNoise: largeMap ? 0.35 : 0.45,
-        rainElevationBonus: largeMap ? 0.5 : 0.65,
-        elevWeight: largeMap ? 1.1 : 1.3,
-        distWeight: largeMap ? 0.1 : 0.2,
-        meanderWeight: largeMap ? 0.4 : 0.35,
-        dirFieldWeight: largeMap ? 0.45 : 0.4,
-        slopeWeight: largeMap ? 1.0 : 0.9,
-        dirNoiseScale: largeMap ? 0.03 : 0.04,
-        pickNoiseScale: largeMap ? 0.14 : 0.18,
-      },
-    };
-    const noise2D = createNoise2D(seed);
-    if (DEBUG_MAP) console.log("Noise function created successfully.");
+  const cfg = resolveConfig(mapConfig);
+  if (DEBUG_MAP) console.log("Starting world map generation (domain-warped FBM)...");
+  const t0 = Date.now();
 
-    const initialBlobs = generateInitialBlobs(num_blobs, width, height);
-    let allBlobs = spawnSubBlobs(
-      initialBlobs,
-      profile.subBlobPasses,
-      profile.subBlobSpawnChance,
-      0.7,
-      profile.maxSubBlobs
-    );
-    if (Number.isFinite(profile.maxBlobs) && allBlobs.length > profile.maxBlobs) {
-      allBlobs.sort((a, b) => b.radius - a.radius);
-      allBlobs = allBlobs.slice(0, profile.maxBlobs);
-    }
-    if (DEBUG_MAP) {
-      console.log(
-        `Generated ${allBlobs.length} blobs (including sub-blobs) for base elevation.`
-      );
-    }
+  const rng = mulberry32(seed * 2147483647 + 1);
+  const noise2D = createNoise2D(seed);
+  if (DEBUG_MAP) console.log(`[mapgen] PRNG + noise setup: ${Date.now() - t0}ms`);
 
-    // Build the height map using our blob-based elevation function.
-    const heightMap = Array(height)
-      .fill(0)
-      .map((_, y) =>
-        Array(width)
-          .fill(0)
-          .map((_, x) => {
-            try {
-              // Compute the base elevation for this cell.
-              let elevation = calculateBlobElevation(x, y, allBlobs, noise2D);
+  const t1 = Date.now();
+  const elev = generateElevation(width, height, num_blobs, noise2D, rng, cfg);
+  if (DEBUG_MAP) console.log(`[mapgen] Elevation: ${Date.now() - t1}ms`);
 
-              // -------------------------------------------------------
-              // Border Fade-Out with Random Variation using Noise
-              // -------------------------------------------------------
-              const border = width * 0.2;
-              const baseDistance = Math.min(
-                x,
-                width - 1 - x,
-                y,
-                height - 1 - y
-              );
-              const noiseScale = 0.3;
-              const noiseAmplitude = border * 0.02;
-              const noiseValue =
-                (noise2D(x * noiseScale, y * noiseScale) + 1) / 2;
-              const noiseOffset = noiseValue * noiseAmplitude;
+  const t2 = Date.now();
+  ensureConnectivity(elev, width, height, cfg.seaLevel, noise2D);
+  if (DEBUG_MAP) console.log(`[mapgen] Connectivity: ${Date.now() - t2}ms`);
 
-              let d = baseDistance + noiseOffset;
+  const t3 = Date.now();
+  const riverMask = generateRivers(elev, width, height, noise2D, cfg);
+  if (DEBUG_MAP) console.log(`[mapgen] Rivers: ${Date.now() - t3}ms`);
 
-              if (x === 0 || x === width - 1 || y === 0 || y === height - 1) {
-                d = 0;
-              }
+  const t4 = Date.now();
+  const moisture = generateMoisture(elev, riverMask, width, height, noise2D, cfg);
+  if (DEBUG_MAP) console.log(`[mapgen] Moisture: ${Date.now() - t4}ms`);
 
-              const borderFactor = smoothStep(0, border, d);
+  const t5 = Date.now();
+  const mapData = assembleMapData(elev, moisture, riverMask, width, height, noise2D, rng, cfg);
+  if (DEBUG_MAP) console.log(`[mapgen] Assembly: ${Date.now() - t5}ms`);
 
-              elevation = elevation * borderFactor;
+  const t6 = Date.now();
+  smoothEligibleCells(mapData, Math.min(2, erosion_passes));
+  if (DEBUG_MAP) console.log(`[mapgen] Smoothing: ${Date.now() - t6}ms`);
 
-              if (elevation < 0.3) {
-                elevation = elevation * 0.5;
-              }
-              return { x, y, elevation };
-            } catch (error) {
-              console.error("Error generating height map cell:", error, {
-                x,
-                y,
-              });
-              throw error;
-            }
-          })
-      );
-    if (DEBUG_MAP) console.log("Height map generated successfully.");
-
-    // ----------------
-    // River Generation
-    // ----------------
-    let { rivers, erosionMap } = generateRivers(heightMap, width, height, {
-      noise2D,
-      flowThreshold: profile.rivers.flowThreshold,
-      rainNoise: profile.rivers.rainNoise,
-      rainElevationBonus: profile.rivers.rainElevationBonus,
-      elevWeight: profile.rivers.elevWeight,
-      distWeight: profile.rivers.distWeight,
-      meanderWeight: profile.rivers.meanderWeight,
-      dirFieldWeight: profile.rivers.dirFieldWeight,
-      slopeWeight: profile.rivers.slopeWeight,
-      candidateTop: profile.rivers.candidateTop,
-      dirNoiseScale: profile.rivers.dirNoiseScale,
-      pickNoiseScale: profile.rivers.pickNoiseScale,
-    });
-    if (DEBUG_MAP) console.log("Rivers generated successfully.");
-    const riverErosionFactor = 0.04; // Tweak this value to control how strongly rivers lower the elevation
-
-    // Define a normalized 3x3 kernel that spreads the erosion effect.
-    // The center gets the most erosion, while immediate neighbors receive a fraction.
-    const kernel = [
-      [0.05, 0.1, 0.05],
-      [0.1, 0.4, 0.1],
-      [0.05, 0.1, 0.05],
-    ];
-
-    // Create a new map to store the spread erosion values.
-    let spreadErosionMap = Array(height)
-      .fill(null)
-      .map(() => Array(width).fill(0));
-
-    // For each cell, sum contributions from the erosionMap in a 3x3 window weighted by the kernel.
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        let spreadErosion = 0;
-        // Loop over the kernel offsets (here: -1 to 1 for both axes)
-        for (let ky = -1; ky <= 1; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
-            const ny = y + ky;
-            const nx = x + kx;
-            // Only add contributions from valid neighbors.
-            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-              // Get the corresponding kernel weight.
-              const weight = kernel[ky + 1][kx + 1];
-              spreadErosion += erosionMap[ny][nx] * weight;
-            }
-          }
-        }
-        spreadErosionMap[y][x] = spreadErosion;
-      }
-    }
-
-    // Now, subtract the spread erosion influence from the elevation for each cell.
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        heightMap[y][x].elevation = Math.max(
-          0,
-          Math.min(
-            1,
-            heightMap[y][x].elevation -
-              spreadErosionMap[y][x] * riverErosionFactor
-          )
-        );
-      }
-    }
-    if (DEBUG_MAP) console.log("River erosion (with spread) applied.");
-    spreadErosionMap = null; // free ~4MB for GC
-
-    // Ensure landmasses are connected before downstream passes.
-    ensureElevationConnectivity(heightMap, 0.35, noise2D);
-
-    // -------------------
-    // Moisture Generation
-    // -------------------
-    let moistureMap = generateMoistureMap(
-      heightMap,
-      width,
-      height,
-      noise2D,
-      rivers,
-      { smoothIterations: profile.moistureSmoothIterations }
-    );
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        moistureMap[y][x] = Math.max(
-          0,
-          Math.min(1, moistureMap[y][x] + noise2D(x * 0.1, y * 0.1) * 0.1)
-        );
-      }
-    }
-    if (DEBUG_MAP) console.log("Moisture map noise added successfully.");
-
-    simulateErosion(heightMap, erosion_passes);
-    // ----------------
-    // Assemble Final Map Data
-    // ----------------
-    const mapData = heightMap.map((row, y) =>
-      row.map((cell, x) => {
-        try {
-          const { elevation } = cell;
-          const moisture = moistureMap[y][x];
-          const temperature = calculateTemperature(
-            x,
-            y,
-            elevation,
-            width,
-            height,
-            noise2D
-          );
-          const erosion = erosionMap[y][x];
-          let biome = determineBiome(
-            elevation,
-            moisture,
-            temperature,
-            x,
-            y,
-            noise2D
-          );
-          const features = [];
-
-          if (elevation > 0.8) {
-            features.push("peaks", "cliffs");
-          } else if (elevation > 0.6) {
-            features.push("hills");
-            if (moisture > 0.6) features.push("springs");
-          } else if (elevation < 0.3) {
-            features.push("lowlands");
-            if (moisture > 0.6) {
-              features.push("wetlands");
-              if (Math.random() < 0.3) features.push("marshes");
-            }
-          }
-
-          if (moisture > 0.7 && elevation > 0.3 && elevation < 0.6) {
-            features.push("fertile valleys");
-          }
-
-          // River handling: if this cell is part of a river, mark it and adjust biome.
-          if (rivers.has(`${x},${y}`)) {
-            features.push("river");
-            biome = "RIVER";
-          }
-          const resources = generateResources(
-            biome,
-            elevation,
-            moisture,
-            temperature
-          );
-
-          return {
-            x,
-            y,
-            elevation,
-            moisture,
-            temperature,
-            biome,
-            isRiver: rivers.has(`${x},${y}`),
-            erosion,
-            features,
-            resources,
-          };
-        } catch (error) {
-          console.error("Error generating map data for cell:", error, { x, y });
-          throw error;
-        }
-      })
-    );
-    if (DEBUG_MAP) console.log("Map data generated successfully.");
-    // Free intermediates no longer needed for GC
-    moistureMap = null;
-    erosionMap = null;
-
-    smoothEligibleCells(mapData, profile.smoothRadius);
-    if (DEBUG_MAP) console.log("Smoothing pass completed.");
-
-    if (DEBUG_MAP) console.log("World map generation completed.");
-    return mapData;
-  } catch (error) {
-    console.error("Error in generateWorldMap:", error, { width, height });
-    throw error;
-  }
+  if (DEBUG_MAP) console.log(`[mapgen] Total: ${Date.now() - t0}ms`);
+  return mapData;
 }

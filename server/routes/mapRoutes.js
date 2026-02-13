@@ -1,11 +1,19 @@
 // mapRoutes.js
 import express from "express";
 import mongoose from "mongoose";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { Worker } from "worker_threads";
 import { assignResourcesToMap } from "../utils/resourceManagement.js";
 import { generateRegions } from "../utils/regionGenerator.js";
+import { generatePreview } from "../utils/mapUtils.js";
 import config from "../config/config.js";
 import { debug, debugWarn } from "../utils/debug.js";
+
+const __mapRoutesFilename = fileURLToPath(import.meta.url);
+const __mapRoutesDirname = path.dirname(__mapRoutesFilename);
+const gameConfigPath = path.join(__mapRoutesDirname, "../config/gameConfig.json");
 
 const router = express.Router();
 
@@ -102,6 +110,7 @@ router.post("/", async (req, res, next) => {
       erosion_passes,
       num_blobs,
       seed: mapSeed,
+      mapConfig: config?.mapGeneration,
     });
     mapData = assignResourcesToMap(mapData, mapSeed);
     debug("Map generated successfully in worker thread");
@@ -239,6 +248,7 @@ router.post("/gamemap", async (req, res, next) => {
           erosion_passes,
           num_blobs,
           seed: mapSeed,
+          mapConfig: config?.mapGeneration,
         });
         mapData = assignResourcesToMap(mapData, mapSeed);
         debug("Map generated successfully in worker thread");
@@ -449,6 +459,75 @@ router.get("/:id/data", async (req, res, next) => {
     next(error);
   }
 });
+
+// -------------------------------------------------------------------
+// Map Generation Preview & Config (dev only, must be before /:id catch-all)
+// -------------------------------------------------------------------
+
+if (process.env.NODE_ENV !== "production") {
+
+// POST /api/maps/preview - Generate a preview (compact biome buffer + stats)
+router.post("/preview", async (req, res, next) => {
+  try {
+    const {
+      width = 300,
+      height = 300,
+      erosion_passes = 3,
+      num_blobs = 4,
+      seed,
+      mapConfig,
+    } = req.body;
+
+    const w = Math.min(1000, Math.max(50, Number(width)));
+    const h = Math.min(1000, Math.max(50, Number(height)));
+    const s = seed !== undefined ? Number(seed) : Math.floor(Math.random() * 100000);
+
+    const result = generatePreview(w, h, erosion_passes, num_blobs, s, mapConfig);
+    result.seed = s;
+    res.json(result);
+  } catch (error) {
+    console.error("Error in POST /api/maps/preview:", error);
+    next(error);
+  }
+});
+
+// GET /api/maps/config - Get current mapGeneration config
+router.get("/config", async (req, res, next) => {
+  try {
+    const fileContents = fs.readFileSync(gameConfigPath, "utf8");
+    const gameConfig = JSON.parse(fileContents);
+    res.json(gameConfig.mapGeneration || {});
+  } catch (error) {
+    console.error("Error reading map config:", error);
+    next(error);
+  }
+});
+
+// POST /api/maps/config - Save mapGeneration config to gameConfig.json
+router.post("/config", async (req, res, next) => {
+  try {
+    const { mapGeneration } = req.body;
+    if (!mapGeneration || typeof mapGeneration !== "object") {
+      return res.status(400).json({ error: "mapGeneration object required" });
+    }
+
+    const fileContents = fs.readFileSync(gameConfigPath, "utf8");
+    const gameConfig = JSON.parse(fileContents);
+    gameConfig.mapGeneration = mapGeneration;
+
+    fs.writeFileSync(gameConfigPath, JSON.stringify(gameConfig, null, 2) + "\n", "utf8");
+
+    // Update in-memory config
+    if (config) config.mapGeneration = mapGeneration;
+
+    res.json({ success: true, mapGeneration });
+  } catch (error) {
+    console.error("Error saving map config:", error);
+    next(error);
+  }
+});
+
+} // end dev-only preview & config routes
 
 // GET /api/maps/:id - Retrieve a single map's metadata (without mapData)
 router.get("/:id", async (req, res, next) => {

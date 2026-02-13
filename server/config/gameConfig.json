@@ -1,20 +1,44 @@
-{ "winConditionPercentage": 75,
+{
+  "winConditionPercentage": 75,
   "buildCosts": {
     "structures": {
-      "town": { "wood": 500, "stone": 200 },
-      "tower": { "stone": 500, "wood": 200 },
-      "fort": { "stone": 2000, "wood": 500, "food": 300 },
-      "workshop": { "wood": 300, "stone": 300, "bronze": 100 },
-      "farm": { "wood": 50 },
-      "mine": { "wood": 50},
-      "stable": { "wood": 100, "stone": 50},
-      "lumber mill": { "wood": 50 }
+      "town": {
+        "wood": 500,
+        "stone": 200
+      },
+      "tower": {
+        "stone": 500,
+        "wood": 200
+      },
+      "fort": {
+        "stone": 2000,
+        "wood": 500,
+        "food": 300
+      },
+      "workshop": {
+        "wood": 300,
+        "stone": 300,
+        "bronze": 100
+      },
+      "farm": {
+        "wood": 50
+      },
+      "mine": {
+        "wood": 50
+      },
+      "stable": {
+        "wood": 100,
+        "stone": 50
+      },
+      "lumber mill": {
+        "wood": 50
+      }
     }
   },
   "structures": {
     "town": {
       "defenseRadius": 20,
-      "troopLossMultiplier": 3.0,
+      "troopLossMultiplier": 3,
       "speedReduction": 0.5,
       "autoExpansionRadius": 3,
       "autoExpansionRate": 0.2,
@@ -22,7 +46,7 @@
     },
     "tower": {
       "defenseRadius": 40,
-      "troopLossMultiplier": 6.0,
+      "troopLossMultiplier": 6,
       "speedReduction": 0.66
     },
     "descriptions": {
@@ -56,7 +80,7 @@
     "pressurePerTick": 25,
     "frontierAttemptsPerTick": 20,
     "similarityWeight": 0.6,
-    "similarityPower": 1.0,
+    "similarityPower": 1,
     "minTerrainSimilarity": 0.2,
     "distancePenaltyPerTile": 0.08,
     "maxDistancePenaltyTiles": 60,
@@ -76,7 +100,13 @@
     "minAttackPercent": 0.05,
     "maxAttackPercent": 1,
     "defaultAttackPercent": 0.25,
-    "resourceTypes": ["food", "wood", "iron", "stone", "gold"],
+    "resourceTypes": [
+      "food",
+      "wood",
+      "iron",
+      "stone",
+      "gold"
+    ],
     "resourceCaptureTicks": 20,
     "resourceYieldPerTick": 0.025,
     "towerDefenseRadius": 2,
@@ -86,8 +116,8 @@
     "terrainExpansionCostMultByBiome": {
       "GRASSLAND": 0.8,
       "SAVANNA": 0.9,
-      "FOREST": 1.0,
-      "WOODLAND": 1.0,
+      "FOREST": 1,
+      "WOODLAND": 1,
       "DESERT": 1.2,
       "TUNDRA": 1.2,
       "RIVER": 1.3,
@@ -101,14 +131,24 @@
       "DESERT": 1.3,
       "TUNDRA": 1.3,
       "RIVER": 1.4,
-      "MOUNTAIN": 2.0
+      "MOUNTAIN": 2
     },
     "resourceEffects": {
-      "food": { "expansionPower": 0.02 },
-      "wood": { "production": 0.015 },
-      "iron": { "attackPower": 0.02 },
-      "stone": { "defensePower": 0.02 },
-      "gold": { "goldIncome": 1 }
+      "food": {
+        "expansionPower": 0.02
+      },
+      "wood": {
+        "production": 0.015
+      },
+      "iron": {
+        "attackPower": 0.02
+      },
+      "stone": {
+        "defensePower": 0.02
+      },
+      "gold": {
+        "goldIncome": 1
+      }
     },
     "maxAttackArrows": 3,
     "maxDefendArrows": 1,
@@ -128,22 +168,65 @@
     "arrowDensityStallMultiplier": 8,
     "arrowFrontDensityScanRadius": 8,
     "terrainSimilarity": {
-      "defaults": { "same": 1, "group": 0.8, "near": 0.6, "far": 0.3 },
+      "defaults": {
+        "same": 1,
+        "group": 0.8,
+        "near": 0.6,
+        "far": 0.3
+      },
       "groups": {
-        "plains": ["GRASSLAND", "SAVANNA"],
-        "forest": ["FOREST", "WOODLAND", "TROPICAL_FOREST", "RAINFOREST"],
-        "cold": ["TUNDRA", "TAIGA"],
-        "arid": ["DESERT"],
-        "rocky": ["MOUNTAIN"],
-        "water": ["COASTAL", "RIVER"]
+        "plains": [
+          "GRASSLAND",
+          "SAVANNA"
+        ],
+        "forest": [
+          "FOREST",
+          "WOODLAND",
+          "TROPICAL_FOREST",
+          "RAINFOREST"
+        ],
+        "cold": [
+          "TUNDRA",
+          "TAIGA"
+        ],
+        "arid": [
+          "DESERT"
+        ],
+        "rocky": [
+          "MOUNTAIN"
+        ],
+        "water": [
+          "COASTAL",
+          "RIVER"
+        ]
       },
       "nearGroups": {
-        "plains": ["forest", "water", "arid"],
-        "forest": ["plains", "water", "cold"],
-        "cold": ["forest", "rocky"],
-        "arid": ["plains", "rocky"],
-        "rocky": ["cold", "arid"],
-        "water": ["plains", "forest"]
+        "plains": [
+          "forest",
+          "water",
+          "arid"
+        ],
+        "forest": [
+          "plains",
+          "water",
+          "cold"
+        ],
+        "cold": [
+          "forest",
+          "rocky"
+        ],
+        "arid": [
+          "plains",
+          "rocky"
+        ],
+        "rocky": [
+          "cold",
+          "arid"
+        ],
+        "water": [
+          "plains",
+          "forest"
+        ]
       }
     }
   },
@@ -176,7 +259,7 @@
     "maxNations": 64,
     "noiseFrequency": 0.08,
     "noiseOctaves": 5,
-    "noiseWeight": 0.60,
+    "noiseWeight": 0.6,
     "elevationResistanceWeight": 0.15,
     "biomeResistanceEnabled": true
   },
@@ -199,7 +282,7 @@
     "diffusionRate": 0.05,
     "decayRate": 0.02,
     "citySource": 0.5,
-    "capitalSource": 1.0,
+    "capitalSource": 1,
     "densityDefenseScale": 0.5
   },
   "regions": {
@@ -210,12 +293,21 @@
     "smoothingPasses": 2,
     "maxTownsPerRegion": 1,
     "maxTowersPerRegion": 2,
-    "towerDefenseBonus": [0.50, 0.25],
+    "towerDefenseBonus": [
+      0.5,
+      0.25
+    ],
     "cityDensityMultiplier": 1.5
   },
   "arrowCosts": {
-    "food": { "base": 20, "perTile": 2 },
-    "gold": { "base": 5, "perTile": 0.5 },
+    "food": {
+      "base": 20,
+      "perTile": 2
+    },
+    "gold": {
+      "base": 5,
+      "perTile": 0.5
+    },
     "ownTerritoryDiscount": 0.5,
     "firstArrowFree": true
   },
@@ -223,8 +315,8 @@
     "enabled": true,
     "diffusionRate": 0.45,
     "diffusionSubSteps": 5,
-    "borderConcentrationBias": 4.0,
-    "arrowAttractorStrength": 10.0,
+    "borderConcentrationBias": 4,
+    "arrowAttractorStrength": 10,
     "arrowAttractorRadius": 12,
     "mobilizationBaseRate": 0.15,
     "mobilizationFreeWorkerScale": 1.5,
@@ -232,8 +324,8 @@
     "combatExchangeRate": 0.3,
     "combatDefenderAdvantage": 1.3,
     "combatDensityThreshold": 0.1,
-    "maxDensityPerCell": 50.0,
-    "seedDensityAtCapital": 5.0,
+    "maxDensityPerCell": 50,
+    "seedDensityAtCapital": 5,
     "densityDecayOnUnowned": 0.95,
     "troopDefenseScale": 0.8
   },
@@ -243,5 +335,34 @@
     "freeThreshold": 0.25,
     "autoReduceTarget": 0.15,
     "foodProductionPerPop": 0.00003
+  },
+  "mapGeneration": {
+    "seaLevel": 0.28,
+    "coastalLevel": 0.33,
+    "mountainLevel": 0.7,
+    "elevationOffset": 0.21,
+    "noiseWeight": 0.55,
+    "anchorWeight": 0.45,
+    "warp1Scale": 0.004,
+    "warp1Amplitude": 40,
+    "warp2Scale": 0.016,
+    "warp2Amplitude": 20,
+    "fbmOctaves": 8,
+    "fbmFrequency": 0.017,
+    "fbmPersistence": 0.4,
+    "borderWidth": 0.21,
+    "anchorMargin": 0.1,
+    "anchorMinStrength": 0.2,
+    "anchorStrengthRange": 0.25,
+    "anchorMinSigma": 0.15,
+    "anchorSigmaRange": 0.12,
+    "peakAmplifyStrength": 2,
+    "subSeaPush": 0.5,
+    "riverFlowMultiplier": 0.12,
+    "riverWidenMultiplier": 5,
+    "moistureInfluenceRadius": 19,
+    "rainShadowDecay": 0.92,
+    "moistureSmoothPasses": 4,
+    "error": "Cast to ObjectId failed for value \"config\" (type string) at path \"_id\" for model \"Map\""
   }
 }
