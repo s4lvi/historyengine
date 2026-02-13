@@ -49,6 +49,8 @@ const buildIconMap = {
 
 const CAPTURE_EFFECT_DURATION_MS = 1600;
 const CAPTURE_EFFECT_MAX = 36;
+const TOUCH_LONG_PRESS_MS = 320;
+const TOUCH_LONG_PRESS_MOVE_PX = 10;
 
 const renderResources = (mapGrid, cellSize, scale) => {
   const resources = [];
@@ -1640,6 +1642,14 @@ const GameCanvas = ({
   const [isPanning, setIsPanning] = useState(false);
   const drawTypeRef = useRef(null);
   const touchPointsRef = useRef(new Map());
+  const longPressRef = useRef({
+    armed: false,
+    triggered: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    timer: null,
+  });
   const pinchRef = useRef({
     active: false,
     ids: [],
@@ -1715,6 +1725,17 @@ const GameCanvas = ({
   }, []);
 
   /* ----- Pointer Handlers ----- */
+  const clearLongPress = useCallback(() => {
+    const lp = longPressRef.current;
+    if (lp.timer) {
+      clearTimeout(lp.timer);
+    }
+    lp.armed = false;
+    lp.triggered = false;
+    lp.pointerId = null;
+    lp.timer = null;
+  }, []);
+
   const beginPinchGesture = useCallback(
     (points) => {
       if (!points || points.size < 2) return false;
@@ -1755,10 +1776,19 @@ const GameCanvas = ({
       const pointerType = originalEvent.pointerType || "mouse";
       const isTouchPointer = pointerType === "touch";
 
+      const forcedDraw =
+        uiMode === "drawAttack"
+          ? "attack"
+          : uiMode === "drawDefend"
+          ? "defend"
+          : drawingArrowType || "attack";
+      const canDraw = !foundingNation && !buildingStructure;
+
       if (isTouchPointer) {
         touchPointsRef.current.set(pointerId, { x, y });
         if (touchPointsRef.current.size >= 2) {
           // Two-finger touch always switches to pan/zoom mode.
+          clearLongPress();
           if (isDrawingArrowRef.current) {
             isDrawingArrowRef.current = false;
             arrowPathRef.current = [];
@@ -1774,6 +1804,69 @@ const GameCanvas = ({
           beginPinchGesture(touchPointsRef.current);
           return;
         }
+
+        // Single-finger touch drag pans by default.
+        panRef.current.active = true;
+        panRef.current.moved = false;
+        panRef.current.startX = x;
+        panRef.current.startY = y;
+        panRef.current.startOffset = { ...offset };
+        panRef.current.button = 0;
+        setIsPanning(true);
+
+        // Long-press converts this touch into arrow drawing.
+        clearLongPress();
+        if (canDraw) {
+          const lp = longPressRef.current;
+          lp.armed = true;
+          lp.triggered = false;
+          lp.pointerId = pointerId;
+          lp.startX = x;
+          lp.startY = y;
+          lp.timer = setTimeout(() => {
+            const current = longPressRef.current;
+            if (
+              !current.armed ||
+              current.pointerId !== pointerId ||
+              touchPointsRef.current.size !== 1
+            ) {
+              return;
+            }
+            const point = touchPointsRef.current.get(pointerId);
+            if (!point) return;
+            const moved = Math.hypot(
+              point.x - current.startX,
+              point.y - current.startY
+            );
+            if (moved > TOUCH_LONG_PRESS_MOVE_PX) return;
+
+            current.triggered = true;
+            if (panRef.current.active) {
+              panRef.current.active = false;
+              panRef.current.moved = false;
+              panRef.current.button = null;
+              setIsPanning(false);
+            }
+
+            const cell = getCellCoordinates(point.x, point.y);
+            if (
+              cell.x >= 0 &&
+              cell.x < mapMetadata.width &&
+              cell.y >= 0 &&
+              cell.y < mapMetadata.height
+            ) {
+              drawTypeRef.current = forcedDraw;
+              if (drawingArrowType !== forcedDraw) {
+                onStartDrawArrow?.(forcedDraw);
+              }
+              isDrawingArrowRef.current = true;
+              arrowPathRef.current = [{ x: cell.x, y: cell.y }];
+              lastArrowPointRef.current = { x: cell.x, y: cell.y };
+              onArrowPathUpdate?.([{ x: cell.x, y: cell.y }]);
+            }
+          }, TOUCH_LONG_PRESS_MS);
+        }
+        return;
       }
       // Check which button is pressed (0: left, 1: middle, 2: right)
       const button = originalEvent.button ?? e.nativeEvent?.button;
@@ -1788,13 +1881,6 @@ const GameCanvas = ({
         e.data?.originalEvent?.preventDefault?.();
         e.preventDefault?.();
       }
-      const forcedDraw =
-        uiMode === "drawAttack"
-          ? "attack"
-          : uiMode === "drawDefend"
-          ? "defend"
-          : drawingArrowType || "attack";
-      const canDraw = !foundingNation && !buildingStructure;
       const shouldPan =
         button === 1 ||
         button === 2 ||
@@ -1872,6 +1958,7 @@ const GameCanvas = ({
       onArrowPathUpdate,
       onStartDrawArrow,
       onCancelArrow,
+      clearLongPress,
       offset,
       beginPinchGesture,
     ]
@@ -1894,6 +1981,13 @@ const GameCanvas = ({
 
       if (isTouchPointer) {
         touchPointsRef.current.set(pointerId, { x, y });
+        const lp = longPressRef.current;
+        if (lp.armed && !lp.triggered && lp.pointerId === pointerId) {
+          const moved = Math.hypot(x - lp.startX, y - lp.startY);
+          if (moved > TOUCH_LONG_PRESS_MOVE_PX) {
+            clearLongPress();
+          }
+        }
       }
 
       if (pinchRef.current.active) {
@@ -1997,6 +2091,7 @@ const GameCanvas = ({
       setOffsetClamped,
       panBy,
       zoomAtPoint,
+      clearLongPress,
     ]
   );
 
@@ -2053,6 +2148,7 @@ const GameCanvas = ({
   );
 
   const handlePointerLeave = useCallback(() => {
+    clearLongPress();
     touchPointsRef.current.clear();
     pinchRef.current = {
       active: false,
@@ -2069,7 +2165,7 @@ const GameCanvas = ({
       panRef.current.button = null;
       setIsPanning(false);
     }
-  }, [finishArrowDrawing]);
+  }, [finishArrowDrawing, clearLongPress]);
 
   const handlePointerUp = useCallback(
     (e) => {
@@ -2078,6 +2174,9 @@ const GameCanvas = ({
       const pointerType = originalEvent.pointerType || "mouse";
       const isTouchPointer = pointerType === "touch";
       if (isTouchPointer) {
+        if (longPressRef.current.pointerId === pointerId) {
+          clearLongPress();
+        }
         touchPointsRef.current.delete(pointerId);
         if (pinchRef.current.active) {
           const [idA, idB] = pinchRef.current.ids;
@@ -2196,6 +2295,7 @@ const GameCanvas = ({
       finishArrowDrawing,
       onInspectCell,
       buildCellInfo,
+      clearLongPress,
     ]
   );
 
