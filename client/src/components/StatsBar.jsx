@@ -102,26 +102,61 @@ const StatsBar = ({
     })
   );
 
+  const compactNumber = (value) => {
+    const num = Number(value) || 0;
+    if (num >= 10000) {
+      return new Intl.NumberFormat("en-US", {
+        notation: "compact",
+        maximumFractionDigits: 1,
+      }).format(num);
+    }
+    return Math.round(num).toLocaleString();
+  };
+
+  const mobileStats = [
+    { label: "Pop", value: compactNumber(userNation.population || 0) },
+    {
+      label: "Troops",
+      value:
+        userNation.troopCount != null
+          ? compactNumber(userNation.troopCount)
+          : "0",
+    },
+    { label: "Tiles", value: territoryLength.toLocaleString() },
+    { label: "Ctrl", value: `${userNation.territoryPercentage}%` },
+    {
+      label: "Food",
+      value: compactNumber(userNation.resources?.food || 0),
+      delta: deltas.food,
+    },
+    {
+      label: "Wood",
+      value: compactNumber(userNation.resources?.wood || 0),
+      delta: deltas.wood,
+    },
+  ];
+
   return (
     <div
       ref={barRef}
-      className={`absolute left-0 right-0 bg-gray-900 bg-opacity-60 text-white z-40 overflow-x-auto ${
-        isMobile ? "p-1.5" : "p-2"
+      className={`absolute left-0 right-0 bg-gray-900 bg-opacity-60 text-white z-40 ${
+        isMobile ? "p-1.5 overflow-hidden" : "p-2 overflow-x-auto"
       }`}
       style={{
         top: `calc(env(safe-area-inset-top, 0px) + ${topOffset}px)`,
       }}
     >
       {isMobile ? (
-        <div className="flex items-center gap-4 flex-nowrap min-w-max whitespace-nowrap">
-          {[...coreStats, ...resourceStats].map((stat) => {
+        <div className="grid grid-cols-3 gap-x-4 gap-y-1">
+          {mobileStats.map((stat) => {
             const deltaStr = formatDelta(stat.delta);
             return (
-              <div key={stat.label} className="flex items-baseline gap-1.5">
-                <span className="text-[11px] uppercase tracking-wide text-gray-300">
+              <div key={stat.label} className="min-w-0">
+                <span className="text-[10px] uppercase tracking-wide text-gray-300">
                   {stat.label}
                 </span>
-                <span className="text-sm font-semibold">{stat.value}</span>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-sm font-semibold truncate">{stat.value}</span>
                 {deltaStr && (
                   <span
                     className={`text-[10px] ${
@@ -131,6 +166,7 @@ const StatsBar = ({
                     {deltaStr}
                   </span>
                 )}
+                </div>
               </div>
             );
           })}
