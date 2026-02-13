@@ -130,8 +130,8 @@ const ArrowPanel = ({
 
   const panelStyle = isMobile
     ? {
-        top: `calc(env(safe-area-inset-top, 0px) + ${topOffset}px)`,
-        bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
+        top: `${topOffset}px`,
+        bottom: `${bottomOffset}px`,
       }
     : undefined;
 

@@ -132,6 +132,7 @@ const Game = ({ discordRoomId }) => {
   const contextPanelBottomOffset = isMobile
     ? discordBottomOffset + mobileDockReservedHeight + 12
     : 0;
+  const topScrimHeight = isMobile ? Math.max(0, discordTopOffset) : 0;
 
   // ----------------------------
   // Big Arrow system state
@@ -1549,6 +1550,12 @@ const Game = ({ discordRoomId }) => {
       className="relative overflow-hidden"
       style={{ height: "100dvh", minHeight: "100vh" }}
     >
+      {topScrimHeight > 0 && (
+        <div
+          className="pointer-events-none absolute left-0 right-0 top-0 z-30 bg-gray-900/90"
+          style={{ height: `${topScrimHeight}px` }}
+        />
+      )}
       <ControlButtons
         onOpenSettings={() => setShowSettings(true)}
         onOpenPlayerList={() => setShowPlayerList(true)}
@@ -1583,31 +1590,6 @@ const Game = ({ discordRoomId }) => {
         gameState={gameState}
         getNationColor={getNationColor}
       />
-      {isRoomLobby && (
-        <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2">
-          <div className="pointer-events-auto rounded-lg border border-emerald-700/50 bg-gray-900/90 px-4 py-3 text-white shadow-lg">
-            <div className="text-sm font-semibold">
-              Lobby: {readyPlayerCount}/{roomPlayers.length || 0} ready
-            </div>
-            <div className="text-xs text-gray-300">
-              Players pick a founding tile, then the host starts the match.
-            </div>
-            {isRoomCreator ? (
-              <button
-                onClick={handleStartRoom}
-                disabled={isStartingRoom}
-                className="mt-2 w-full rounded bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-emerald-900"
-              >
-                {isStartingRoom ? "Starting..." : "Start Room"}
-              </button>
-            ) : (
-              <div className="mt-2 text-xs text-gray-400">
-                Waiting for host to start.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
       {/* Main Content Area */}
       <div ref={canvasHostRef} className="absolute inset-0">
         {!isMapLoaded ? (

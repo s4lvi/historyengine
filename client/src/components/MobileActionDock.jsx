@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 const canAfford = (resources, cost) =>
   Object.entries(cost || {}).every(
@@ -27,15 +27,19 @@ const MobileActionDock = ({
   bottomOffset = 0,
   onHeightChange,
 }) => {
-  const [showBuild, setShowBuild] = useState(false);
-  const dockRef = React.useRef(null);
+  const [activeMenu, setActiveMenu] = useState(null);
+  const dockRef = useRef(null);
   const buildMap = buildCosts || {};
   const buildEntries = Object.entries(buildMap);
-  const dockStyle = {
-    bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
-  };
+  const dockStyle = { bottom: `${bottomOffset}px` };
 
-  React.useEffect(() => {
+  useEffect(() => {
+    if (uiMode === "buildStructure") {
+      setActiveMenu("build");
+    }
+  }, [uiMode]);
+
+  useEffect(() => {
     if (!onHeightChange) return;
     const node = dockRef.current;
     if (!node) {
@@ -61,14 +65,14 @@ const MobileActionDock = ({
       window.removeEventListener("resize", report);
       onHeightChange(0);
     };
-  }, [onHeightChange, showBuild, hasFounded, isSpectating, isRoomStarted]);
+  }, [onHeightChange, activeMenu, hasFounded, isSpectating, isRoomStarted]);
 
   if (!hasFounded) {
     if (isSpectating) {
       return (
         <div
           ref={dockRef}
-          className="fixed left-0 right-0 bg-gray-900 bg-opacity-80 text-white p-4 z-20"
+          className="fixed left-0 right-0 z-20 bg-gray-900/85 p-4 text-white"
           style={dockStyle}
         >
           <div className="flex items-center justify-between">
@@ -78,7 +82,7 @@ const MobileActionDock = ({
             {allowRefound && (
               <button
                 onClick={onFoundNation}
-                className="px-4 py-2 bg-gray-800 rounded"
+                className="rounded bg-gray-800 px-4 py-2"
               >
                 Found New Nation
               </button>
@@ -90,20 +94,15 @@ const MobileActionDock = ({
     return (
       <div
         ref={dockRef}
-        className="fixed left-0 right-0 bg-gray-900 bg-opacity-80 text-white p-4 z-20"
+        className="fixed left-0 right-0 z-20 bg-gray-900/85 p-4 text-white"
         style={dockStyle}
       >
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm text-gray-300">Found Your Nation</div>
-            <div className="text-xs text-gray-400">
-              Tap to choose a starting tile
-            </div>
+            <div className="text-xs text-gray-400">Tap to choose a starting tile</div>
           </div>
-          <button
-            onClick={onFoundNation}
-            className="px-4 py-2 bg-gray-800 rounded"
-          >
+          <button onClick={onFoundNation} className="rounded bg-gray-800 px-4 py-2">
             Found
           </button>
         </div>
@@ -115,79 +114,83 @@ const MobileActionDock = ({
     return (
       <div
         ref={dockRef}
-        className="fixed left-0 right-0 bg-gray-900 bg-opacity-85 text-white p-4 z-20"
+        className="fixed left-0 right-0 z-20 border-t border-gray-700/60 bg-gray-900/95 px-3 py-3 text-white"
         style={dockStyle}
       >
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm text-gray-100">
-              Lobby: {readyPlayerCount}/{totalPlayers} ready
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium text-gray-100">
+                Lobby Setup
+              </div>
+              <div className="text-xs text-gray-300">
+                Players ready: {readyPlayerCount}/{totalPlayers}
+              </div>
             </div>
-            <div className="text-xs text-gray-300">Waiting for host to start</div>
+            <div className="rounded bg-gray-800 px-2 py-1 text-[11px] text-gray-200">
+              {readyPlayerCount}/{totalPlayers}
+            </div>
           </div>
           {canStartRoom && (
             <button
               onClick={onStartRoom}
               disabled={isStartingRoom}
-              className="px-4 py-2 rounded bg-emerald-600 text-sm font-semibold disabled:bg-emerald-900"
+              className="w-full rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:bg-emerald-900"
             >
-              {isStartingRoom ? "Starting..." : "Start Room"}
+              {isStartingRoom ? "Starting Match..." : "Start Match"}
             </button>
+          )}
+          {!canStartRoom && (
+            <div className="text-xs text-gray-400">Waiting for room creator to start.</div>
           )}
         </div>
       </div>
     );
   }
 
+  const toggleAttackMenu = () => {
+    if (uiMode === "buildStructure") {
+      onSetMode?.("idle");
+    }
+    setActiveMenu((prev) => (prev === "attack" ? null : "attack"));
+  };
+
+  const toggleBuildMenu = () => {
+    setActiveMenu((prev) => {
+      const opening = prev !== "build";
+      if (opening) {
+        onSetMode?.("buildStructure");
+        return "build";
+      }
+      if (uiMode === "buildStructure") {
+        onSetMode?.("idle");
+      }
+      return null;
+    });
+  };
+
   return (
     <div ref={dockRef} className="fixed left-0 right-0 z-20" style={dockStyle}>
-      <div className="bg-gray-900 bg-opacity-85 text-white px-3 py-2">
-        <div className="flex items-center justify-between gap-3 mb-2">
-          <div className="text-sm text-gray-200">Attack Settings</div>
-          <button
-            className={`px-3 py-1.5 rounded text-xs ${
-              showBuild || uiMode === "buildStructure"
-                ? "bg-yellow-700"
-                : "bg-gray-800"
-            }`}
-            onClick={() => {
-              setShowBuild((prev) => {
-                const next = !prev;
-                onSetMode?.(next ? "buildStructure" : "idle");
-                return next;
-              });
-            }}
-          >
-            {showBuild ? "Close Build" : "Build Menu"}
-          </button>
-        </div>
-        <input
-          type="range"
-          min="5"
-          max="100"
-          value={Math.round((attackPercent || 0.25) * 100)}
-          onChange={(e) => setAttackPercent?.(Number(e.target.value) / 100)}
-          className="w-full"
-        />
-        <div className="mt-1 flex items-center justify-between text-xs text-gray-300">
-          <span>Troop Commitment: {Math.round((attackPercent || 0.25) * 100)}%</span>
-          <span>Arrows: {activeAttackArrows?.length || 0}</span>
-        </div>
-      </div>
-      {showBuild && (
-        <div className="bg-gray-900 bg-opacity-90 text-white px-3 py-3">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-sm font-medium">Build</div>
-            <button
-              className="text-xs text-gray-400"
-              onClick={() => {
-                setShowBuild(false);
-                onSetMode?.("idle");
-              }}
-            >
-              Close
-            </button>
+      {activeMenu === "attack" && (
+        <div className="border-t border-gray-700/60 bg-gray-900/90 px-3 py-3 text-white">
+          <div className="mb-2 text-sm text-gray-200">Attack Settings</div>
+          <input
+            type="range"
+            min="5"
+            max="100"
+            value={Math.round((attackPercent || 0.25) * 100)}
+            onChange={(e) => setAttackPercent?.(Number(e.target.value) / 100)}
+            className="w-full"
+          />
+          <div className="mt-1 flex items-center justify-between text-xs text-gray-300">
+            <span>Troop Commitment: {Math.round((attackPercent || 0.25) * 100)}%</span>
+            <span>Arrows: {activeAttackArrows?.length || 0}</span>
           </div>
+        </div>
+      )}
+      {activeMenu === "build" && (
+        <div className="border-t border-gray-700/60 bg-gray-900/90 px-3 py-3 text-white">
+          <div className="mb-2 text-sm font-medium">Build</div>
           <div className="grid grid-cols-2 gap-2">
             {buildEntries.map(([type, cost]) => {
               const affordable = canAfford(playerResources, cost);
@@ -197,15 +200,15 @@ const MobileActionDock = ({
                   disabled={!affordable}
                   onClick={() => {
                     onBuildStructure?.(type);
-                    setShowBuild(false);
+                    setActiveMenu(null);
                   }}
-                  className={`rounded px-2 py-2 text-xs text-left border ${
+                  className={`rounded border px-2 py-2 text-left text-xs ${
                     affordable
                       ? "border-gray-700 bg-gray-800"
                       : "border-gray-800 bg-gray-800/40 text-gray-500"
                   }`}
                 >
-                  <div className="capitalize font-semibold">{type}</div>
+                  <div className="font-semibold capitalize">{type}</div>
                   <div className="text-[10px] text-gray-400">
                     {Object.entries(cost)
                       .map(([res, amt]) => `${amt} ${res}`)
@@ -217,6 +220,26 @@ const MobileActionDock = ({
           </div>
         </div>
       )}
+      <div className="border-t border-gray-700/60 bg-gray-900/95 px-3 py-2 text-white">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={toggleAttackMenu}
+            className={`rounded px-3 py-2 text-sm font-medium ${
+              activeMenu === "attack" ? "bg-blue-700" : "bg-gray-800"
+            }`}
+          >
+            Attack Settings
+          </button>
+          <button
+            onClick={toggleBuildMenu}
+            className={`rounded px-3 py-2 text-sm font-medium ${
+              activeMenu === "build" ? "bg-yellow-700 text-white" : "bg-gray-800"
+            }`}
+          >
+            Build Menu
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

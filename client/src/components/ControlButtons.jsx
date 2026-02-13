@@ -15,24 +15,24 @@ const ControlButtons = ({
           isMobile ? "p-2" : "p-3"
         }`}
         style={{
-          top: `calc(env(safe-area-inset-top, 0px) + ${topOffset}px)`,
+          top: `${topOffset}px`,
         }}
       >
         <button
           onClick={onOpenPlayerList}
-          className={`bg-gray-900 text-white rounded-lg shadow-lg hover:bg-gray-700 ${
-            isMobile ? "p-1.5" : "p-2"
+          className={`bg-gray-900 text-white rounded-xl shadow-lg hover:bg-gray-700 ${
+            isMobile ? "p-2.5" : "p-2"
           }`}
         >
-          <Users size={isMobile ? 20 : 24} />
+          <Users size={isMobile ? 26 : 24} />
         </button>
         <button
           onClick={onOpenSettings}
-          className={`bg-gray-900 text-white rounded-lg shadow-lg hover:bg-gray-700 ${
-            isMobile ? "p-1.5" : "p-2"
+          className={`bg-gray-900 text-white rounded-xl shadow-lg hover:bg-gray-700 ${
+            isMobile ? "p-2.5" : "p-2"
           }`}
         >
-          <Settings size={isMobile ? 20 : 24} />
+          <Settings size={isMobile ? 26 : 24} />
         </button>
       </div>
     </div>

@@ -249,14 +249,17 @@ const ActionBar = ({
 
   if (!isRoomStarted) {
     return (
-      <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-50 text-white p-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium text-gray-200">
-              Lobby phase: {readyPlayerCount}/{totalPlayers} ready
+      <div className="fixed bottom-0 left-0 right-0 border-t border-gray-700/60 bg-gray-900/95 p-4 text-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
+          <div className="flex items-center gap-4">
+            <div>
+              <div className="text-sm font-medium text-gray-100">Lobby Setup</div>
+              <div className="text-xs text-gray-300">
+                Players ready: {readyPlayerCount}/{totalPlayers}
+              </div>
             </div>
-            <div className="text-xs text-gray-400">
-              Waiting for the room creator to start.
+            <div className="rounded bg-gray-800 px-2 py-1 text-xs text-gray-200">
+              {readyPlayerCount}/{totalPlayers}
             </div>
           </div>
           {canStartRoom && (
@@ -265,8 +268,13 @@ const ActionBar = ({
               disabled={isStartingRoom}
               className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-emerald-900"
             >
-              {isStartingRoom ? "Starting..." : "Start Room"}
+              {isStartingRoom ? "Starting Match..." : "Start Match"}
             </button>
+          )}
+          {!canStartRoom && (
+            <div className="text-xs text-gray-400">
+              Waiting for the room creator to start.
+            </div>
           )}
         </div>
       </div>

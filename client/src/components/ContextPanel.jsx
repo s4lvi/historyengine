@@ -39,7 +39,7 @@ const ContextPanel = ({
       style={
         isMobile
           ? {
-              bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
+              bottom: `${bottomOffset}px`,
             }
           : undefined
       }
