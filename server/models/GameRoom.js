@@ -25,7 +25,7 @@ const gameRoomSchema = new mongoose.Schema({
   ],
   gameState: { type: mongoose.Schema.Types.Mixed, default: {} },
   matrixState: { type: mongoose.Schema.Types.Mixed, default: null },
-  discordInstanceId: { type: String, default: null, sparse: true },
+  discordInstanceId: { type: String, default: null },
   tickCount: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
 });

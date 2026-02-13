@@ -6,19 +6,17 @@ const DISCORD_CLIENT_ID = process.env.REACT_APP_DISCORD_CLIENT_ID;
 let discordSdk = null;
 let discordToken = null;
 let discordAuth = null;
+let discordError = null;
 
 /**
  * Detect whether the app is running inside a Discord Activity iframe.
- * Discord Activities run at https://{clientId}.discordsays.com/.../
- * and set a `frame_id` search param on the iframe URL.
+ * Discord injects query params like frame_id and instance_id.
  */
 export function isDiscordActivity() {
   if (typeof window === "undefined") return false;
   try {
-    // The SDK sets frame_id in the URL when running as an activity
     const params = new URLSearchParams(window.location.search);
     if (params.has("frame_id")) return true;
-    // Also detect by hostname pattern
     if (window.location.hostname.endsWith(".discordsays.com")) return true;
   } catch {}
   return false;
@@ -33,9 +31,13 @@ export async function initDiscord() {
     throw new Error("REACT_APP_DISCORD_CLIENT_ID is not set");
   }
 
+  console.log("[DISCORD] Starting init, clientId:", DISCORD_CLIENT_ID);
+
   // Create and ready the SDK
   discordSdk = new DiscordSDK(DISCORD_CLIENT_ID);
+  console.log("[DISCORD] SDK created, calling ready()...");
   await discordSdk.ready();
+  console.log("[DISCORD] SDK ready, calling authorize()...");
 
   // Request authorization from the user
   const { code } = await discordSdk.commands.authorize({
@@ -45,6 +47,7 @@ export async function initDiscord() {
     prompt: "none",
     scope: ["identify"],
   });
+  console.log("[DISCORD] Authorized, got code, exchanging token...");
 
   // Exchange the code with our server for a JWT
   const response = await apiFetch("api/auth/discord/token", {
@@ -61,9 +64,11 @@ export async function initDiscord() {
   const data = await response.json();
   discordToken = data.token;
   discordAuth = data;
+  console.log("[DISCORD] Token exchanged, calling authenticate()...");
 
   // Authenticate with Discord SDK using the access token
   await discordSdk.commands.authenticate({ access_token: data.access_token });
+  console.log("[DISCORD] Fully authenticated!");
 
   return {
     user: data.user,
@@ -85,4 +90,14 @@ export function getDiscordSdk() {
 /** Returns the full auth result from initDiscord(). */
 export function getDiscordAuth() {
   return discordAuth;
+}
+
+/** Returns the last error from initDiscord(). */
+export function getDiscordError() {
+  return discordError;
+}
+
+/** Set error (called from AuthContext). */
+export function setDiscordError(err) {
+  discordError = err;
 }

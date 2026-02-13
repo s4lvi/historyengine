@@ -12,6 +12,13 @@ const DiscordActivity = () => {
   const [error, setError] = useState(null);
   const [status, setStatus] = useState("Authenticating...");
 
+  // Handle auth failure — if loading finished but no user, auth failed
+  useEffect(() => {
+    if (!authLoading && !user && !error) {
+      setError("Discord authentication failed. Please try again.");
+    }
+  }, [authLoading, user, error]);
+
   useEffect(() => {
     if (authLoading || !user) return;
 

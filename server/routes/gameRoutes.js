@@ -540,8 +540,8 @@ router.post("/discord-instance", async (req, res, next) => {
     }
 
     // No existing room — create a new one via the init flow
-    const w = Number(mapWidth) || 500;
-    const h = Number(mapHeight) || 500;
+    const w = Number(mapWidth) || 250;
+    const h = Number(mapHeight) || 250;
     const generatedJoinCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const mapSeed = Math.random();
 
